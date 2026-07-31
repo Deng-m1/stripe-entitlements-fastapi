@@ -10,6 +10,13 @@ from typing import Any
 import stripe
 
 from stripe_entitlements.catalog import Plan, PlanCatalog
+from stripe_entitlements.portal_policy import portal_configuration_is_safe
+
+STRIPE_API_VERSION = os.getenv("STRIPE_API_VERSION", "2026-06-24.dahlia")
+
+
+def _options(key: str) -> dict[str, str]:
+    return {"api_key": key, "stripe_version": STRIPE_API_VERSION}
 
 
 def _dict(value: Any) -> dict[str, Any]:
@@ -28,7 +35,7 @@ def _mode(key: str) -> tuple[bool, str]:
 def _products(key: str):
     starting_after: str | None = None
     while True:
-        kwargs: dict[str, Any] = {"active": True, "limit": 100, "api_key": key}
+        kwargs: dict[str, Any] = {"active": True, "limit": 100, **_options(key)}
         if starting_after:
             kwargs["starting_after"] = starting_after
         page = stripe.Product.list(**kwargs)
@@ -41,7 +48,7 @@ def _products(key: str):
 def _portal_configs(key: str):
     starting_after: str | None = None
     while True:
-        kwargs: dict[str, Any] = {"active": True, "limit": 100, "api_key": key}
+        kwargs: dict[str, Any] = {"active": True, "limit": 100, **_options(key)}
         if starting_after:
             kwargs["starting_after"] = starting_after
         page = stripe.billing_portal.Configuration.list(**kwargs)
@@ -51,17 +58,8 @@ def _portal_configs(key: str):
         starting_after = page.data[-1].id
 
 
-def _safe_portal(update: dict[str, Any]) -> bool:
-    conditions = {
-        item.get("type")
-        for item in ((update.get("schedule_at_period_end") or {}).get("conditions") or [])
-    }
-    return (
-        update.get("enabled") is True
-        and update.get("proration_behavior") == "always_invoice"
-        and update.get("billing_cycle_anchor") == "now"
-        and {"decreasing_item_amount", "shortening_interval"} <= conditions
-    )
+def _safe_portal(config: dict[str, Any], expected_livemode: bool = False) -> bool:
+    return portal_configuration_is_safe(config, expected_livemode=expected_livemode)
 
 
 def _find_product(key: str, product_line: str, plan: str):
@@ -81,7 +79,7 @@ def ensure_product(key: str, product_line: str, plan: Plan):
         name=f"Example Entitlements {plan.key.title()}",
         description=f"Reference catalog plan: {plan.monthly_credits} credits per month",
         metadata={"product_line": product_line, "plan": plan.key},
-        api_key=key,
+        **_options(key),
     )
     print(f"product created: {plan.key} -> {product.id}")
     return product
@@ -97,14 +95,14 @@ def ensure_price(
     lookup_key = catalog.lookup_key(plan.key, interval)
     expected = (plan.month_usd if interval == "month" else plan.year_usd) * 100
     existing = stripe.Price.list(
-        lookup_keys=[lookup_key], active=True, limit=1, api_key=key
+        lookup_keys=[lookup_key], active=True, limit=1, **_options(key)
     ).data
     if existing:
         price = existing[0]
         recurring = _dict(price).get("recurring") or {}
         if (
             price.product == product.id
-            and price.currency == "usd"
+            and price.currency == plan.currency
             and price.unit_amount == expected
             and recurring.get("interval") == interval
         ):
@@ -112,21 +110,21 @@ def ensure_price(
             return price
     price = stripe.Price.create(
         product=product.id,
-        currency="usd",
+        currency=plan.currency,
         unit_amount=expected,
         recurring={"interval": interval},
         lookup_key=lookup_key,
         transfer_lookup_key=True,
         metadata={"product_line": product.metadata["product_line"], "plan": plan.key},
-        api_key=key,
+        **_options(key),
     )
     for old in existing:
-        stripe.Price.modify(old.id, active=False, api_key=key)
+        stripe.Price.modify(old.id, active=False, **_options(key))
     print(f"price created: {lookup_key} -> {price.id}")
     return price
 
 
-def ensure_portal(key: str, product_line: str, products: list[dict[str, Any]]) -> Any:
+def ensure_portal(key: str, product_line: str) -> Any:
     existing = next(
         (
             config
@@ -142,29 +140,19 @@ def ensure_portal(key: str, product_line: str, products: list[dict[str, Any]]) -
             "invoice_history": {"enabled": True},
             "payment_method_update": {"enabled": True},
             "subscription_cancel": {"enabled": True, "mode": "at_period_end"},
-            "subscription_update": {
-                "enabled": True,
-                "default_allowed_updates": ["price"],
-                "products": products,
-                "proration_behavior": "always_invoice",
-                "billing_cycle_anchor": "now",
-                "schedule_at_period_end": {
-                    "conditions": [
-                        {"type": "decreasing_item_amount"},
-                        {"type": "shortening_interval"},
-                    ]
-                },
-            },
+            # Price changes are server-only so rank, annual funding lineage,
+            # preview, idempotency, and entitlement attribution cannot be bypassed.
+            "subscription_update": {"enabled": False},
         },
         "metadata": {"product_line": product_line},
     }
     if existing:
         config = stripe.billing_portal.Configuration.modify(
-            existing.id, **params, api_key=key
+            existing.id, **params, **_options(key)
         )
         print(f"portal updated: {config.id}")
         return config
-    config = stripe.billing_portal.Configuration.create(**params, api_key=key)
+    config = stripe.billing_portal.Configuration.create(**params, **_options(key))
     print(f"portal created: {config.id}")
     return config
 
@@ -181,7 +169,7 @@ def verify(key: str, catalog: PlanCatalog, product_line: str) -> None:
         for interval, amount in (("month", plan.month_usd), ("year", plan.year_usd)):
             lookup_key = catalog.lookup_key(plan.key, interval)
             prices = stripe.Price.list(
-                lookup_keys=[lookup_key], active=True, limit=2, api_key=key
+                lookup_keys=[lookup_key], active=True, limit=2, **_options(key)
             ).data
             if len(prices) != 1:
                 raise RuntimeError(f"expected one active price for {lookup_key}")
@@ -189,7 +177,7 @@ def verify(key: str, catalog: PlanCatalog, product_line: str) -> None:
             recurring = _dict(price).get("recurring") or {}
             if (
                 price.product != product.id
-                or price.currency != "usd"
+                or price.currency != plan.currency
                 or price.unit_amount != amount * 100
                 or recurring.get("interval") != interval
                 or bool(price.livemode) != expected_live
@@ -202,54 +190,29 @@ def verify(key: str, catalog: PlanCatalog, product_line: str) -> None:
         # List responses can omit the allowed product/price expansion. Retrieve
         # the candidate before validating the complete policy surface.
         config = _dict(
-            stripe.billing_portal.Configuration.retrieve(raw.id, api_key=key)
+            stripe.billing_portal.Configuration.retrieve(raw.id, **_options(key))
         )
         if (config.get("metadata") or {}).get("product_line") != product_line:
             continue
         update = (config.get("features") or {}).get("subscription_update") or {}
-        configured_ids = {
-            price if isinstance(price, str) else price.get("id")
-            for product in update.get("products") or []
-            for price in product["prices"]
-        }
-        configured_ids.discard(None)
-        products_returned = "products" in update
-        products_match = not products_returned or configured_ids == expected_price_ids
-        if _safe_portal(update) and products_match:
+        if _safe_portal(config, expected_live):
             matching.append(config)
         else:
             drifted.append(
                 {
                     "id": config["id"],
                     "enabled": update.get("enabled"),
-                    "proration_behavior": update.get("proration_behavior"),
-                    "billing_cycle_anchor": update.get("billing_cycle_anchor"),
                     "update_keys": sorted(update),
-                    "product_count": len(update.get("products") or []),
-                    "conditions": [
-                        item.get("type")
-                        for item in (
-                            (update.get("schedule_at_period_end") or {}).get("conditions")
-                            or []
-                        )
-                    ],
-                    "missing_prices": sorted(expected_price_ids - configured_ids),
-                    "extra_prices": sorted(configured_ids - expected_price_ids),
                 }
             )
     if not matching:
         raise RuntimeError(f"no safe Portal configuration; drifted={drifted}")
     if bool(matching[0].get("livemode")) != expected_live:
         raise RuntimeError("Portal mode does not match the secret key")
-    matching_update = (matching[0].get("features") or {}).get("subscription_update") or {}
-    product_note = (
-        str(len(matching_update.get("products") or []))
-        if "products" in matching_update
-        else "omitted-by-stripe-api"
-    )
     print(
         f"verified {label}: products={len(catalog.plans)} prices={len(expected_price_ids)} "
-        f"portal={matching[0]['id']} portal_products={product_note} anchor=now always_invoice"
+        f"portal={matching[0]['id']} subscription_update=disabled "
+        f"stripe_api_version={STRIPE_API_VERSION}"
     )
 
 
@@ -276,15 +239,11 @@ def main() -> None:
     if live and not args.allow_live:
         raise RuntimeError("live mutation refused; pass --allow-live after release approval")
     print(f"bootstrapping Stripe {label} mode for product_line={args.product_line}")
-    portal_products: list[dict[str, Any]] = []
     for plan in catalog.plans.values():
         product = ensure_product(key, args.product_line, plan)
-        prices = [
-            ensure_price(key, catalog, product, plan, "month"),
-            ensure_price(key, catalog, product, plan, "year"),
-        ]
-        portal_products.append({"product": product.id, "prices": [price.id for price in prices]})
-    ensure_portal(key, args.product_line, portal_products)
+        ensure_price(key, catalog, product, plan, "month")
+        ensure_price(key, catalog, product, plan, "year")
+    ensure_portal(key, args.product_line)
     verify(key, catalog, args.product_line)
 
 

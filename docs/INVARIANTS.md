@@ -68,3 +68,48 @@ Each usage debit snapshots the account's `grant_epoch`. A product job may refund
 debit only while the account remains in that epoch. A renewal reset, subscription end,
 or full clawback advances the epoch, so a late product refund cannot recreate credits
 that belonged to a closed entitlement window.
+
+## 9. Plan identity is explicit
+
+Plan direction comes from the catalog's stable key and unique positive rank, never from
+price amount. Price is billing data. Changing a price must not silently change whether a
+transition is considered an upgrade or downgrade.
+
+## 10. Funding lineages do not cross invoices
+
+Every non-noop annual-origin transition waits until period end, including movement to a
+higher annual tier. The paid annual invoice owns up to 12 monthly grant slots. Replacing
+it early can use an old-invoice proration to fund the new invoice without preserving a
+cross-invoice refund/dispute lineage.
+
+An otherwise-immediate transition is also deferred unless the Stripe invoice preview is
+one full catalog-price target line with quantity 1, no nonzero proration, and no
+customer-balance credit. A paid invoice that drifts from those facts fails closed.
+
+## 11. Plan-change intent precedes entitlement
+
+A Subscription price change is authorized only by a durable `billing_plan_changes` row
+bound to account, target, source entitlement snapshot, and idempotency key. Mutable
+Subscription state alone never grants a new plan. Confirm success, browser return, SCA
+completion, and `customer.subscription.updated` are not grant events; the matching paid
+invoice completes the intent.
+
+Only one pending plan change may exist per account. Leases and Stripe idempotency keys
+allow the same intent to resume after an unknown remote outcome without opening another
+logical change.
+
+## 12. Optional upgrade failure preserves paid entitlement
+
+`pending_if_incomplete` may leave the old Subscription item active and a new Invoice open.
+In that state the old, still-funded entitlement remains enforceable. The plan change is
+`requires_action` and may expose a hosted recovery URL, but the target plan is not active.
+
+## 13. Authentication and webhook contracts fail closed
+
+Production billing APIs reject all requests until the host supplies an
+`AuthAccountAdapter` that returns a verified stable subject. Browser account identifiers
+are not trusted.
+
+The outbound Stripe request version and webhook Event snapshot version are independent.
+An Event whose `livemode` or `api_version` differs from the configured webhook contract
+is stored as an ignored event with a durable `webhook_contract_mismatch` incident.

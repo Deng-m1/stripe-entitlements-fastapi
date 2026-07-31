@@ -82,7 +82,9 @@ def postgres_container() -> Iterator[None]:
     else:
         _run(["docker", "rm", "-f", PG_CONTAINER])
         pytest.exit("PostgreSQL did not become ready")
-    migration = (ROOT / "migrations/001_schema.sql").read_text()
+    migration = "\n".join(
+        path.read_text() for path in sorted((ROOT / "migrations").glob("*.sql"))
+    )
     applied = subprocess.run(
         [
             "docker",
@@ -119,7 +121,8 @@ async def pool(postgres_container: None) -> AsyncIterator[asyncpg.Pool]:
     )
     async with database_pool.acquire() as conn:
         await conn.execute(
-            """truncate billing_incidents,checkout_claims,credit_debits,credit_ledger,
+            """truncate billing_plan_changes,billing_incidents,checkout_claims,
+               credit_debits,credit_ledger,
                stripe_invoice_state,stripe_webhook_events,billing_accounts
                restart identity cascade"""
         )
@@ -134,7 +137,12 @@ def catalog() -> PlanCatalog:
 
 @pytest.fixture
 def processor(pool: asyncpg.Pool, catalog: PlanCatalog) -> EventProcessor:
-    return EventProcessor(pool, catalog, "example-entitlements")
+    return EventProcessor(
+        pool,
+        catalog,
+        "example-entitlements",
+        expected_api_version="2026-06-24.dahlia",
+    )
 
 
 @pytest.fixture
@@ -146,15 +154,22 @@ def make_account(pool: asyncpg.Pool):
         subscription: str | None = "sub_test",
     ) -> str:
         account_id = uuid.uuid4()
+        plan_key = "starter" if subscription else "free"
+        interval = "month" if subscription else None
+        status = "active" if subscription else "none"
         async with pool.acquire() as conn:
             await conn.execute(
                 """insert into billing_accounts
-                     (id,external_ref,stripe_customer_id,stripe_subscription_id)
-                   values($1,$2,$3,$4)""",
+                     (id,external_ref,stripe_customer_id,stripe_subscription_id,
+                      plan_key,plan_interval,subscription_status)
+                   values($1,$2,$3,$4,$5,$6,$7)""",
                 account_id,
                 external_ref or f"user-{account_id}",
                 customer,
                 subscription,
+                plan_key,
+                interval,
+                status,
             )
         return str(account_id)
 

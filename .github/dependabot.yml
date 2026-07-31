@@ -13,3 +13,12 @@ updates:
     directory: /
     schedule:
       interval: monthly
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    groups:
+      web-runtime:
+        dependency-type: production
+      web-development:
+        dependency-type: development

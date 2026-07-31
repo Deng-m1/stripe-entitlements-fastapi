@@ -4,6 +4,7 @@ import asyncio
 from datetime import UTC, datetime
 
 import asyncpg
+import pytest
 
 from stripe_entitlements.annual import AnnualGrantService
 from stripe_entitlements.catalog import PlanCatalog
@@ -26,6 +27,7 @@ async def _annual_setup(
             amount=13_700,
             period_start=ANCHOR,
             period_end=int(datetime(2027, 1, 1, tzinfo=UTC).timestamp()),
+            billing_reason="subscription_create",
         )
     )
     assert result.outcome == "handled"
@@ -105,7 +107,7 @@ async def test_annual_plan_mismatch_fails_closed_with_incident(
         ) == 1
 
 
-async def test_partial_annual_refund_reduces_future_slots_and_each_new_grant(
+async def test_partial_annual_refund_reduces_slots_but_keeps_full_allowed_grants(
     processor: EventProcessor, pool: asyncpg.Pool, catalog: PlanCatalog, make_account
 ) -> None:
     account_id = await make_account()
@@ -130,7 +132,7 @@ async def test_partial_annual_refund_reduces_future_slots_and_each_new_grant(
         )
     assert account is not None
     assert account["annual_grants_allowed"] == 6
-    assert account["credits_balance"] == 150
+    assert account["credits_balance"] == 300
 
 
 async def test_full_annual_refund_stops_future_worker_grants(
@@ -161,3 +163,79 @@ async def test_full_annual_refund_stops_future_worker_grants(
         )
     assert account is not None
     assert tuple(account) == (0, 1, 1)
+
+
+@pytest.mark.parametrize("refund_percent", [25, 50, 75])
+@pytest.mark.parametrize("issued", [1, 6, 11])
+async def test_annual_partial_refund_has_one_slot_dimension_only(
+    refund_percent: int,
+    issued: int,
+    processor: EventProcessor,
+    pool: asyncpg.Pool,
+    catalog: PlanCatalog,
+    make_account,
+) -> None:
+    account_id = await make_account()
+    invoice_id = f"in_ratio_{refund_percent}_{issued}"
+    await _annual_setup(processor, account_id, invoice_id=invoice_id)
+    if issued > 1:
+        await AnnualGrantService(pool, catalog, processor).grant_due(
+            account_id,
+            datetime(2026, issued, 15, tzinfo=UTC),
+            SubscriptionSnapshot("sub_test", "active", "ent_starter_year"),
+        )
+    await processor.process(
+        refunded_charge(
+            invoice_id=invoice_id,
+            amount=13_700,
+            amount_refunded=13_700 * refund_percent // 100,
+        )
+    )
+    funded_slots = {25: 9, 50: 6, 75: 3}[refund_percent]
+    async with pool.acquire() as conn:
+        account = await conn.fetchrow(
+            "select * from billing_accounts where id=$1::uuid", account_id
+        )
+    assert account is not None
+    assert account["annual_grants_allowed"] == max(issued, funded_slots)
+    if issued > funded_slots:
+        assert account["entitlement_revoked"] is True
+        assert account["credits_balance"] == 0
+    else:
+        assert account["entitlement_revoked"] is False
+        assert account["credits_balance"] == 300
+
+
+@pytest.mark.parametrize("refund_first", [False, True])
+async def test_near_full_annual_refund_converges_before_or_after_paid(
+    refund_first: bool,
+    processor: EventProcessor,
+    pool: asyncpg.Pool,
+    make_account,
+) -> None:
+    account_id = await make_account()
+    invoice_id = "in_annual_near_full"
+    paid = paid_invoice(
+        account_id,
+        invoice_id=invoice_id,
+        plan="starter",
+        interval="year",
+        amount=13_700,
+        period_start=ANCHOR,
+        period_end=int(datetime(2027, 1, 1, tzinfo=UTC).timestamp()),
+        billing_reason="subscription_create",
+    )
+    refund = refunded_charge(
+        invoice_id=invoice_id,
+        amount=13_700,
+        amount_refunded=13_563,
+    )
+    for payload in ([refund, paid] if refund_first else [paid, refund]):
+        await processor.process(payload)
+    async with pool.acquire() as conn:
+        account = await conn.fetchrow(
+            "select * from billing_accounts where id=$1::uuid", account_id
+        )
+    assert account is not None
+    assert account["credits_balance"] == 0
+    assert account["entitlement_revoked"] is True or account["credit_expires_at"] is None

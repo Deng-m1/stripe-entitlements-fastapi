@@ -65,6 +65,7 @@ async def test_valid_raw_signature_reaches_processor(postgres_container: None) -
             "type": "customer.created",
             "created": int(time.time()),
             "livemode": False,
+            "api_version": "2026-06-24.dahlia",
             "data": {"object": {"id": "cus_api", "object": "customer"}},
         },
         separators=(",", ":"),

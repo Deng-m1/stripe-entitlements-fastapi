@@ -1,51 +1,106 @@
 # Architecture
 
 ```text
+Host identity provider
+  │ verified stable subject through AuthAccountAdapter
+  ▼
+FastAPI billing API ───────────────► Stripe request API
+  │ catalog/account                  Checkout / Portal / invoice preview
+  │ Checkout + Idempotency-Key       pending_if_incomplete / Schedule
+  │ preview + confirm
+  ▼
+PostgreSQL primary
+  ├─ billing_accounts
+  ├─ checkout_claims
+  └─ billing_plan_changes
+
 Stripe
-  │ signed, at-least-once webhooks
+  │ signed, at-least-once webhook Event snapshots
   ▼
 FastAPI raw-body endpoint
-  │ verify signature
+  │ verify signature before JSON trust
   │ prefetch Price / Charge references (no DB transaction open)
   ▼
 Transactional event processor
-  ├─ stripe_webhook_events       event inbox
+  ├─ stripe_webhook_events       Event inbox
   ├─ billing_accounts            locked entitlement projection
   ├─ stripe_invoice_state        cumulative refund/dispute facts
-  ├─ credit_ledger               append-only balance audit
+  ├─ credit_ledger/debits        balance audit and usage epochs
+  ├─ billing_plan_changes        durable intent/completion state
   └─ billing_incidents           durable fail-closed queue
 
 Annual worker ── remote Subscription snapshot ──► same account/invoice locks
-Checkout API  ── checkout_claims ── Stripe call ── identity-checked attach
+Reconciler    ── Stripe truth after webhook loss ─► same invoice grant guard
+
+Next.js reference UI
+  └─ never grants access; polls GET /api/account for webhook projection
 ```
+
+## Scope boundary
+
+The backend supports one recurring subscription item, USD, fixed plan keys, monthly/yearly
+intervals, fixed monthly credit grants, and the event contract below. It is not an
+arbitrary invoice reducer. Unknown/ambiguous invoice shapes fail closed.
+
+The frontend is a reference consumer, not the system of record. Product services must
+enforce `entitlements_enforceable`, structured limits, and credit operations server-side.
+
+## Authentication boundary
+
+`AuthAccountAdapter` translates the host application's verified session/JWT/OIDC identity
+into a stable `external_ref`. The default production adapter rejects every billing API
+request. The demo Bearer adapter requires development mode, a test Stripe key, and an
+explicit token; it is not a deployable authentication scheme.
+
+Accounts are looked up or created from the verified subject. No route accepts an account
+ID from the browser.
 
 ## Why external Stripe reads happen first
 
 Network calls while holding row locks amplify latency and deadlock probability. The
-gateway resolves Price lookup keys and dispute Charge references before the processor
-opens a transaction. The transaction then revalidates local identity and state under
-locks. Annual workers follow the same snapshot-then-revalidate pattern.
+gateway resolves Price lookup keys, InvoicePayment references, Subscription snapshots and
+plan-change previews outside transactions. A short transaction snapshots or revalidates
+identity and entitlement state before and after remote work.
+
+Checkout uses a durable client request key and claim token. Plan changes use durable
+intent, expiring leases, and derived Stripe idempotency keys. A crash after an unknown
+remote outcome is retried with the same identity instead of creating a second logical
+operation.
 
 ## Why PostgreSQL is the coordination layer
 
-An event ID primary key serializes duplicate deliveries. Account row locks serialize
-balance changes, charges, refunds, deletion, and annual resets. Partial unique indexes
-encode business invariants independently of application branches. This remains correct
-with multiple API processes and workers without requiring a Redis lock that can expire
-while work is still running.
+An Event ID primary key serializes duplicate deliveries. Account row locks serialize
+balance, grants, refunds, deletion and plan projection. Partial unique indexes encode the
+invoice-slot grant and one-pending-plan-change invariants independently of application
+branches. No correctness decision relies on process memory or an expiring Redis lock.
 
-## Data model
+The implementation uses PostgreSQL `READ COMMITTED` plus explicit locks and constraints.
+Paths that touch account and invoice state lock account first, then invoice.
 
-- `billing_accounts`: the locally enforced entitlement projection.
-- `stripe_webhook_events`: committed event inbox and outcome audit.
-- `stripe_invoice_state`: monotonic cumulative refund/dispute facts.
-- `credit_ledger`: append-only changes with `balance_after` and invoice attribution.
-- `checkout_claims`: expiring single-flight claims with an unguessable identity token.
+## Data model and migrations
+
+`001_schema.sql` creates:
+
+- `billing_accounts`: locally enforced plan, status, credit and annual state;
+- `stripe_webhook_events`: committed Event inbox and outcome audit;
+- `stripe_invoice_state`: monotonic refund/dispute facts;
+- `credit_ledger`: append-only grants, charges, clawbacks and balances;
+- `credit_debits`: idempotent product usage with grant-epoch snapshot;
+- `checkout_claims`: Checkout single-flight identity;
 - `billing_incidents`: deduplicated unresolved operational work.
 
-The SQL source of truth is `migrations/001_schema.sql`.
+`002_plan_transitions.sql` adds:
 
-## Supported event contract
+- entitlement/cancellation expiry and revocation fields to accounts;
+- replayable Checkout client request identity and stored Session URL;
+- `billing_plan_changes` with preview snapshots, leases, estimates, Schedule/recovery
+  state and one-pending-change constraint;
+- an immutable `stripe_invoice_state.account_id` trigger.
+
+Both migrations are required. Apply them in filename order before deploying the matching
+application version.
+
+## Supported webhook Event contract
 
 - `checkout.session.completed`
 - `checkout.session.expired`
@@ -56,5 +111,15 @@ The SQL source of truth is `migrations/001_schema.sql`.
 - `charge.refunded`
 - `charge.dispute.created`
 
-Unlisted event types are acknowledged and recorded with an ignored outcome. Configure
-the production endpoint to send only the contract above.
+Unlisted types are acknowledged and recorded as ignored. Configure production endpoints
+to send only this set.
+
+## Two independent Stripe version contracts
+
+`STRIPE_API_VERSION` is attached to outbound SDK requests. Webhook Event payloads retain
+the endpoint's snapshot `api_version`; `STRIPE_WEBHOOK_API_VERSION` validates that value.
+Pinning one does not pin the other.
+
+The currently observed real test Events used `2025-12-15.clover` while outbound request
+code targeted `2026-06-24.dahlia`. A version/livemode mismatch creates a durable incident
+and does not mutate entitlement state.

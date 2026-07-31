@@ -74,3 +74,31 @@ class Database:
                 "select * from billing_accounts where id=$1::uuid", account_id
             )
         return dict(row) if row is not None else None
+
+    async def account_for_external_ref(self, external_ref: str) -> dict[str, Any]:
+        if not external_ref:
+            raise ValueError("authenticated external_ref cannot be empty")
+        account_id = uuid.uuid4()
+        pool = self.require_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """insert into billing_accounts(id,external_ref) values($1,$2)
+                     on conflict(external_ref) do update set external_ref=excluded.external_ref
+                     returning *""",
+                account_id,
+                external_ref,
+            )
+        assert row is not None
+        return dict(row)
+
+    async def pending_plan_change(self, account_id: str) -> dict[str, Any] | None:
+        pool = self.require_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """select * from billing_plan_changes where account_id=$1::uuid
+                     and status in (
+                       'reserved','previewed','applying','scheduled','applied','requires_action'
+                     ) order by created_at desc limit 1""",
+                account_id,
+            )
+        return dict(row) if row is not None else None

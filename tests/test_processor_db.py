@@ -16,6 +16,30 @@ from tests.builders import (
 )
 
 
+@pytest.mark.parametrize("drift", ["amount", "quantity", "currency"])
+async def test_catalog_amount_currency_and_quantity_drift_fail_closed(
+    drift: str, processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account()
+    payload = paid_invoice(account_id, invoice_id=f"in_drift_{drift}")
+    invoice = payload["data"]["object"]
+    line = invoice["lines"]["data"][0]
+    if drift == "amount":
+        line["amount"] = invoice["amount_paid"] = invoice["total"] = 1
+    elif drift == "quantity":
+        line["quantity"] = 2
+    else:
+        line["currency"] = invoice["currency"] = "eur"
+
+    result = await processor.process(payload)
+    assert result.outcome == "ignored"
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "select credits_balance from billing_accounts where id=$1::uuid", account_id
+        )
+    assert row is not None and row["credits_balance"] == 0
+
+
 async def _account(pool: asyncpg.Pool, account_id: str) -> dict[str, Any]:
     async with pool.acquire() as conn:
         row = await conn.fetchrow("select * from billing_accounts where id=$1::uuid", account_id)
@@ -83,6 +107,7 @@ async def test_new_cycle_resets_credits_instead_of_accumulating(
             invoice_id="in_cycle_2",
             event_id="evt_cycle_2",
             created=1_800_000_100,
+            period_start=1_802_592_000,
         )
     )
     account = await _account(pool, account_id)
@@ -112,22 +137,22 @@ async def test_positive_proration_fails_closed(
     result = await processor.process(
         paid_invoice(account_id, invoice_id="in_proration", proration_amount=100)
     )
-    assert result.reason == "positive proration is unsafe"
+    assert result.reason == "cross-invoice proration is unsafe"
     async with pool.acquire() as conn:
         assert await conn.fetchval(
-            "select count(*) from billing_incidents where kind='unexpected_positive_proration'"
+            "select count(*) from billing_incidents where kind='unsafe_cross_invoice_proration'"
         ) == 1
 
 
-async def test_negative_proration_is_ignored_while_full_line_grants(
+async def test_negative_proration_also_fails_closed_without_funding_lineage(
     processor: EventProcessor, pool: asyncpg.Pool, make_account
 ) -> None:
     account_id = await make_account()
     result = await processor.process(
         paid_invoice(account_id, invoice_id="in_negative_proration", proration_amount=-500)
     )
-    assert result.outcome == "handled"
-    assert (await _account(pool, account_id))["credits_balance"] == 300
+    assert result.outcome == "ignored"
+    assert (await _account(pool, account_id))["credits_balance"] == 0
 
 
 async def test_partial_refund_after_paid_claws_cumulative_ratio(
@@ -257,7 +282,7 @@ async def test_deleted_subscription_clears_entitlement_and_cannot_be_revived(
     assert (account["plan_key"], account["credits_balance"]) == ("free", 0)
 
 
-async def test_subscription_update_projects_plan_without_granting(
+async def test_subscription_update_never_projects_unpaid_plan_or_features(
     processor: EventProcessor, pool: asyncpg.Pool, make_account
 ) -> None:
     account_id = await make_account()
@@ -266,7 +291,7 @@ async def test_subscription_update_projects_plan_without_granting(
     )
     account = await _account(pool, account_id)
     assert result.outcome == "handled"
-    assert (account["plan_key"], account["plan_interval"]) == ("pro", "year")
+    assert (account["plan_key"], account["plan_interval"]) == ("starter", "month")
     assert account["credits_balance"] == 0
 
 

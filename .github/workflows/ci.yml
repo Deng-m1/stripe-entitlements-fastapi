@@ -9,7 +9,8 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  backend:
+    name: Backend
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -27,3 +28,30 @@ jobs:
         run: uv run pytest -m "not real_stripe"
       - name: Check whitespace
         run: git diff --check
+
+  web:
+    name: Web
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Audit production dependencies
+        run: npm audit --omit=dev
+      - name: Lint
+        run: npm run lint
+      - name: Type check
+        run: npm run typecheck
+      - name: Component tests
+        run: npm test
+      - name: Production build
+        run: npm run build

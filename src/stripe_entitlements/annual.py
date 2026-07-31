@@ -6,7 +6,7 @@ from typing import Any
 import asyncpg
 
 from .catalog import PlanCatalog
-from .processor import EventProcessor, _annual_slots_allowed
+from .processor import EventProcessor
 from .types import ProcessResult, SubscriptionSnapshot
 
 
@@ -108,18 +108,21 @@ class AnnualGrantService:
             event_id = f"annual:{invoice_id}:{target_slot}"
             await conn.execute(
                 """update billing_accounts set credits_balance=$2,grant_epoch=$3,
-                     annual_grants_issued=$4,updated_at=now() where id=$1""",
+                     annual_grants_issued=$4::smallint,
+                     credit_expires_at=least(entitlement_period_end,
+                       annual_anchor + make_interval(months => ($4::smallint)::integer)),
+                     updated_at=now() where id=$1""",
                 account["id"],
                 plan.monthly_credits,
                 new_epoch,
                 target_slot,
             )
-            grant = await conn.fetchrow(
+            await conn.execute(
                 """insert into credit_ledger
                      (account_id,delta,balance_after,entitlement_units,reason,grant_epoch,
                       stripe_event_id,stripe_invoice_id,grant_slot)
                    values($1,$2,$3,$4,'subscription_grant',$5,$6,$7,$8)
-                   returning id""",
+                   """,
                 account["id"],
                 plan.monthly_credits - old_balance,
                 plan.monthly_credits,
@@ -135,27 +138,7 @@ class AnnualGrantService:
                 invoice_id,
                 target_slot,
             )
-            if int(state["amount_refunded"]) > 0:
-                await self.processor._apply_clawback_to_grant(
-                    conn,
-                    account_id=account["id"],
-                    invoice_id=invoice_id,
-                    grant_id=int(grant["id"]),
-                    entitlement_units=plan.monthly_credits,
-                    amount=int(state["amount_total"]),
-                    amount_refunded=int(state["amount_refunded"]),
-                    full=False,
-                    reason="refund_clawback",
-                    event_id=event_id,
-                )
-                allowed = _annual_slots_allowed(
-                    int(state["amount_total"]), int(state["amount_refunded"]), target_slot
-                )
-                await conn.execute(
-                    """update billing_accounts set
-                         annual_grants_allowed=least(annual_grants_allowed,$2)
-                         where id=$1""",
-                    account["id"],
-                    allowed,
-                )
+            # Partial annual refunds shrink the number of funded slots only. Every
+            # still-allowed slot remains a full monthly grant; applying the refund
+            # ratio again here would double-claw entitlement.
             return ProcessResult("handled", f"granted annual slot {target_slot}", account_id)

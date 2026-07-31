@@ -44,8 +44,14 @@ class CreditService:
                 if str(existing["account_id"]) != account_id or int(existing["amount"]) != amount:
                     raise ValueError("idempotency key was already used with different parameters")
                 return CreditResult("replayed", int(account["credits_balance"]))
-            if account["subscription_status"] == "past_due":
-                raise CreditsUnavailableError("subscription is past due")
+            if account["subscription_status"] != "active":
+                raise CreditsUnavailableError("subscription is not active")
+            if account["entitlement_revoked"]:
+                raise CreditsUnavailableError("the paid entitlement was revoked")
+            if account["credit_expires_at"] is None or not await conn.fetchval(
+                "select $1::timestamptz > now()", account["credit_expires_at"]
+            ):
+                raise CreditsUnavailableError("the paid credit window has expired")
             if int(account["credits_balance"]) < amount:
                 raise InsufficientCreditsError("insufficient credits")
             balance = int(account["credits_balance"]) - amount

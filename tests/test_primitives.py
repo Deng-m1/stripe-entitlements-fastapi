@@ -5,6 +5,7 @@ import pytest
 from stripe_entitlements.catalog import PlanCatalog
 from stripe_entitlements.ordering import event_wins, rank_for
 from stripe_entitlements.processor import _annual_slots_allowed, _ceil_ratio, _project_status
+from stripe_entitlements.transitions import decide_transition
 
 
 def test_catalog_round_trip(catalog: PlanCatalog) -> None:
@@ -13,6 +14,38 @@ def test_catalog_round_trip(catalog: PlanCatalog) -> None:
     assert plan is not None and plan.monthly_credits == 1000
     assert interval == "year"
     assert catalog.parse_lookup_key("other_pro_year") is None
+    assert [plan.rank for plan in catalog.ordered()] == [10, 20, 30]
+    assert "api_access" in catalog.require("pro").features
+    assert catalog.require("ultra").limits["concurrent_jobs"] == 20
+
+
+@pytest.mark.parametrize("from_plan", ["starter", "pro", "ultra"])
+@pytest.mark.parametrize("from_interval", ["month", "year"])
+@pytest.mark.parametrize("target_plan", ["starter", "pro", "ultra"])
+@pytest.mark.parametrize("target_interval", ["month", "year"])
+def test_complete_month_year_tier_transition_matrix(
+    catalog: PlanCatalog,
+    from_plan: str,
+    from_interval: str,
+    target_plan: str,
+    target_interval: str,
+) -> None:
+    current = catalog.require(from_plan)
+    target = catalog.require(target_plan)
+    decision = decide_transition(current, from_interval, target, target_interval)  # type: ignore[arg-type]
+    if from_plan == target_plan and from_interval == target_interval:
+        expected = "noop"
+    elif from_interval == "year":
+        expected = "period_end"
+    elif target.rank > current.rank:
+        expected = "immediate"
+    elif target.rank < current.rank:
+        expected = "period_end"
+    elif from_interval == "month" and target_interval == "year":
+        expected = "immediate"
+    else:
+        expected = "period_end"
+    assert decision.timing == expected
 
 
 @pytest.mark.parametrize(

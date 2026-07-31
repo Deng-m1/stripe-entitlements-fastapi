@@ -56,6 +56,11 @@ class ReconciliationService:
         if account is None or not account["stripe_subscription_id"]:
             return ProcessResult("ignored", "account has no subscription", account_id)
         expected_subscription = str(account["stripe_subscription_id"])
+        expected_account = {
+            "stripe_subscription_id": expected_subscription,
+            "event_created": int(account["event_created"]),
+            "event_rank": int(account["event_rank"]),
+        }
         subscription = await self.gateway.subscription_object(expected_subscription)
         if str(subscription.get("id")) != expected_subscription:
             return ProcessResult("ignored", "Stripe returned a different subscription", account_id)
@@ -71,6 +76,7 @@ class ReconciliationService:
                 "created": int(subscription.get("canceled_at") or time.time()),
                 "livemode": bool(subscription.get("livemode")),
                 "_remote_verified": True,
+                "_expected_account": expected_account,
                 "data": {"object": subscription},
             }
             return await self.processor.process(event)
@@ -81,6 +87,12 @@ class ReconciliationService:
                 return ProcessResult(
                     "ignored", "active subscription has no paid invoice", account_id
                 )
+            invoice_id = str((paid.get("data") or {}).get("object", {}).get("id") or "unknown")
+            paid["id"] = (
+                f"reconcile:{invoice_id}:{expected_subscription}:"
+                f"{expected_account['event_created']}:{expected_account['event_rank']}"
+            )
+            paid["_expected_account"] = expected_account
             result = await self.processor.process(paid)
             if result.outcome in {"handled", "replayed"}:
                 await self._resolve_incidents(account_id)
@@ -92,6 +104,7 @@ class ReconciliationService:
             "created": int(time.time()),
             "livemode": bool(subscription.get("livemode")),
             "_remote_verified": True,
+            "_expected_account": expected_account,
             "data": {"object": subscription},
         }
         return await self.processor.process(event)

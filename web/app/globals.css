@@ -1,0 +1,638 @@
+:root {
+  color-scheme: light;
+  --bg: #f5f7fb;
+  --surface: #ffffff;
+  --surface-soft: #edf2f8;
+  --text: #142033;
+  --muted: #5d6b7d;
+  --line: #d9e1eb;
+  --brand: #2055d6;
+  --brand-dark: #173ea0;
+  --success: #087c5b;
+  --success-soft: #e5f7f0;
+  --warning: #9a5c00;
+  --warning-soft: #fff4dc;
+  --danger: #b42318;
+  --danger-soft: #ffebe9;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background:
+    radial-gradient(circle at 15% 0%, #e7eeff 0, transparent 28rem),
+    var(--bg);
+  color: var(--text);
+  margin: 0;
+  min-height: 100vh;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+:where(a, button, input, [tabindex]):focus-visible {
+  outline: 3px solid #6f95f2;
+  outline-offset: 3px;
+}
+
+.shell {
+  margin-inline: auto;
+  max-width: 1160px;
+  padding-inline: 24px;
+}
+
+.site-header {
+  background: rgba(255, 255, 255, 0.88);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(14px);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.header-inner {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  min-height: 66px;
+}
+
+.brand {
+  font-weight: 760;
+  letter-spacing: -0.02em;
+}
+
+.header-inner nav {
+  display: flex;
+  gap: 24px;
+}
+
+.header-inner nav a {
+  color: var(--muted);
+  font-size: 0.93rem;
+  font-weight: 650;
+}
+
+.header-inner nav a:hover {
+  color: var(--text);
+}
+
+.demo-notice {
+  background: var(--warning-soft);
+  border-block: 2px solid #d29a31;
+  color: #6f4505;
+  font-size: 0.9rem;
+  font-weight: 750;
+  padding: 12px 24px;
+  text-align: center;
+}
+
+.page {
+  min-height: calc(100vh - 150px);
+  padding-block: 64px 80px;
+}
+
+.footer {
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding-block: 24px;
+}
+
+.hero {
+  margin: 0 auto 38px;
+  max-width: 780px;
+  text-align: center;
+}
+
+.hero.compact {
+  margin-left: 0;
+  max-width: 720px;
+  text-align: left;
+}
+
+.eyebrow {
+  color: var(--brand);
+  font-size: 0.76rem;
+  font-weight: 780;
+  letter-spacing: 0.13em;
+  margin: 0 0 10px;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  font-size: clamp(2.2rem, 5vw, 4rem);
+  letter-spacing: -0.045em;
+  line-height: 1.03;
+  margin-bottom: 20px;
+}
+
+h2 {
+  letter-spacing: -0.025em;
+}
+
+.hero > p:last-child,
+.plan-card p,
+.success-card > p,
+.account-card > p,
+.dialog-summary,
+.timing-panel p {
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.interval-toggle {
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  display: flex;
+  gap: 4px;
+  margin: 0 auto 30px;
+  padding: 4px;
+  width: max-content;
+}
+
+.interval-toggle button {
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  font-weight: 700;
+  padding: 9px 18px;
+}
+
+.interval-toggle button.active {
+  background: var(--surface);
+  box-shadow: 0 2px 8px rgba(20, 32, 51, 0.1);
+  color: var(--text);
+}
+
+.plan-grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.plan-card,
+.account-card,
+.entitlement-card,
+.state-card,
+.success-card,
+.pending-banner,
+.entitlements-section {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: 0 12px 35px rgba(28, 43, 70, 0.06);
+}
+
+.plan-card {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  min-height: 500px;
+  padding: 28px;
+}
+
+.plan-card h2 {
+  font-size: 1.6rem;
+  margin-bottom: 8px;
+}
+
+.price-block {
+  min-height: 103px;
+}
+
+.price-block strong {
+  display: inline-block;
+  font-size: 2.35rem;
+  letter-spacing: -0.045em;
+}
+
+.price-block > span {
+  color: var(--muted);
+}
+
+.price-block small {
+  color: var(--muted);
+  display: block;
+  margin-top: 5px;
+}
+
+.price-block .saving {
+  color: var(--success);
+  font-weight: 750;
+}
+
+.entitlement-list {
+  color: var(--muted);
+  display: grid;
+  flex: 1;
+  gap: 12px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.entitlement-list li {
+  line-height: 1.45;
+}
+
+.entitlement-list span {
+  color: var(--success);
+  font-weight: 800;
+  margin-right: 8px;
+}
+
+.button {
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  cursor: pointer;
+  display: inline-flex;
+  font-weight: 720;
+  justify-content: center;
+  min-height: 44px;
+  padding: 10px 18px;
+}
+
+.button.primary {
+  background: var(--brand);
+  color: white;
+}
+
+.button.primary:hover:not(:disabled) {
+  background: var(--brand-dark);
+}
+
+.button.secondary {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--text);
+}
+
+.button.ghost {
+  background: transparent;
+  color: var(--muted);
+}
+
+.button.full {
+  width: 100%;
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.success-banner,
+.inline-error {
+  border-radius: 10px;
+  margin: 0 auto 20px;
+  max-width: 760px;
+  padding: 12px 16px;
+}
+
+.success-banner {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.inline-error {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.dialog-backdrop {
+  align-items: center;
+  background: rgba(14, 22, 37, 0.58);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 20px;
+  position: fixed;
+  z-index: 50;
+}
+
+.dialog {
+  background: var(--surface);
+  border-radius: 18px;
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.25);
+  max-height: calc(100vh - 40px);
+  max-width: 620px;
+  overflow-y: auto;
+  padding: 30px;
+  width: 100%;
+}
+
+.dialog h2 {
+  font-size: 1.75rem;
+  margin-bottom: 8px;
+}
+
+.timing-panel {
+  background: var(--warning-soft);
+  border: 1px solid #edd49e;
+  border-radius: 12px;
+  margin-block: 20px;
+  padding: 16px;
+}
+
+.timing-panel.timing-immediate {
+  background: #eef3ff;
+  border-color: #c5d3f4;
+}
+
+.timing-panel p {
+  margin: 7px 0 0;
+}
+
+.preview-facts,
+.fact-list {
+  margin: 0;
+}
+
+.preview-facts {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.preview-facts div,
+.fact-list div {
+  border-top: 1px solid var(--line);
+  padding-block: 12px;
+}
+
+dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+dd {
+  font-weight: 680;
+  margin: 4px 0 0;
+}
+
+.confirmation {
+  align-items: flex-start;
+  background: var(--surface-soft);
+  border-radius: 10px;
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  line-height: 1.45;
+  margin-top: 20px;
+  padding: 14px;
+}
+
+.confirmation input {
+  height: 18px;
+  margin-top: 1px;
+  width: 18px;
+}
+
+.dialog-actions,
+.account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 22px;
+}
+
+.portal-scope-note {
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin: 12px 0 0 auto;
+  max-width: 620px;
+  text-align: right;
+}
+
+.account-grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: 1.1fr 0.9fr;
+}
+
+.account-card {
+  padding: 28px;
+}
+
+.account-card h2 {
+  font-size: 2rem;
+}
+
+.credit-balance {
+  color: var(--text) !important;
+  font-size: 3.8rem;
+  font-weight: 780;
+  letter-spacing: -0.06em;
+  line-height: 1;
+  margin-bottom: 5px;
+}
+
+.status {
+  border-radius: 999px;
+  display: inline-block;
+  font-size: 0.78rem;
+  padding: 4px 9px;
+}
+
+.status-active {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.status-past_due {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.pending-banner {
+  background: var(--warning-soft);
+  border-color: #edd49e;
+  margin-bottom: 20px;
+  padding: 22px;
+}
+
+.pending-banner h2 {
+  margin-bottom: 8px;
+}
+
+.pending-banner p:last-child {
+  color: #684a15;
+  margin-bottom: 0;
+}
+
+.entitlements-section {
+  margin-top: 18px;
+  padding: 28px;
+}
+
+.entitlement-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  margin-top: 18px;
+}
+
+.entitlement-card {
+  background: var(--surface-soft);
+  box-shadow: none;
+  padding: 18px;
+}
+
+.entitlement-card p {
+  color: var(--muted);
+  margin-bottom: 7px;
+}
+
+.entitlement-card strong,
+.entitlement-card small,
+.entitlement-card span {
+  display: block;
+}
+
+.entitlement-card small {
+  color: var(--muted);
+  margin-top: 7px;
+}
+
+.state-card,
+.success-card {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  margin: 30px auto;
+  max-width: 700px;
+  padding: 44px;
+  text-align: center;
+}
+
+.state-card.error-card {
+  align-items: flex-start;
+  text-align: left;
+}
+
+.spinner {
+  animation: spin 0.8s linear infinite;
+  border: 3px solid var(--line);
+  border-radius: 50%;
+  border-top-color: var(--brand);
+  height: 30px;
+  width: 30px;
+}
+
+.success-mark {
+  align-items: center;
+  background: var(--warning-soft);
+  border-radius: 50%;
+  color: var(--warning);
+  display: flex;
+  font-size: 1.7rem;
+  font-weight: 800;
+  height: 58px;
+  justify-content: center;
+  width: 58px;
+}
+
+.success-mark.confirmed {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.success-mark.timed_out {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.success-card h1 {
+  font-size: 2.3rem;
+  margin-bottom: 0;
+}
+
+.success-card .account-actions {
+  justify-content: center;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+  }
+
+  .spinner {
+    animation: none;
+  }
+}
+
+@media (max-width: 850px) {
+  .plan-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .plan-card {
+    min-height: 0;
+  }
+
+  .account-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .shell {
+    padding-inline: 16px;
+  }
+
+  .page {
+    padding-block: 42px 60px;
+  }
+
+  .header-inner nav {
+    gap: 14px;
+  }
+
+  .brand {
+    font-size: 0.9rem;
+  }
+
+  .dialog {
+    padding: 22px;
+  }
+
+  .preview-facts {
+    grid-template-columns: 1fr;
+  }
+}

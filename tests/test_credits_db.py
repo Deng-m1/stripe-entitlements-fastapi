@@ -91,6 +91,7 @@ async def test_refund_cannot_cross_a_new_grant_epoch(
             invoice_id="in_epoch_2",
             event_id="evt_epoch_2",
             created=1_800_000_100,
+            period_start=1_802_592_000,
         )
     )
     result = await service.refund("old-job")
@@ -105,6 +106,24 @@ async def test_past_due_account_cannot_consume_credits(
     await processor.process(payment_failed(account_id, created=101))
     with pytest.raises(CreditsUnavailableError):
         await CreditService(pool).charge(account_id, 1, "past-due-job")
+
+
+@pytest.mark.parametrize("status", ["none", "canceled"])
+async def test_non_active_status_blocks_even_with_a_future_credit_window(
+    status: str, pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """update billing_accounts set subscription_status=$2,credits_balance=10,
+                   entitlement_revoked=false,credit_expires_at=now()+interval '1 hour'
+                 where id=$1::uuid""",
+            account_id,
+            status,
+        )
+
+    with pytest.raises(CreditsUnavailableError, match="not active"):
+        await CreditService(pool).charge(account_id, 1, f"job-{status}")
 
 
 async def test_idempotency_key_parameter_mismatch_is_rejected(
