@@ -34,6 +34,7 @@ class StaticAuth:
 
 class FakeBillingGateway:
     def __init__(self) -> None:
+        self.secret_key = "sk_test_fake_billing_gateway"
         self.checkout_kwargs = None
         self.portal_keys: list[str] = []
         self.apply_calls = 0
@@ -100,9 +101,16 @@ def _settings() -> Settings:
         database_url=TEST_DSN,
         stripe_secret_key="sk_test_dummy",
         stripe_webhook_secret="whsec_local_test",
+        stripe_webhook_api_version="2026-06-24.dahlia",
         stripe_portal_configuration_id="bpc_test",
         plan_catalog_path=str(Path(__file__).parents[1] / "plans.toml"),
     )
+
+
+def test_injected_gateway_mode_must_match_settings() -> None:
+    settings = _settings().model_copy(update={"stripe_secret_key": "sk_live_dummy"})
+    with pytest.raises(ValueError, match="modes do not match"):
+        create_app(settings, database=Database(TEST_DSN), gateway=FakeBillingGateway())  # type: ignore[arg-type]
 
 
 async def test_default_auth_is_fail_closed(postgres_container: None) -> None:
@@ -113,6 +121,50 @@ async def test_default_auth_is_fail_closed(postgres_container: None) -> None:
         ) as client:
             response = await client.get("/api/catalog")
     assert response.status_code == 401
+
+
+async def test_checkout_test_mode_requirement_rejects_live_before_account_write(
+    postgres_container: None,
+) -> None:
+    settings = _settings().model_copy(update={"stripe_secret_key": "sk_live_dummy"})
+    gateway = FakeBillingGateway()
+    gateway.secret_key = "sk_live_fake_billing_gateway"
+    database = Database(TEST_DSN)
+    app = create_app(
+        settings,
+        database=database,
+        gateway=gateway,  # type: ignore[arg-type]
+        auth_adapter=StaticAuth(),
+    )
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            health = await client.get("/health")
+            response = await client.post(
+                "/api/checkout",
+                headers={
+                    "Authorization": "Bearer ignored",
+                    "Idempotency-Key": "live-refusal",
+                    "X-Stripe-Mode-Requirement": "test",
+                },
+                json={
+                    "plan_key": "starter",
+                    "interval": "month",
+                    "success_url": "http://localhost:3000/billing/success",
+                    "cancel_url": "http://localhost:3000/pricing",
+                },
+            )
+        async with database.require_pool().acquire() as conn:
+            account_count = await conn.fetchval(
+                "select count(*) from billing_accounts where external_ref='api-user'"
+            )
+
+    assert health.json()["stripe_mode"] == "live"
+    assert health.headers["cache-control"] == "no-store"
+    assert response.status_code == 409
+    assert account_count == 0
+    assert gateway.checkout_kwargs is None
 
 
 async def test_http_contract_catalog_account_checkout_and_portal(
@@ -131,6 +183,7 @@ async def test_http_contract_catalog_account_checkout_and_portal(
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
+            health = await client.get("/health")
             catalog = await client.get("/api/catalog", headers=headers)
             account = await client.get("/api/account", headers=headers)
             checkout = await client.post(
@@ -167,6 +220,7 @@ async def test_http_contract_catalog_account_checkout_and_portal(
                 headers={**headers, "Idempotency-Key": "portal-1"},
                 json={"return_url": "http://localhost:3000/account"},
             )
+    assert health.json() == {"ok": True, "database": True, "stripe_mode": "test"}
     assert catalog.status_code == 200
     first = catalog.json()["plans"][0]
     assert set(first) >= {"name", "description", "display_order", "prices", "entitlements"}

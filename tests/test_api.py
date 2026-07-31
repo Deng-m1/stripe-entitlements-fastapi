@@ -29,6 +29,7 @@ async def test_webhook_rejects_invalid_signature(postgres_container: None) -> No
         database_url=TEST_DSN,
         stripe_secret_key="sk_test_dummy",
         stripe_webhook_secret="whsec_local_test",
+        stripe_webhook_api_version="2026-06-24.dahlia",
         plan_catalog_path=str(root / "plans.toml"),
     )
     app = create_app(settings, database=Database(TEST_DSN))
@@ -50,6 +51,7 @@ async def test_valid_raw_signature_reaches_processor(postgres_container: None) -
         database_url=TEST_DSN,
         stripe_secret_key="sk_test_dummy",
         stripe_webhook_secret=secret,
+        stripe_webhook_api_version="2026-06-24.dahlia",
         plan_catalog_path=str(root / "plans.toml"),
     )
     database = Database(TEST_DSN)

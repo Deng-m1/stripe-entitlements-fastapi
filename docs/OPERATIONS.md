@@ -101,14 +101,17 @@ period-end cancellation.
 Track separately:
 
 - `STRIPE_API_VERSION` for outbound SDK requests;
-- `STRIPE_WEBHOOK_API_VERSION` for top-level Event `api_version`.
+- required `STRIPE_WEBHOOK_API_VERSION` for the signed endpoint payload's top-level
+  Event `api_version`; there is intentionally no outbound-request-version default.
 
-The current request code targets `2026-06-24.dahlia`. The currently observed test Events
-used `2025-12-15.clover`. Do not copy the request value into the webhook setting without
-inspecting the endpoint's real Event snapshot. A mismatch creates a durable incident and
-does not apply entitlements.
+The current request code targets `2026-06-24.dahlia`. The test account's Event API
+retrieval view reported Clover while a separately pinned endpoint delivered real signed
+Dahlia payloads. Neither substitutes for inspecting the deployed endpoint contract and
+its signed delivery. A mismatch creates a durable incident and does not apply
+entitlements.
 
-Record both values in every release and alert on `webhook_contract_mismatch`.
+Record request, signed endpoint payload, and Event API retrieval views separately in
+every release and alert on `webhook_contract_mismatch`.
 
 ## Backup and restore
 

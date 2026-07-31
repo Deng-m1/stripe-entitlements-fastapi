@@ -147,14 +147,17 @@ are documented in [web/README.md](web/README.md).
   `2026-06-24.dahlia`.
 - Each webhook Event has its own snapshot `api_version`, determined by the
   Stripe webhook endpoint/account contract. `STRIPE_WEBHOOK_API_VERSION` must
-  equal that actual Event value.
+  equal that actual Event value and is a required startup setting; it deliberately
+  has no fallback to `STRIPE_API_VERSION`.
 
 The request version does not rewrite webhook payloads. On the currently observed
-test account, real Events reported `2025-12-15.clover`; that is the observed
-webhook snapshot, while outbound requests used Dahlia. A mismatch is recorded as
-`webhook_contract_mismatch` and ignored fail-closed. This repository does not
-claim that real `2026-06-24.dahlia` webhook Events were verified. See
-[Testing](docs/TESTING.md) and [Stripe CLI](docs/STRIPE_CLI.md).
+test account, Event API retrievals reported `2025-12-15.clover`; an isolated real
+endpoint pinned to Dahlia delivered signed `2026-06-24.dahlia` payloads for the same
+browser lifecycle. A mismatch is recorded as `webhook_contract_mismatch` and ignored
+fail-closed. This repository does not infer request, Event API view, or endpoint payload
+versions from one another. See [Testing](docs/TESTING.md),
+[Stripe CLI](docs/STRIPE_CLI.md), and
+[Webhook verification](docs/WEBHOOK_VERIFICATION.md).
 
 ## Quick start
 
@@ -208,10 +211,14 @@ entitlement lifecycle test.
 
 Latest verified 2026-07-31 baseline:
 
-- 163 local/backend tests passed;
-- 4 opt-in real Stripe test-mode tests passed;
+- 167 local/backend tests passed;
+- 6 opt-in real Stripe test-mode tests passed;
 - 47 frontend tests passed, followed by a successful production build;
 - frontend production-dependency audit reported zero vulnerabilities.
+- the full npm audit still reports 9 high-severity development-tooling findings in the
+  ESLint/minimatch tree; npm offers only the breaking ESLint 10 upgrade.
+- 1 real-browser decline → 3DS → signed-webhook lifecycle passed, including
+  PostgreSQL projection and Stripe Event identity/mode verification.
 
 Default CI:
 
@@ -245,12 +252,27 @@ The opt-in `real_stripe` suite rejects live keys. It currently proves:
   then projected from its separately versioned paid Event to Pro/1,000 credits;
 - outbound Dahlia requests for a real Starter Yearly → Pro Yearly change,
   deferred through a two-phase Subscription Schedule at the annual boundary;
-- object cleanup scoped to that run;
-- a Test Clock can be created, advanced one hour, return to `ready`, and deleted.
+- authentication-required and attachable customer-charge-failure plan changes,
+  both projecting a real `invoice.payment_failed` while preserving the old paid
+  entitlement behind a real `pending_update`;
+- a Test Clock annual lifecycle covering slot 1, +32-day slot 2, one current-slot
+  grant after a downtime jump, and a real next-year renewal invoice resetting the
+  new funding lineage to slot 1 with active/non-revoked expiry checks at every phase;
+- idempotent object creation plus cleanup that fails the test on any deletion or
+  run-marked inventory error;
+- direct Event polling and PostgreSQL projection for those networked API cases.
 
-The Test Clock test itself does **not** prove renewal, annual grant,
-cancellation, or decline lifecycles. The two plan-change cases above are direct
-test-mode API/Event tests, not Test Clock or webhook-delivery tests.
+The Test Clock and plan-change cases do not prove signed endpoint delivery. The
+separate opt-in browser runner creates a temporary test endpoint and exercises a
+decline → 3DS → signed webhook → UI projection lifecycle. Use
+`scripts/run_test_clock_e2e.sh` for the isolated time-travel gate and
+`scripts/run_browser_e2e.sh` for browser/transport evidence; a skipped or partially
+completed run is not evidence.
+
+The latest browser run handled the two required Events, projected
+Starter/Monthly/300, verified a Dahlia signed endpoint payload independently from the
+Clover Event API retrieval view, and returned the temporary endpoint inventory to zero.
+This remains test-mode evidence; no live-production payload is claimed.
 
 Manual test-mode observations from 2026-07-31 additionally covered:
 
@@ -302,6 +324,8 @@ Use the [release checklist](.github/RELEASE_CHECKLIST.md) and
 - `migrations/`: ordered PostgreSQL schema;
 - `plans.toml`: stable plan identity, prices and entitlements;
 - `scripts/bootstrap_stripe.py`: catalog and safe Portal bootstrap/verification;
+- `scripts/run_test_clock_e2e.sh`: guarded real annual renewal/time-travel gate;
+- `scripts/run_browser_e2e.sh`: isolated real browser and signed-webhook gate;
 - `tests/`: pure, PostgreSQL race/API and opt-in real test-mode suites;
 - `web/`: Next.js reference UI and API adapter;
 - `docs/`: invariant, architecture, testing, operations and release references;

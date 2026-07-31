@@ -255,6 +255,25 @@ npm test
 npm run build
 ```
 
+The real hosted-Checkout browser gate is deliberately separate from default tests. It
+requires a fresh account, real Stripe test mode, signed webhook delivery, and explicit
+opt-in:
+
+```bash
+E2E_RUN_REAL_STRIPE=1 \
+E2E_STRIPE_MODE=test \
+E2E_BASE_URL=http://127.0.0.1:3000 \
+E2E_BACKEND_URL=http://127.0.0.1:8000 \
+E2E_DATABASE_URL="$TEST_DATABASE_READ_ONLY_URL" \
+E2E_EXTERNAL_REF=browser-e2e-subject \
+npm run test:e2e:stripe
+```
+
+It submits a real decline, then completes test 3DS in the same Checkout Session, and
+accepts success only after the browser observes the webhook-projected account. It stops
+before card entry unless the hosted Session is `cs_test_`. Prefer the isolated full-stack
+runner and follow all prerequisites in [the browser E2E runbook](../docs/BROWSER_E2E.md).
+
 The verified 2026-07-31 RTL/Vitest run contains 47 passing tests covering annual
 pricing math, immediate and period-end copy, Checkout, Portal, pending changes,
 redirect allowlisting, missing SCA configuration, and webhook polling.

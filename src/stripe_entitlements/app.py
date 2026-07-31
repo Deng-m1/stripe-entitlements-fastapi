@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 from urllib.parse import parse_qsl, urlsplit
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -92,6 +92,15 @@ def create_app(
         checkout_cancel_url=settings.checkout_cancel_url,
         portal_return_url=settings.portal_return_url,
     )
+    gateway_secret_key = getattr(gateway, "secret_key", "")
+    if not isinstance(gateway_secret_key, str) or not gateway_secret_key.startswith(
+        ("sk_test_", "sk_live_")
+    ):
+        raise ValueError("billing gateway must expose an sk_test_ or sk_live_ secret key")
+    settings_test_mode = settings.stripe_secret_key.startswith("sk_test_")
+    gateway_test_mode = gateway_secret_key.startswith("sk_test_")
+    if settings_test_mode != gateway_test_mode:
+        raise ValueError("settings and billing gateway Stripe modes do not match")
     if auth_adapter is None:
         if (
             settings.app_env == "development"
@@ -118,7 +127,7 @@ def create_app(
             database.require_pool(),
             catalog,
             settings.product_line,
-            expected_livemode=settings.stripe_secret_key.startswith("sk_live_"),
+            expected_livemode=not gateway_test_mode,
             expected_api_version=settings.stripe_webhook_api_version,
         )
         app.state.checkout = CheckoutCoordinator(database.require_pool())
@@ -139,7 +148,12 @@ def create_app(
         allow_origins=[origin for origin in origins if origin],
         allow_credentials=True,
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "Idempotency-Key",
+            "X-Stripe-Mode-Requirement",
+        ],
     )
 
     async def current_identity(request: Request) -> AuthenticatedIdentity:
@@ -287,10 +301,15 @@ def create_app(
         return HTTPException(502, "Stripe plan change failed; retry the same request")
 
     @app.get("/health")
-    async def health() -> dict[str, object]:
+    async def health(response: Response) -> dict[str, object]:
+        response.headers["Cache-Control"] = "no-store"
         async with database.require_pool().acquire() as conn:
             await conn.fetchval("select 1")
-        return {"ok": True, "database": True}
+        return {
+            "ok": True,
+            "database": True,
+            "stripe_mode": ("test" if gateway_test_mode else "live"),
+        }
 
     @app.get("/api/catalog")
     @app.get("/billing/catalog", include_in_schema=False)
@@ -330,10 +349,17 @@ def create_app(
     @app.post("/billing/checkout", include_in_schema=False)
     async def create_checkout(
         body: CheckoutRequest,
-        account: Account,
         identity: Identity,
         idempotency_key: str = Header(alias="Idempotency-Key"),
+        stripe_mode_requirement: Literal["test"] | None = Header(
+            default=None, alias="X-Stripe-Mode-Requirement"
+        ),
     ) -> dict[str, str]:
+        if stripe_mode_requirement == "test" and not gateway_test_mode:
+            raise HTTPException(
+                409, "billing backend is not in the required Stripe test mode"
+            )
+        account = await database.account_for_external_ref(identity.external_ref)
         request_key = require_idempotency(idempotency_key)
         require_checkout_success_url(
             body.success_url, plan_key=body.plan_key, interval=body.interval

@@ -16,8 +16,11 @@
   funded full-price period; every annual-origin change is period-end.
 - Next.js pricing/account/payment-recovery reference with webhook-authoritative
   success polling.
-- Disposable PostgreSQL race suite; real Stripe test-mode paid/refund, full-price
-  monthly upgrade and annual Schedule flows; a one-hour Test Clock readiness
-  smoke; and Stripe CLI forwarding guidance.
-- Verified baseline: 163 local/backend tests, 4 real Stripe test-mode tests, and
-  47 frontend tests plus production build/audit.
+- Disposable PostgreSQL race suite plus six real Stripe test-mode cases covering
+  paid/refund projection, full-price monthly upgrade, failed payment/SCA retention,
+  annual Schedule creation, and a full Test Clock cross-year renewal lifecycle.
+- Opt-in Playwright decline → 3DS → signed-webhook → UI projection gate with a
+  temporary version-pinned endpoint, strict ownership cleanup, and separate request,
+  signed-payload, and Event API version evidence.
+- Verified baseline: 167 local/backend tests, 6 real Stripe test-mode tests, 47
+  frontend tests, 1 real-browser lifecycle, and a successful production build/audit.

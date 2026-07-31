@@ -55,6 +55,69 @@ async def _ledger(pool: asyncpg.Pool, account_id: str) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+@pytest.mark.parametrize(
+    ("mismatch", "expected_reason"),
+    [
+        ("livemode", "event livemode does not match the configured Stripe key mode"),
+        ("api_version", "event API version does not match the pinned webhook endpoint"),
+    ],
+)
+async def test_webhook_contract_mismatch_is_durable_and_has_no_business_effect(
+    mismatch: str,
+    expected_reason: str,
+    processor: EventProcessor,
+    pool: asyncpg.Pool,
+    make_account,
+) -> None:
+    account_id = await make_account(customer=None, subscription=None)
+    payload = paid_invoice(
+        account_id,
+        invoice_id=f"in_contract_{mismatch}",
+        event_id=f"evt_contract_{mismatch}",
+    )
+    if mismatch == "livemode":
+        payload["livemode"] = True
+    else:
+        payload["api_version"] = "2025-12-15.clover"
+
+    result = await processor.process(payload)
+    duplicate = await processor.process(payload)
+
+    assert (result.outcome, result.reason) == ("ignored", expected_reason)
+    assert duplicate.outcome == "duplicate"
+    async with pool.acquire() as conn:
+        account = await conn.fetchrow(
+            """select plan_key,plan_interval,subscription_status,credits_balance
+                 from billing_accounts where id=$1::uuid""",
+            account_id,
+        )
+        inbox = await conn.fetchrow(
+            """select outcome,reason,processed_at from stripe_webhook_events
+                 where id=$1""",
+            payload["id"],
+        )
+        incident = await conn.fetchrow(
+            """select kind,seen_count,detail from billing_incidents
+                 where stripe_event_id=$1""",
+            payload["id"],
+        )
+        ledger_count = await conn.fetchval(
+            "select count(*) from credit_ledger where account_id=$1::uuid", account_id
+        )
+        invoice_count = await conn.fetchval(
+            "select count(*) from stripe_invoice_state where account_id=$1::uuid", account_id
+        )
+
+    assert account is not None and tuple(account) == ("free", None, "none", 0)
+    assert inbox is not None and tuple(inbox)[:2] == ("ignored", expected_reason)
+    assert inbox["processed_at"] is not None
+    assert incident is not None
+    assert (incident["kind"], incident["seen_count"]) == ("webhook_contract_mismatch", 1)
+    assert incident["detail"]["event_api_version"] == payload["api_version"]
+    assert ledger_count == 0
+    assert invoice_count == 0
+
+
 async def test_paid_invoice_grants_from_invoice_snapshot(
     processor: EventProcessor, pool: asyncpg.Pool, make_account
 ) -> None:

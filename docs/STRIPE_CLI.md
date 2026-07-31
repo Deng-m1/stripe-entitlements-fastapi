@@ -26,16 +26,25 @@ Do not reuse one label for two Stripe contracts:
 - Webhook payloads contain Event `api_version` from the endpoint/account snapshot.
   `STRIPE_WEBHOOK_API_VERSION` must equal that actual value.
 
-The currently observed test-account Events reported `2025-12-15.clover`. This does not
-change the request version, and the request version does not transform those Events.
-Inspect an actual Event before setting the webhook variable:
+The current test account's Event API retrieval view reported `2025-12-15.clover`, while
+an isolated endpoint pinned to Dahlia delivered signed Dahlia payloads for the same
+browser lifecycle. Neither value changes the outbound request version. You may inspect
+the Event API view privately, but do **not** use it to configure the webhook processor:
 
 ```bash
 stripe events list --limit 5
 stripe events retrieve evt_REPLACE_ME
 ```
 
-Read the top-level `api_version` without copying the full payload into logs or issues.
+Retrieve the exact Webhook Endpoint and inspect the application-stored, signature-
+verified payload from that delivery instead:
+
+```bash
+stripe webhook_endpoints retrieve we_REPLACE_ME
+```
+
+Set `STRIPE_WEBHOOK_API_VERSION` only from the endpoint contract plus its actually
+delivered signed payload. Do not copy full Event or endpoint output into logs or issues.
 The processor stores a mismatch as `webhook_contract_mismatch` and does not apply it.
 
 ## Local forwarding
@@ -58,6 +67,15 @@ stripe trigger invoice.paid
 
 The canned object has no repository account/intent. A durable unknown-account incident is
 expected. This proves forwarding/signature transport, not entitlement correctness.
+
+For a real browser decline → 3DS → signed webhook → account-projection lifecycle, use
+[the isolated Playwright runbook](BROWSER_E2E.md). Unlike `stripe trigger`, that test
+creates a real Checkout Session bound to the repository account and verifies its actual
+business projection. It still runs only in test mode.
+
+Use [the webhook verification runbook](WEBHOOK_VERIFICATION.md) to keep endpoint,
+signed-delivery and business-projection evidence separate, including the additional
+requirements for a real live-production payload check.
 
 ## Inspect and resend safely
 
@@ -90,31 +108,60 @@ bypassed.
 
 ## Test Clocks: exact boundary
 
-Test Clocks are useful for renewal and boundary testing, but the current automated real
-test only:
+The automated real suite owns a complete isolated annual lifecycle. Prerequisites are a
+local disposable PostgreSQL/Docker environment, outbound Stripe access, and a test-mode
+secret supplied through the environment. Run the guard before pytest:
 
-1. creates an isolated clock;
-2. advances it by one hour;
-3. polls until `ready` at the target time;
-4. deletes it.
+```bash
+case "$STRIPE_SECRET_KEY" in
+  sk_test_*) ;;
+  *) echo "refusing non-test key"; exit 1 ;;
+esac
 
-It does not attach a full subscription lifecycle and does not verify renewals, annual
-slots, cancellation, declines, plan transitions, Schedules or webhook order. Do not cite
-it as such.
+scripts/run_test_clock_e2e.sh
+```
 
-For future manual/Test Clock expansion, create the Customer on the clock before attaching
-payment methods/subscriptions, advance in bounded steps, wait for `ready` every time, and
-assert the resulting webhook-projected account—not just Stripe object state.
+The wrapper refuses missing, malformed and live keys before pytest can turn an absent
+credential into a successful-looking skip. The equivalent lower-level pytest selector
+is recorded in `scripts/run_test_clock_e2e.sh`.
+
+The test performs these bounded steps:
+
+1. creates a unique run ID, Test Clock, Product, annual Price and Customer on that clock;
+2. creates a paid Starter Yearly Subscription and processes its real `invoice.paid`
+   Event into annual grant slot 1;
+3. advances to initial frozen time +32 days, waits for `ready`, verifies the remote
+   Subscription snapshot, calls `AnnualGrantService` for slot 2, and verifies active,
+   non-revoked credits/expiry;
+4. advances directly to approximately +190 days and proves the worker grants only the
+   current calculated slot rather than backfilling every missed month;
+5. advances to the original `period_end + 1 hour`, waits for the paid renewal Invoice,
+   processes its real `invoice.paid` Event, and verifies a new funding invoice, slot 1,
+   300 credits and a later enforceable entitlement period;
+6. deletes/deactivates only run-marked objects, sweeps unknown create outcomes, fails on
+   any cleanup error, and deletes the Test Clock last.
+
+All active API requests are pinned to Dahlia. Event objects retain their independently
+observed Clover snapshot, and the processor is configured from that Event value rather
+than pretending the request pin rewrites it.
+
+This proves Stripe Test Clock advancement, annual worker behavior, renewal Event shape
+and PostgreSQL projection. It does not prove signed webhook delivery, arbitrary delivery
+order, live-mode behavior, cancellation, tax/discount configurations, or scheduler
+availability. Event polling is evidence of Stripe object state, not endpoint transport.
 
 ## Manual plan-transition evidence
 
-The automated real suite now covers a full-price/no-proration monthly upgrade
-through paid Event projection and an annual-origin two-phase Schedule. The
-remaining 2026-07-31 manual evidence set contains:
+The automated real suite covers a full-price/no-proration monthly upgrade through paid
+Event projection, an annual-origin two-phase Schedule, and repeatable
+authentication-required/customer-charge-failure pending updates whose real
+`invoice.payment_failed` Events preserve the old entitlement. The remaining
+2026-07-31 manual evidence set contains:
 
 - `PY → UM` invoice preview at negative $204, which remains period-end;
-- a declined immediate change with old SKU retained, Subscription still active, open
-  latest Invoice, hosted recovery URL and confirmation secret.
+- no separate failed-immediate gap. A direct `pm_card_chargeDeclined` Payment Method is
+  rejected during attachment and is not equivalent to a stored-card charge failure;
+  automation uses the attachable `pm_card_chargeCustomerFail` fixture for that boundary.
 
 These observations are not CLI commands to run blindly and are not part of automated CI.
 Use isolated test customers and record both request/Event versions, starting/target
