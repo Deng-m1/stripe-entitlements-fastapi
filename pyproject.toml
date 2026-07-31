@@ -1,0 +1,72 @@
+[project]
+name = "stripe-entitlements-fastapi"
+version = "0.1.0"
+description = "Race-safe Stripe subscriptions and credit entitlements with FastAPI and PostgreSQL"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+authors = [{ name = "Tosea" }]
+keywords = [
+  "stripe",
+  "fastapi",
+  "postgresql",
+  "billing",
+  "subscriptions",
+  "webhooks",
+  "idempotency",
+]
+dependencies = [
+  "asyncpg>=0.30.0,<1",
+  "fastapi>=0.115.0,<1",
+  "pydantic-settings>=2.7.0,<3",
+  "stripe>=15.0.0,<16",
+  "uvicorn[standard]>=0.34.0,<1",
+]
+
+[dependency-groups]
+dev = [
+  "httpx>=0.28.0,<1",
+  "mypy>=1.15.0,<2",
+  "pytest>=8.3.0,<10",
+  "pytest-asyncio>=0.25.0,<2",
+  "ruff>=0.11.0,<1",
+]
+
+[project.urls]
+Homepage = "https://github.com/FromCSUZhou/stripe-entitlements-fastapi"
+Repository = "https://github.com/FromCSUZhou/stripe-entitlements-fastapi"
+Issues = "https://github.com/FromCSUZhou/stripe-entitlements-fastapi/issues"
+
+[project.scripts]
+stripe-entitlements = "stripe_entitlements.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stripe_entitlements"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers --tb=short"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+  "real_stripe: calls the real Stripe test-mode API and requires STRIPE_SECRET_KEY",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["stripe_entitlements"]
+
+[[tool.mypy.overrides]]
+module = ["asyncpg", "asyncpg.*", "stripe", "stripe.*"]
+ignore_missing_imports = true

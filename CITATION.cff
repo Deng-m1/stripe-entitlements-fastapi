@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: If this reference implementation helps your work, cite the repository.
+title: Stripe Entitlements for FastAPI
+type: software
+authors:
+  - name: Tosea
+repository-code: https://github.com/FromCSUZhou/stripe-entitlements-fastapi
+license: Apache-2.0
+version: 0.1.0
+date-released: 2026-07-31

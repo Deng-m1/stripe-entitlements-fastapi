@@ -1,0 +1,16 @@
+# lookup keys are generated as: <LOOKUP_PREFIX>_<plan>_<month|year>
+
+[plans.starter]
+monthly_credits = 300
+month_usd = 19
+year_usd = 137
+
+[plans.pro]
+monthly_credits = 1000
+month_usd = 49
+year_usd = 353
+
+[plans.ultra]
+monthly_credits = 4000
+month_usd = 149
+year_usd = 1073

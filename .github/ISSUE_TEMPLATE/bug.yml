@@ -1,0 +1,34 @@
+name: Bug report
+description: Report a reproducible correctness or integration defect
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include keys, signing secrets, customer data, or raw production events.
+  - type: textarea
+    id: invariant
+    attributes:
+      label: Violated invariant
+      description: Which documented guarantee did not hold?
+    validations:
+      required: true
+  - type: textarea
+    id: sequence
+    attributes:
+      label: Minimal event sequence
+      description: Use redacted synthetic IDs and include ordering/duplicate timing.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual database state
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Project, Stripe API, Python, and PostgreSQL versions
+    validations:
+      required: true
