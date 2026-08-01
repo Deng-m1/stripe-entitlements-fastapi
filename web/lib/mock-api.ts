@@ -6,127 +6,22 @@ import type {
   CatalogResponse,
   ChangePreview,
   ChangePreviewRequest,
-  Entitlement,
 } from "@/lib/types";
+import {
+  referenceCatalog,
+  referenceEntitlements,
+  referencePlans,
+} from "@/lib/reference-catalog";
 
-const featureLabels: Record<string, string> = {
-  pdf_to_ppt: "PDF to PowerPoint",
-  image_to_ppt: "Image to PowerPoint",
-  batch_conversion: "Batch conversion",
-  api_access: "API access",
-  priority_queue: "Priority queue",
-};
-
-const limitLabels: Record<string, { label: string; unit?: string }> = {
-  max_file_mb: { label: "Maximum file size", unit: "MB" },
-  max_pages_per_job: { label: "Maximum pages per job", unit: "pages" },
-  concurrent_jobs: { label: "Concurrent jobs", unit: "jobs" },
-  api_keys: { label: "API keys", unit: "keys" },
-};
-
-function planEntitlements(
-  monthlyCredits: number,
-  features: string[],
-  limits: Record<string, number>,
-): Entitlement[] {
-  return [
-    {
-      key: "monthly_credits",
-      label: "Credits per monthly grant",
-      value: monthlyCredits,
-      unit: "credits",
-    },
-    ...features.map((key) => ({
-      key,
-      label: featureLabels[key] ?? key,
-      value: true,
-    })),
-    ...Object.entries(limits).map(([key, value]) => ({
-      key,
-      label: limitLabels[key]?.label ?? key,
-      value,
-      unit: limitLabels[key]?.unit,
-    })),
-  ];
-}
-
-const plans: CatalogPlan[] = [
-  {
-    key: "starter",
-    name: "Starter",
-    description: "For individuals with a steady monthly workload.",
-    display_order: 10,
-    prices: {
-      month: { currency: "USD", unit_amount: 1900, interval: "month" },
-      year: { currency: "USD", unit_amount: 13700, interval: "year" },
-    },
-    entitlements: planEntitlements(
-      300,
-      ["pdf_to_ppt", "image_to_ppt"],
-      {
-        max_file_mb: 30,
-        max_pages_per_job: 100,
-        concurrent_jobs: 1,
-        api_keys: 0,
-      },
-    ),
-  },
-  {
-    key: "pro",
-    name: "Pro",
-    description: "For growing teams that need a larger credit grant.",
-    display_order: 20,
-    prices: {
-      month: { currency: "USD", unit_amount: 4900, interval: "month" },
-      year: { currency: "USD", unit_amount: 35300, interval: "year" },
-    },
-    entitlements: planEntitlements(
-      1000,
-      ["pdf_to_ppt", "image_to_ppt", "batch_conversion", "api_access"],
-      {
-        max_file_mb: 100,
-        max_pages_per_job: 500,
-        concurrent_jobs: 5,
-        api_keys: 5,
-      },
-    ),
-  },
-  {
-    key: "ultra",
-    name: "Ultra",
-    description: "For high-volume product and operations workloads.",
-    display_order: 30,
-    prices: {
-      month: { currency: "USD", unit_amount: 14900, interval: "month" },
-      year: { currency: "USD", unit_amount: 107300, interval: "year" },
-    },
-    entitlements: planEntitlements(
-      4000,
-      [
-        "pdf_to_ppt",
-        "image_to_ppt",
-        "batch_conversion",
-        "api_access",
-        "priority_queue",
-      ],
-      {
-        max_file_mb: 250,
-        max_pages_per_job: 2000,
-        concurrent_jobs: 20,
-        api_keys: 25,
-      },
-    ),
-  },
-];
-
-const catalog: CatalogResponse = { plans };
+const plans = referencePlans;
+const catalog = referenceCatalog;
 
 function futureIso(days: number): string {
   return new Date(Date.now() + days * 86_400_000).toISOString();
 }
 
 function entitlementsFor(planKey: string) {
-  return plans.find((plan) => plan.key === planKey)?.entitlements ?? [];
+  return referenceEntitlements(planKey);
 }
 
 export function createMockBillingApi(

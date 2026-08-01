@@ -35,16 +35,20 @@ import type {
 interface PricingScreenProps {
   api?: BillingApi;
   billingRedirect?: Redirect;
+  initialCatalog?: CatalogResponse;
   internalRedirect?: Redirect;
 }
 
 export function PricingScreen({
   api = getBillingApi(),
   billingRedirect = browserBillingRedirect,
+  initialCatalog,
   internalRedirect = browserInternalRedirect,
 }: PricingScreenProps) {
   const [interval, setInterval] = useState<BillingInterval>("month");
-  const [catalog, setCatalog] = useState<CatalogResponse | null>(null);
+  const [catalog, setCatalog] = useState<CatalogResponse | null>(
+    initialCatalog ?? null,
+  );
   const [account, setAccount] = useState<AccountResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -175,10 +179,10 @@ export function PricingScreen({
     }
   }
 
-  if (error && (!catalog || !account)) {
+  if (error && !catalog) {
     return <ErrorState error={error} retry={() => void load()} />;
   }
-  if (!catalog || !account) return <LoadingState label="Loading plan catalog…" />;
+  if (!catalog) return <LoadingState label="Loading plan catalog…" />;
 
   const sortedPlans = [...catalog.plans].sort(
     (left, right) => left.display_order - right.display_order,
@@ -214,15 +218,29 @@ export function PricingScreen({
       </div>
 
       {message ? <p className="success-banner" role="status">{message}</p> : null}
-      {error ? <p className="inline-error" role="alert">{error}</p> : null}
+      {!account && !error ? (
+        <p className="account-loading" role="status">
+          Plans are ready. Loading the authenticated account state…
+        </p>
+      ) : null}
+      {error ? (
+        <div className="inline-error" role="alert">
+          <span>{error}</span>
+          <button className="button ghost" onClick={() => void load()} type="button">
+            Try again
+          </button>
+        </div>
+      ) : null}
 
       <div className="plan-grid">
         {sortedPlans.map((plan) => {
           const selectedPrice = priceFor(plan, interval);
           const savings = annualSavings(plan);
           const current =
-            account.plan_key === plan.key && account.plan_interval === interval;
-          const cancellationPending = account.pending_cancellation !== null;
+            account !== null &&
+            account.plan_key === plan.key &&
+            account.plan_interval === interval;
+          const cancellationPending = account?.pending_cancellation != null;
           return (
             <article className="plan-card" key={plan.key}>
               <div>
@@ -276,11 +294,13 @@ export function PricingScreen({
                 aria-label={`Choose ${plan.name} ${interval}`}
                 aria-busy={busyKey === plan.key}
                 className="button primary full"
-                disabled={current || cancellationPending || busyKey !== null}
+                disabled={!account || current || cancellationPending || busyKey !== null}
                 onClick={() => void choose(plan)}
                 type="button"
               >
-                {current
+                {!account
+                  ? "Loading account…"
+                  : current
                   ? "Current plan"
                   : cancellationPending
                     ? "Cancellation scheduled"

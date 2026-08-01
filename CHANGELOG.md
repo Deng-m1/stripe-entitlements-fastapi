@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Add a server-rendered open-source project landing page, searchable reference plan
+  table, visible FAQ, and matching SoftwareApplication/FAQPage JSON-LD.
+- Add fail-closed canonical URL and indexing configuration, route-specific noindex,
+  robots, sitemap, manifest, generated Open Graph/Twitter cards, and an SEO runbook.
+- Centralize the frontend reference catalog so initial pricing HTML is indexable before
+  authenticated account hydration; verify 168 local/backend and 59 frontend tests.
+
 ## 0.1.0 - 2026-07-31
 
 - PostgreSQL event inbox and invoice-slot business idempotency.

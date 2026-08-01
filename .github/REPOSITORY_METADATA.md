@@ -2,9 +2,9 @@
 
 GitHub description:
 
-> PostgreSQL-backed FastAPI + Next.js reference for race-safe Stripe
-> subscriptions, credits, refunds, annual grants, Checkout, and server-controlled
-> plan changes.
+> Open-source Stripe subscription billing template for FastAPI, PostgreSQL, and
+> Next.js with race-safe webhooks, credit entitlements, annual grants, refunds,
+> Checkout, and server-controlled plan changes.
 
 Suggested topics:
 
@@ -20,6 +20,10 @@ Suggested topics:
 - `nextjs`
 - `python`
 - `payments`
+- `saas`
+- `stripe-webhooks`
+- `subscription-management`
+- `payment-integration`
 
 Suggested repository settings:
 
@@ -38,6 +42,6 @@ Example authenticated administrator command:
 
 ```bash
 gh repo edit FromCSUZhou/stripe-entitlements-fastapi \\
-  --description "PostgreSQL-backed FastAPI + Next.js reference for race-safe Stripe subscriptions, credits, refunds, annual grants, Checkout, and server-controlled plan changes." \\
-  --add-topic stripe,fastapi,postgresql,subscriptions,billing,entitlements,webhooks,idempotency,concurrency,nextjs,python,payments
+  --description "Open-source Stripe subscription billing template for FastAPI, PostgreSQL, and Next.js with race-safe webhooks and credit entitlements." \\
+  --add-topic stripe,fastapi,postgresql,subscriptions,billing,entitlements,webhooks,idempotency,concurrency,nextjs,python,payments,saas,stripe-webhooks,subscription-management,payment-integration
 ```

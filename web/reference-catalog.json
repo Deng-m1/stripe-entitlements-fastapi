@@ -1,0 +1,66 @@
+{
+  "plans": [
+    {
+      "key": "starter",
+      "name": "Starter",
+      "description": "Core conversion tools for individual workflows.",
+      "currency": "USD",
+      "rank": 10,
+      "monthly_credits": 300,
+      "month_usd": 19,
+      "year_usd": 137,
+      "features": ["pdf_to_ppt", "image_to_ppt"],
+      "limits": {
+        "max_file_mb": 30,
+        "max_pages_per_job": 100,
+        "concurrent_jobs": 1,
+        "api_keys": 0
+      }
+    },
+    {
+      "key": "pro",
+      "name": "Pro",
+      "description": "Higher limits, batch conversion, and API access.",
+      "currency": "USD",
+      "rank": 20,
+      "monthly_credits": 1000,
+      "month_usd": 49,
+      "year_usd": 353,
+      "features": [
+        "pdf_to_ppt",
+        "image_to_ppt",
+        "batch_conversion",
+        "api_access"
+      ],
+      "limits": {
+        "max_file_mb": 100,
+        "max_pages_per_job": 500,
+        "concurrent_jobs": 5,
+        "api_keys": 5
+      }
+    },
+    {
+      "key": "ultra",
+      "name": "Ultra",
+      "description": "Priority processing and high-volume automation limits.",
+      "currency": "USD",
+      "rank": 30,
+      "monthly_credits": 4000,
+      "month_usd": 149,
+      "year_usd": 1073,
+      "features": [
+        "pdf_to_ppt",
+        "image_to_ppt",
+        "batch_conversion",
+        "api_access",
+        "priority_queue"
+      ],
+      "limits": {
+        "max_file_mb": 250,
+        "max_pages_per_job": 2000,
+        "concurrent_jobs": 20,
+        "api_keys": 25
+      }
+    }
+  ]
+}

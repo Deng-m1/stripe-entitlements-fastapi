@@ -4,7 +4,7 @@ export function SiteHeader() {
   return (
     <header className="site-header">
       <div className="shell header-inner">
-        <Link className="brand" href="/pricing">
+        <Link className="brand" href="/">
           Entitlements Reference
         </Link>
         <nav aria-label="Primary navigation">

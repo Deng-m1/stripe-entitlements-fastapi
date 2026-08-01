@@ -85,6 +85,12 @@
 ## Publish
 
 - [ ] Update README/docs, changelog and version metadata without overstating evidence.
+- [ ] Apply the GitHub description/topics from `.github/REPOSITORY_METADATA.md`.
+- [ ] Set one canonical HTTPS `NEXT_PUBLIC_SITE_URL`; enable indexing only there.
+- [ ] Verify canonical/robots/sitemap/social-image responses and keep account/billing
+      return routes `noindex` using `docs/SEO.md`.
+- [ ] Confirm visible landing, plan, savings and FAQ copy matches JSON-LD and the
+      enforced catalog; do not advertise unsupported coupons, trials, tax or currency.
 - [ ] Confirm CI `Backend` and `Web` jobs pass from a clean clone.
 - [ ] Review dependency/security alerts and license changes.
 - [ ] Tag with a signed/annotated version and publish release notes.

@@ -1,17 +1,40 @@
-# Stripe Entitlements for FastAPI
+# Stripe Subscription Billing & Entitlements for FastAPI
 
 [![CI](https://github.com/FromCSUZhou/stripe-entitlements-fastapi/actions/workflows/ci.yml/badge.svg)](https://github.com/FromCSUZhou/stripe-entitlements-fastapi/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12%2B-3776AB.svg)](pyproject.toml)
 
-A PostgreSQL-backed FastAPI and Next.js reference for Stripe subscriptions,
-credit entitlements, annual monthly grants, Checkout, refunds, disputes, and
-server-controlled plan changes under duplicate, delayed, concurrent, and
-out-of-order events.
+An open-source Stripe subscription billing template for FastAPI, PostgreSQL, and
+Next.js. It demonstrates credit entitlements, monthly and annual plans, Checkout,
+refunds, disputes, SCA recovery, Test Clock renewals, and server-controlled plan
+changes under duplicate, delayed, concurrent, and out-of-order webhook events.
 
 > This is an independent community project, not an official Stripe product.
 > It is a reference implementation, not a universal SaaS billing framework and
 > not financial, tax, accounting, or legal advice.
+
+## Contents
+
+- [Implemented scope](#what-is-completeand-what-is-not)
+- [Plan catalog and annual savings](#plan-catalog)
+- [Safe upgrades and downgrades](#safe-plan-transitions)
+- [Correctness and distributed deployment](#correctness-model)
+- [Quick start](#quick-start)
+- [Test evidence](#verification-and-evidence-boundary)
+- [Frequently asked questions](#frequently-asked-questions)
+
+## Why this Stripe billing reference exists
+
+Many Stripe examples stop after creating Checkout or verifying a webhook signature.
+Real SaaS billing also has to survive duplicate and out-of-order Events, concurrent
+workers, unknown remote outcomes, annual credit resets, failed upgrades, refunds, and
+browser returns that arrive before entitlement projection. This repository makes those
+state transitions explicit and backs them with PostgreSQL constraints and real Stripe
+test-mode gates.
+
+It is useful as a starting point for teams building a FastAPI Stripe integration,
+subscription credit system, SaaS pricing backend, or Next.js billing UI that need a
+reviewable reference rather than a copy-paste Checkout snippet.
 
 ## What is complete—and what is not
 
@@ -52,6 +75,10 @@ UI shows a saving only when both prices use the same currency and the yearly
 total is actually lower; an equal or higher yearly price gets no saving claim.
 This display calculation never controls tier direction or transition timing.
 Credits on a yearly subscription still arrive in monthly slots.
+
+The bundled annual totals are approximately 40% lower than twelve monthly payments.
+That is an explicit annual-price design, not a Stripe Coupon or Promotion Code. Coupons,
+trials, and time-limited campaigns remain outside this reference's implemented scope.
 
 | Entitlement | Starter | Pro | Ultra |
 | --- | ---: | ---: | ---: |
@@ -211,9 +238,9 @@ entitlement lifecycle test.
 
 Latest verified 2026-07-31 baseline:
 
-- 167 local/backend tests passed;
+- 168 local/backend tests passed;
 - 6 opt-in real Stripe test-mode tests passed;
-- 47 frontend tests passed, followed by a successful production build;
+- 59 frontend tests passed, followed by a successful production build;
 - frontend production-dependency audit reported zero vulnerabilities.
 - the full npm audit still reports 9 high-severity development-tooling findings in the
   ESLint/minimatch tree; npm offers only the breaking ESLint 10 upgrade.
@@ -328,8 +355,43 @@ Use the [release checklist](.github/RELEASE_CHECKLIST.md) and
 - `scripts/run_browser_e2e.sh`: isolated real browser and signed-webhook gate;
 - `tests/`: pure, PostgreSQL race/API and opt-in real test-mode suites;
 - `web/`: Next.js reference UI and API adapter;
-- `docs/`: invariant, architecture, testing, operations and release references;
+- `docs/`: invariant, architecture, testing, operations, SEO and release references;
 - `.github/`: CI, contribution templates and publishing metadata.
+
+## Frequently asked questions
+
+### Is this an official Stripe product?
+
+No. It is an independent community reference with a deliberately bounded billing
+policy. Stripe remains the payment processor; PostgreSQL is the local entitlement and
+credit projection.
+
+### Does it support monthly and annual subscriptions?
+
+Yes. Starter, Pro, and Ultra each have monthly and annual prices. Annual invoices fund
+up to 12 monthly credit slots, and the real Stripe suite advances a Test Clock through a
+cross-year renewal.
+
+### Are upgrades, downgrades, and failed payments covered?
+
+Yes within the documented six-state policy. Monthly-origin eligible upgrades use a
+full-price, no-proration target invoice. Annual-origin changes and downgrades wait until
+period end. Authentication-required and customer-charge-failure paths preserve the old
+paid entitlement until a target invoice is actually paid.
+
+### Does it include coupons, trials, tax, or multi-currency billing?
+
+No. Those features introduce additional invoice shapes and policy decisions. They are
+listed as non-goals rather than advertised without implementation and race tests.
+
+### Can multiple API and worker instances share it?
+
+Yes, when they share one PostgreSQL primary and identical configuration. Correctness
+uses database locks, constraints, leases, and idempotency rather than process memory.
+PostgreSQL is still a stateful dependency that needs HA, backups, and tested restore.
+
+For public-site metadata, canonical configuration, social previews, structured data,
+and indexing checks, see the [SEO runbook](docs/SEO.md).
 
 ## Non-goals
 

@@ -55,3 +55,6 @@ jobs:
         run: npm test
       - name: Production build
         run: npm run build
+        env:
+          NEXT_PUBLIC_ALLOW_INDEXING: "true"
+          NEXT_PUBLIC_SITE_URL: https://billing.example.test

@@ -4,8 +4,8 @@ The project separates deterministic local/PostgreSQL tests, opt-in automated Str
 test-mode tests, manual Stripe observations, and production verification. Passing one
 layer must not be described as passing another.
 
-Latest verified 2026-07-31 result: 167 local/backend tests, 6 real Stripe
-test-mode tests, 47 frontend tests, and 1 real-browser Stripe lifecycle passed;
+Latest verified 2026-08-01 result: 168 local/backend tests, 6 real Stripe
+test-mode tests, 59 frontend tests, and 1 real-browser Stripe lifecycle passed;
 the frontend production build and production-dependency audit also passed.
 `npm audit --omit=dev` reported zero; the full audit still reports nine high-severity
 development-only ESLint/minimatch/brace-expansion advisories whose available npm fix is
@@ -55,7 +55,11 @@ npm run build
 The suite covers annual total/equivalent/savings display, explicit immediate and
 period-end copy, all annual-origin policy cases (including `SY → PY/UY`), Checkout and
 preview idempotency-key reuse, Portal, pending state, hosted-invoice recovery, missing
-Stripe.js configuration, and polling until webhook-projected target state.
+Stripe.js configuration, and polling until webhook-projected target state. It also
+covers fail-closed public-site URL/indexing configuration, server-rendered reference
+plans before account hydration, visible landing/FAQ JSON-LD, and metadata-route defaults.
+The backend additionally verifies that the public JSON catalog cannot drift from
+`plans.toml` prices, entitlements, descriptions, or order.
 
 The frontend never tests or grants backend entitlement by itself.
 

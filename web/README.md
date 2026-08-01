@@ -36,6 +36,26 @@ session/OIDC adapter. HTTP mode without an auth adapter fails explicitly.
 Never put Stripe secret keys, webhook secrets, PaymentIntent client secrets, or
 hosted invoice URLs in localStorage, analytics, logs, or source control.
 
+## Public SEO configuration
+
+The reference site includes a server-rendered project landing page, indexable initial
+pricing catalog, canonical/Open Graph/Twitter metadata, JSON-LD, `robots.txt`,
+`sitemap.xml`, a manifest, and generated social cards. Indexing is fail-closed: previews,
+staging, and local development remain `noindex` unless the canonical production
+deployment sets both values:
+
+```env
+NEXT_PUBLIC_SITE_URL=https://billing.example.com
+NEXT_PUBLIC_ALLOW_INDEXING=true
+```
+
+The site URL must be an HTTPS origin without a path, credentials, query, or fragment.
+`/account` and `/billing/*` always remain `noindex`. The bundled server-rendered catalog
+comes from `reference-catalog.json` through `lib/reference-catalog.ts`; keep the JSON
+synchronized with `../plans.toml` when changing example prices or entitlements. The
+backend suite enforces that equality. See the [SEO runbook](../docs/SEO.md) for the route
+policy and deployment checks.
+
 ## API contract
 
 All monetary values are integer minor units. Plan identity uses `plan_key`;
@@ -274,6 +294,7 @@ accepts success only after the browser observes the webhook-projected account. I
 before card entry unless the hosted Session is `cs_test_`. Prefer the isolated full-stack
 runner and follow all prerequisites in [the browser E2E runbook](../docs/BROWSER_E2E.md).
 
-The verified 2026-07-31 RTL/Vitest run contains 47 passing tests covering annual
+The verified 2026-08-01 RTL/Vitest run contains 59 passing tests covering annual
 pricing math, immediate and period-end copy, Checkout, Portal, pending changes,
-redirect allowlisting, missing SCA configuration, and webhook polling.
+redirect allowlisting, missing SCA configuration, webhook polling, SEO configuration,
+server-rendered plans, JSON-LD, and fail-closed indexing defaults.

@@ -71,6 +71,29 @@ function testApi(options: {
 }
 
 describe("billing screens", () => {
+  it("server-renders the reference catalog before account loading completes", () => {
+    const api = testApi({});
+    api.getCatalog = vi.fn(() => new Promise<never>(() => undefined));
+    api.getAccount = vi.fn(() => new Promise<never>(() => undefined));
+
+    render(
+      <PricingScreen
+        api={api}
+        initialCatalog={demoCatalog()}
+        billingRedirect={vi.fn()}
+        internalRedirect={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Starter" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Pro" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Ultra" })).toBeInTheDocument();
+    expect(screen.getByText(/Plans are ready/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Choose Starter month" }),
+    ).toBeDisabled();
+  });
+
   it("shows annual total, equivalent monthly price, and savings", async () => {
     const user = userEvent.setup();
     render(
