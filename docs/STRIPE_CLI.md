@@ -26,9 +26,10 @@ Do not reuse one label for two Stripe contracts:
 - Webhook payloads contain Event `api_version` from the endpoint/account snapshot.
   `STRIPE_WEBHOOK_API_VERSION` must equal that actual value.
 
-The current test account's Event API retrieval view reported `2025-12-15.clover`, while
-an isolated endpoint pinned to Dahlia delivered signed Dahlia payloads for the same
-browser lifecycle. Neither value changes the outbound request version. You may inspect
+In the pre-hardening browser evidence, the test account's Event API retrieval view
+reported `2025-12-15.clover`, while an isolated endpoint pinned to Dahlia delivered
+signed Dahlia payloads for the same lifecycle. The current browser gate has not yet
+repeated that observation. Neither value changes the outbound request version. You may inspect
 the Event API view privately, but do **not** use it to configure the webhook processor:
 
 ```bash
@@ -106,6 +107,31 @@ cancellation only at period end. Plan changes must pass through the authenticate
 preview/confirm API so annual funding, invoice preview and durable intent cannot be
 bypassed.
 
+Choose one application-controlled transition template before starting the API:
+
+```bash
+export BILLING_TRANSITION_POLICY=full_period_reset
+# or: prorated_delta
+```
+
+This is not a Stripe CLI or Dashboard switch. The value controls the server matrix,
+preview/apply parameters, webhook validation, API copy, and durable intent. Keep it
+identical across replicas. Existing intents retain their stored policy if the deployment
+default later changes.
+
+For local delta inspection, create the change through the authenticated application API,
+then inspect the resulting test-mode Invoice privately:
+
+```bash
+stripe invoices retrieve in_REPLACE_ME
+stripe invoiceitems list --invoice in_REPLACE_ME
+```
+
+Expect one negative source proration and one positive target proration. Do not paste the
+payload into a public issue. The automated real Stripe suite is stronger than visual
+inspection: it prepares all line pages, processes the paid Event into PostgreSQL, checks
+the allocation, performs a real full refund, and verifies source-plan convergence.
+
 ## Test Clocks: exact boundary
 
 The automated real suite owns a complete isolated annual lifecycle. Prerequisites are a
@@ -138,25 +164,38 @@ The test performs these bounded steps:
 5. advances to the original `period_end + 1 hour`, waits for the paid renewal Invoice,
    processes its real `invoice.paid` Event, and verifies a new funding invoice, slot 1,
    300 credits and a later enforceable entitlement period;
-6. deletes/deactivates only run-marked objects, sweeps unknown create outcomes, fails on
-   any cleanup error, and deletes the Test Clock last.
+6. deletes/deactivates only run-marked objects, sweeps unknown create outcomes through
+   complete auto-pagination, and deletes the Test Clock last;
+7. re-lists every page and requires zero non-canceled Subscriptions, Customers, active
+   Prices/Products, Test Clocks, and unfinished Schedules for that run ID.
 
-All active API requests are pinned to Dahlia. Event objects retain their independently
-observed Clover snapshot, and the processor is configured from that Event value rather
-than pretending the request pin rewrites it.
+`scripts/run_test_clock_e2e.sh` creates a private mode-`0700` recovery directory and a
+mode-`0600`, secret-free manifest. The test atomically adds the run ID and exact object
+IDs after each successful create call. Strict cleanup success removes the manifest and
+directory; failure, interruption, skip, inventory uncertainty, or residual objects retain
+them and print the recovery path. The file contains no Stripe key, signing secret,
+database URL, client secret, hosted recovery URL, or card data.
 
-This proves Stripe Test Clock advancement, annual worker behavior, renewal Event shape
-and PostgreSQL projection. It does not prove signed webhook delivery, arbitrary delivery
+All active API requests are pinned to Dahlia. Historical Event API retrievals retained
+an independently observed Clover snapshot; the current hardened network gate has not
+repeated that observation. The processor is always configured from the actual Event
+contract rather than pretending the request pin rewrites it.
+
+A successful complete run proves Stripe Test Clock advancement, annual worker behavior,
+renewal Event shape and PostgreSQL projection. It does not prove signed webhook delivery, arbitrary delivery
 order, live-mode behavior, cancellation, tax/discount configurations, or scheduler
 availability. Event polling is evidence of Stripe object state, not endpoint transport.
 
 ## Manual plan-transition evidence
 
-The automated real suite covers a full-price/no-proration monthly upgrade through paid
-Event projection, an annual-origin two-phase Schedule, and repeatable
-authentication-required/customer-charge-failure pending updates whose real
-`invoice.payment_failed` Events preserve the old entitlement. The remaining
-2026-07-31 manual evidence set contains:
+The current nine-case real suite contains assertions for both a full-price/no-proration
+monthly upgrade and a prorated-delta monthly upgrade through paid Event projection. The
+delta case performs a real full refund and checks cross-Invoice allocation/reversion;
+other cases cover an annual-origin two-phase Schedule and repeatable authentication-
+required/customer-charge-failure pending updates. Those cases were collected but not
+executed after the current hardening because test credentials were unavailable. The
+earlier seven-case network run is historical evidence only. The remaining 2026-07-31
+manual evidence set contains:
 
 - `PY → UM` invoice preview at negative $204, which remains period-end;
 - no separate failed-immediate gap. A direct `pm_card_chargeDeclined` Payment Method is

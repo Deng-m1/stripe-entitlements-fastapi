@@ -1,7 +1,7 @@
 [project]
 name = "stripe-entitlements-fastapi"
 version = "0.1.0"
-description = "Open-source Stripe subscription billing and credit entitlements template for FastAPI and PostgreSQL"
+description = "Stripe billing and entitlements templates with race-safe full-price and prorated upgrades"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
@@ -17,6 +17,7 @@ keywords = [
   "saas",
   "entitlements",
   "stripe-webhooks",
+  "stripe-proration",
 ]
 dependencies = [
   "asyncpg>=0.30.0,<1",

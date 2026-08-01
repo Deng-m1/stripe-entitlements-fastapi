@@ -1,20 +1,25 @@
-# Plan transition policy
+# Plan transition policies
 
-This document describes the six paid plan/interval states implemented by the
-reference. It is a product policy, not a claim that the same matrix is correct
-for every Stripe integration.
+The reference ships two complete, selectable policies. Set exactly one per deployment:
 
-## State identity
+```dotenv
+BILLING_TRANSITION_POLICY=full_period_reset
+# or
+BILLING_TRANSITION_POLICY=prorated_delta
+```
 
-Plan identity comes from `plans.toml`:
+The selected policy is returned by health, catalog, account, preview, and confirm APIs.
+It is also copied into every durable `billing_plan_changes` row, so changing an
+environment variable cannot reinterpret an in-flight intent.
 
-- rank: Starter 10, Pro 20, Ultra 30;
-- interval: `month` or `year`;
-- price amounts are not used to decide upgrade/downgrade direction.
+Plan direction comes from the unique positive rank in `plans.toml`, never from price.
+The six states are Starter Monthly/Yearly (`SM`, `SY`), Pro Monthly/Yearly (`PM`,
+`PY`), and Ultra Monthly/Yearly (`UM`, `UY`).
 
-The six states are `SM`, `SY`, `PM`, `PY`, `UM` and `UY`.
+## Template 1: full-period reset
 
-## 6 × 6 matrix
+This policy starts a newly funded target period for immediate changes. It does not
+credit unused time.
 
 | From / To | SM | SY | PM | PY | UM | UY |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -25,112 +30,179 @@ The six states are `SM`, `SY`, `PM`, `PY`, `UM` and `UY`.
 | **UM** | period end | period end | period end | period end | noop | immediate |
 | **UY** | period end | period end | period end | period end | period end | noop |
 
-Decision order:
+An immediate preview/apply pair uses:
 
-1. unchanged plan/interval is noop;
-2. every other annual-origin transition is period-end;
-3. from a monthly plan, a higher target rank is preview-eligible for immediate
-   settlement;
-4. a lower target rank is period-end;
-5. same-tier `month → year` is preview-eligible for immediate settlement.
+```text
+billing_cycle_anchor=now
+proration_behavior=none
+payment_behavior=pending_if_incomplete
+```
 
-## Why every annual-origin change waits
+The preview remains immediate only when it contains one quantity-one target line at
+the complete catalog price, matching currency and amount due, with no nonzero
+proration, customer-balance credit, discount, credit note, or tax. Otherwise it is
+stored and presented as period-end. The later paid Invoice independently has to satisfy
+the same one-line catalog amount, currency, quantity, full-payment, and unsupported-
+adjustment contract; preview acceptance alone is not authority. A paid Invoice resets
+the active credit pool to the target plan's monthly grant and advances `grant_epoch`.
 
-A yearly invoice funds up to 12 monthly entitlement slots. Replacing it before
-that lineage ends can use a negative proration from the old annual invoice to
-fund a new monthly or annual invoice. If the old charge is later refunded or
-disputed, a one-invoice funding model cannot safely attribute the loss to the
-new entitlement epoch.
+## Template 2: prorated entitlement delta
 
-This rule applies before tier rank. Therefore `SY → PM`, `SY → PY`, `SY → UY`,
-`PY → UM` and `PY → UY` are period-end even when their target rank is higher.
+This policy supports the common same-period monthly tier upgrade: Stripe credits the
+unused source tier, charges the target tier for the same remaining time, and the
+application adds the fixed entitlement difference.
 
-A 2026-07-31 manual test-mode `PY → UM` preview produced negative $204. That
-observation motivated the conservative rule but is not an automated universal
-price theorem; timing and account state can produce other amounts.
+| From / To | SM | SY | PM | PY | UM | UY |
+| --- | --- | --- | --- | --- | --- | --- |
+| **SM** | noop | period end | immediate delta | period end | immediate delta | period end |
+| **SY** | period end | noop | period end | period end | period end | period end |
+| **PM** | period end | period end | noop | period end | immediate delta | period end |
+| **PY** | period end | period end | period end | noop | period end | period end |
+| **UM** | period end | period end | period end | period end | noop | period end |
+| **UY** | period end | period end | period end | period end | period end | noop |
 
-## Immediate means “preview-eligible”
+All 36 cells are deliberate. Immediate delta is bounded to a higher-rank monthly plan
+while retaining the monthly interval. Downgrades, month/year conversions, and every
+annual-origin change wait until period end. This avoids claiming that a two-line
+monthly proration reducer also solves annual multi-slot funding.
 
-The matrix does not directly mutate a Subscription. Preview:
+Preview fixes one `proration_date`; confirm reuses that exact value:
 
-1. creates a durable `billing_plan_changes` intent bound to account, target and
-   `Idempotency-Key`;
-2. snapshots the current grant epoch, entitlement end, cancellation state and
-   Stripe subscription identity;
-3. retrieves the Stripe Subscription and target Price outside a database
-   transaction;
-4. revalidates the snapshot;
-5. requests a full-new-period invoice preview with
-   `billing_cycle_anchor=now` and `proration_behavior=none`.
+```text
+proration_behavior=always_invoice
+proration_date=<durable preview value>
+payment_behavior=pending_if_incomplete
+```
 
-An immediate cell remains immediate only when the preview has:
+The billing anchor is not reset. A successful paid Invoice keeps the existing
+entitlement period and `grant_epoch`, preserves the currently unused balance, and
+adds:
 
-- exactly one quantity-1, non-proration target line;
-- target line, invoice total and amount due equal the catalog price/currency;
-- no nonzero positive or negative proration from another invoice;
-- no Stripe customer-balance credit at either preview boundary.
+```text
+target.monthly_credits - source.monthly_credits
+```
 
-Otherwise the coordinator stores a period-end decision and reports no amount due
-today. Preview is server-authoritative; the browser must not reconstruct timing
-from rank or price. Supporting discounted, taxed, credited or cross-invoice
-immediate changes requires extending the funding-lineage model first.
+For example, Starter (300) to Pro (1,000) adds exactly 700 credits. It does not turn
+the cash amount into credits. Remaining time, rounding, coupons, balance, and tax
+therefore cannot silently change the product entitlement.
 
-## Confirm and payment recovery
+## Authoritative Invoice shape for delta upgrades
 
-Confirm accepts the opaque `preview_id`. It does not accept a fresh target and
-cannot confirm another account's preview.
+The webhook preparation layer materializes every Invoice line page before opening a
+database transaction and resolves both legacy `line.price` and Dahlia
+`pricing.price_details.price` references. A delta Invoice is accepted only when:
 
-Immediate settlement uses:
+- it matches one authenticated, durable immediate `prorated_delta` intent;
+- exactly two quantity-one proration lines exist;
+- one negative line is the intent's source catalog Price;
+- one positive line is the intent's target catalog Price;
+- source and target periods and currencies match;
+- both line periods start at the persisted `proration_date` and end at the existing
+  entitlement boundary;
+- source and target cash prorations represent the same remaining-period fraction,
+  within one-cent rounding tolerance;
+- line sum, subtotal, total, amount due, and amount paid prove a positive fully paid
+  net difference;
+- no additional, unknown, zero-target, tax, discount, credit-note, or customer-balance
+  funding participates.
 
-- `billing_cycle_anchor=now`;
-- `proration_behavior=none`;
-- `payment_behavior=pending_if_incomplete`;
-- a stable Stripe idempotency key.
+Missing pages, unknown Price references, duplicated/conflicting source or target
+lines, a stale Subscription, and unsupported adjustments create a durable incident
+and leave the old entitlement unchanged. Subscription state is used for identity and
+eventual observation; it is never used to guess what an Invoice funded.
 
-This policy deliberately does not credit the unused monthly period. The target
-starts a new, independently funded full-price period. A real test-mode Starter
-Monthly → Pro Monthly run used Dahlia for outbound preview/update requests, then
-polled the separately versioned paid Event and verified the 1,000-credit
-PostgreSQL projection.
+Preview persists the exact source credit, target charge, positive net due, currency,
+and service-period boundaries. The paid Invoice must match every one of those facts;
+matching only a Price ID or final total is insufficient. An unconfirmed `previewed`
+intent cannot authorize this paid effect.
 
-A successful API call is not entitlement proof. If payment is incomplete,
-Stripe can retain the old Subscription item and active state while exposing a
-pending update and open Invoice. The API returns a hosted payment URL when
-available and an in-memory confirmation secret as an optional enhancement.
-Neither value is stored in browser storage or logs.
+## Funding allocation and refund semantics
 
-The old entitlement remains active until a matching paid invoice webhook
-completes the durable intent. A declined manual test-mode run on 2026-07-31
-observed exactly this old-SKU/pending-update/open-Invoice state. That scenario is
-documented evidence, not part of the automated `real_stripe` suite.
+`billing_funding_allocations` links every accepted delta Invoice to:
 
-## Period-end schedules
+- the immutable source funding Invoice;
+- source/target plans, Price line IDs, and service period;
+- source credit, target charge, net cash, and fixed entitlement delta;
+- the unchanged `grant_epoch` and cumulative refund/dispute state.
 
-Period-end changes use two Stripe operations:
+This produces these explicit outcomes:
 
-1. create a Subscription Schedule with only `from_subscription`;
-2. modify it with the preserved current phase and one target phase.
+| Event | Current-epoch result |
+| --- | --- |
+| Partial refund of delta Invoice | remove the rounded-up proportional share of only the added delta; retain target plan |
+| Full refund/dispute of latest leaf delta | remove its delta, advance the product-refund epoch, and revert locally to its still-funded source plan |
+| Full refund/dispute of an intermediate delta with downstream upgrades | remove its delta, revoke enforcement, and create `funding_lineage_closed` |
+| Partial refund of source Invoice | remove the proportional share of source credits; retain target plan |
+| Full refund/dispute of source Invoice used by a delta | claw back source units, revoke enforcement, and create a lineage incident |
+| Refund of an Invoice from an older `grant_epoch` | retain the historical fact but do not rewrite the current pool |
 
-Stripe rejects extra phase/configuration fields during the first operation. The
-second operation copies allowed tax, collection, payment, transfer and metadata
-fields from the returned current phase, sets a contiguous boundary, disables
-proration, and sets `end_behavior=release`.
+Refund/dispute state is stored even when it arrives before `invoice.paid`. Paid-first
+and clawback-first permutations converge. A fully closed upgrade Invoice received
+before its paid Event creates a zero-effect business guard, fails the intent, and
+keeps the source entitlement. Product operators must resolve the remote Subscription
+if Stripe still points at a target Price after a local funding reversion; the incident
+is intentional rather than silently trusting mutable Subscription state.
 
-Both calls have distinct derived idempotency keys. A real test-mode Starter
-Yearly → Pro Yearly run used outbound Dahlia requests and verified the two-step
-request plus contiguous phases; unit tests assert the exact preserved phase
-payload. It is not described as a Test Clock lifecycle test.
+`stripe_invoice_state.closure_applied` separately guards terminal closure. Distinct
+refund/dispute Event IDs cannot repeat a refund-before-paid block, leaf reversion,
+lineage revocation, annual closure, epoch advance, or debt creation for one Invoice.
 
-## Webhook completion and stale events
+The leaf-reversion epoch advance prevents a late product-job refund from recreating
+credits that the closed upgrade Invoice had funded. The closed allocation remains an
+active ancestry edge so a later source-Invoice refund is still attributed correctly.
 
-`invoice.paid` for a subscription update activates a new plan only when it
-matches a durable plan-change intent and expected entitlement snapshot. A
-Dashboard price change without intent fails closed into an incident.
+Spending can make the current balance smaller than a required current-epoch clawback.
+In that case the processor removes everything available and persists the missing units
+in `billing_clawback_debts`. A later usage refund or delta grant in the same epoch is
+first written to the audit ledger and then consumed against outstanding debt in stable
+order. Debt from a historical epoch does not debit the current pool.
 
-`invoice.payment_failed` for an optional upgrade marks the intent
-`requires_action` but does not freeze the old paid entitlement. Schedule and
-pending-update state is cleared/completed only by matching webhook facts.
+## Period-end changes and annual plans
 
-The frontend success page polls `GET /api/account` for the target active
-projection. Checkout return, hosted-invoice return, Stripe.js completion and the
-confirm response are never used as direct access grants.
+Both policies use the same two-step Subscription Schedule operation for period-end
+changes: create from the current Subscription, then configure a preserved current
+phase and contiguous target phase with `proration_behavior=none` and
+`end_behavior=release`. Create and configure use separate derived idempotency keys. A
+retry after a create-only crash recovers that Schedule, while an already configured
+Schedule is accepted only after Subscription identity, both Price/quantity phases,
+boundary, no-proration policy, release behavior, product line, and plan-change identity
+all match.
+
+A yearly paid Invoice funds up to 12 monthly entitlement slots. It remains one annual
+funding lineage until its period ends. The delta template deliberately does not split
+or replace those slots mid-year. Yearly renewal still resets to slot 1 under the new
+paid Invoice, and the annual worker grants only the current due slot after downtime.
+
+## Failure, order, and idempotency
+
+- Event ID is delivery idempotency; `(stripe_invoice_id, grant_slot)` is independent
+  business idempotency.
+- Confirm atomically changes `previewed` to `applying`, then records
+  `remote_started_at` before the first Stripe mutation. A webhook may authorize the
+  target only from `applying`, `applied`, `requires_action`, or the matching period-end
+  `scheduled` state—never from an unconfirmed preview.
+- An unknown result younger than 23 hours is replayed only with the same derived Stripe
+  idempotency key. At 23 hours, automatic mutation stops; an operator must prove the
+  exact Invoice or Schedule outcome before repairing state.
+- Account locking precedes Invoice/allocation locking on paid, refund, dispute,
+  reconciliation, and annual paths.
+- A different Event ID for the same Invoice can race, but only one grant commits.
+- `subscription.updated` before or after `invoice.paid` cannot issue credits.
+- Payment failure or SCA keeps the source paid entitlement and marks the intent
+  `requires_action` only when the Event's Invoice exactly matches the intent's
+  compare-and-set `settlement_invoice_id`. An unbound or delayed older failure creates
+  an incident and cannot change the new intent.
+- The paid webhook may finish before the coordinator persists its remote result. Both
+  paths may bind only the same settlement Invoice; confirm reports a conflict if the
+  webhook already failed the intent and never turns POST success into entitlement proof.
+- A processing exception rolls back the Event claim, allocation, ledger, account, and
+  intent together; retrying the same Event can complete normally.
+- Browser return, confirm success, and hosted-invoice completion never grant access.
+
+The frontend renders `settlement_mode` from the server:
+
+- `new_period_full_price`;
+- `current_period_prorated_delta`;
+- `period_end`.
+
+It never reconstructs policy from rank or displayed price.

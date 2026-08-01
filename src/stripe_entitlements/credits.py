@@ -5,6 +5,8 @@ from typing import Literal
 
 import asyncpg
 
+from .clawbacks import collect_clawback_debts
+
 
 class InsufficientCreditsError(RuntimeError):
     pass
@@ -119,4 +121,17 @@ class CreditService:
                 account["grant_epoch"],
                 f"usage-refund:{idempotency_key}",
             )
-            return CreditResult("refunded", balance)
+            await collect_clawback_debts(
+                conn,
+                account_id=account["id"],
+                grant_epoch=int(account["grant_epoch"]),
+                event_id=f"usage-refund:{idempotency_key}",
+            )
+            final_balance = int(
+                await conn.fetchval(
+                    "select credits_balance from billing_accounts where id=$1",
+                    account["id"],
+                )
+                or 0
+            )
+            return CreditResult("refunded", final_balance)

@@ -23,13 +23,21 @@ repository:
 case "$STRIPE_SECRET_KEY" in sk_test_*) ;; *) exit 2 ;; esac
 case "$STRIPE_PUBLISHABLE_KEY" in pk_test_*) ;; *) exit 2 ;; esac
 E2E_STRIPE_EVENT_API_VERSION=2026-06-24.dahlia \
+E2E_TRANSITION_POLICY=full_period_reset \
+  scripts/run_browser_e2e.sh
+E2E_STRIPE_EVENT_API_VERSION=2026-06-24.dahlia \
+E2E_TRANSITION_POLICY=prorated_delta \
   scripts/run_browser_e2e.sh
 ```
 
 It creates a temporary test Webhook Endpoint with only the supported Events, receives
-real Checkout/3DS Events through a temporary HTTPS tunnel, verifies their signatures,
-and checks the PostgreSQL projection. It then retrieves every stored Event ID from
+real Checkout/3DS and plan-upgrade Events through a temporary HTTPS tunnel, verifies
+their signatures, and checks both PostgreSQL projections. It then retrieves every stored Event ID from
 Stripe and compares identity, type and mode with the signed payload saved in the inbox.
+The final invariant is exactly three run-bound essential Events: the Checkout Session,
+its initial paid Invoice, and the plan-change settlement paid Invoice. Those identities
+must match the account, two ledger grants, and policy-specific allocation. Every other
+account-matched Event is still checked, but its incidental count is not fixed.
 The signed payload's `api_version` is checked against the endpoint contract; the Event
 API retrieval view is recorded separately because it is not evidence of the endpoint's
 delivery serialization. The endpoint, Customer and Subscription are scoped to the run
@@ -41,11 +49,13 @@ See [BROWSER_E2E.md](BROWSER_E2E.md) for prerequisites, failure artifacts and th
 browser assertions. A collected, skipped or partially completed Playwright test is not
 evidence.
 
-Latest verified 2026-07-31 test-mode result: one browser lifecycle and its decline DB
-stability barrier passed, two required signed Events were handled, the endpoint payload
-version was Dahlia, the independent Event API retrieval view was Clover, and the strict
-post-run endpoint/customer/Test-Clock inventory returned to zero. No live-production
-event is included in that result.
+Current evidence boundary: the two policy runs have not been repeated after the latest
+identity-binding, upgrade-SCA, and secret-isolation hardening. Earlier pre-hardening
+runs on 2026-08-01 passed their decline barriers, 3DS Checkout, UI upgrades, and strict
+cleanup; each happened to cross-check five account-related Events, observed Dahlia
+endpoint payloads and a separate Clover Event API view, and reached the expected
+projection. That is historical evidence, not a current-tree pass, and no live-
+production Event is included.
 
 ## Existing staging endpoint
 

@@ -12,6 +12,10 @@ uv run stripe-entitlements migrate
   incident model.
 - `002_plan_transitions.sql` adds entitlement windows/revocation, replayable Checkout
   requests, `billing_plan_changes` and immutable invoice/account attribution.
+- `003_transition_policies.sql` adds persisted policy/preview/remote-call snapshots,
+  unique settlement Invoice binding, `billing_funding_allocations`, outstanding
+  `billing_clawback_debts`, terminal-closure business idempotency, and reconciliation
+  rotation state.
 
 Do not send authenticated billing traffic to a new process while its database is still on
 the old schema.
@@ -29,7 +33,9 @@ uv run stripe-entitlements reconcile
 The scheduler is not embedded in the API process. Kubernetes CronJobs, Railway Cron,
 systemd timers or a managed scheduler are valid. If a schedule is missed, the next annual
 run jumps to the current reset slot rather than replaying all missed monthly grants.
-Reconciliation repairs paid/canceled projection after webhook loss.
+Reconciliation repairs paid/canceled projection after webhook loss. It rotates through
+every eligible account in bounded batches during one invocation; old
+`requires_action` rows cannot permanently occupy the first page.
 
 Alert on scheduler lag; “multi-worker safe” does not mean “scheduler optional.”
 
@@ -45,8 +51,9 @@ group by kind
 order by count(*) desc;
 ```
 
-Important categories include unknown account/invoice shapes, unauthorized paid plan
-changes, mode/version mismatch and reconciliation failures. Inspect `detail` and the
+Important categories include unknown account/Invoice shapes, unauthorized paid plan
+changes, invalid delta lines, closed funding lineages, mode/version mismatch, and
+reconciliation failures. Inspect `detail` and the
 correlated Stripe Event only in a restricted environment. After a verified repair or
 replay, set `resolved_at=now()`. Never delete unresolved rows to silence an alert.
 
@@ -69,7 +76,19 @@ order by status;
   account state.
 - An expired preview must be recreated with a new user intent.
 - An expired operation lease can resume with the same durable request/Stripe key.
+- `applying` with `remote_started_at` less than 23 hours old must be retried only through
+  the same preview ID. Do not create a second intent.
+- `applying` at least 23 hours old is intentionally blocked. Retrieve the exact Stripe
+  request/Invoice or Schedule in a restricted environment and prove customer,
+  Subscription, source/target Price, amount, service period, metadata, and two-phase
+  Schedule policy before repair. If proof is incomplete, keep it blocked and escalate;
+  never clear the row merely to retry billing.
 - A Schedule is not entitlement completion; matching webhook facts remain authoritative.
+- `upgrade_funding_closed_reverted` means the latest delta was refunded/disputed and the
+  local projection returned to its still-funded source plan. Reconcile the remote
+  Subscription deliberately; do not hide the incident.
+- `funding_lineage_closed` revokes enforcement because a source/intermediate Invoice for
+  a current delta chain closed. Repair or refund the chain before clearing revocation.
 
 Do not copy recovery URLs or confirmation secrets into tickets, analytics or logs.
 
@@ -81,7 +100,20 @@ identity. The invoice/slot unique index remains the final duplicate-grant guard.
 
 Do not edit stored Event payloads or delete inbox rows to force replay. A plan change
 without durable intent must remain fail-closed even if the Dashboard shows the target
-Price.
+Price. Do not clear `stripe_invoice_state.closure_applied` to replay a refund or
+dispute: it is the business-idempotency guard that prevents a different Event ID from
+reapplying terminal revocation, leaf reversion, annual closure, or debt creation.
+
+Before enabling `prorated_delta` on an upgraded database, this query must return zero:
+
+```sql
+select id from billing_accounts
+where subscription_status='active'
+  and (entitlement_period_end is null or entitlement_period_end <= now());
+```
+
+Reconcile/backfill those accounts from paid Invoice truth first. Do not invent a period
+boundary from the mutable Subscription alone.
 
 ## Portal verification
 
@@ -104,18 +136,18 @@ Track separately:
 - required `STRIPE_WEBHOOK_API_VERSION` for the signed endpoint payload's top-level
   Event `api_version`; there is intentionally no outbound-request-version default.
 
-The current request code targets `2026-06-24.dahlia`. The test account's Event API
-retrieval view reported Clover while a separately pinned endpoint delivered real signed
-Dahlia payloads. Neither substitutes for inspecting the deployed endpoint contract and
-its signed delivery. A mismatch creates a durable incident and does not apply
-entitlements.
+The current request code targets `2026-06-24.dahlia`. Historical pre-hardening evidence
+observed a Clover Event API retrieval view and a separately pinned endpoint's real signed
+Dahlia payload; the current hardened browser gate has not repeated that observation.
+Neither substitutes for inspecting the deployed endpoint contract and its signed
+delivery. A mismatch creates a durable incident and does not apply entitlements.
 
 Record request, signed endpoint payload, and Event API retrieval views separately in
 every release and alert on `webhook_contract_mismatch`.
 
 ## Backup and restore
 
-Back up all eight correctness tables together:
+Back up all ten correctness tables together:
 
 1. `billing_accounts`;
 2. `stripe_webhook_events`;
@@ -124,11 +156,13 @@ Back up all eight correctness tables together:
 5. `credit_debits`;
 6. `checkout_claims`;
 7. `billing_plan_changes`;
-8. `billing_incidents`.
+8. `billing_funding_allocations`;
+9. `billing_clawback_debts`;
+10. `billing_incidents`.
 
 A restore that omits inbox, invoice, ledger, debit, Checkout or plan-change identity can
-reopen duplicate/unauthorized effects. Perform point-in-time recovery drills, verify the
-two migration versions, then run reconciliation and inspect incidents before reopening
+reopen duplicate/unauthorized effects. Perform point-in-time recovery drills, verify all
+three migration versions, then run reconciliation and inspect incidents before reopening
 traffic.
 
 ## Production monitoring
@@ -139,7 +173,8 @@ At minimum monitor:
 - webhook 2xx/4xx/5xx and delivery age;
 - unresolved incidents by kind;
 - annual scheduler/reconciliation lag;
-- stale Checkout claims and plan-change leases;
+- stale Checkout claims, plan-change leases, and `applying` age;
+- outstanding `billing_clawback_debts` by age and units;
 - `requires_action` age and hosted-invoice recovery completion;
 - account projection lag after Checkout/confirm returns;
 - Stripe/API latency and rate limits.

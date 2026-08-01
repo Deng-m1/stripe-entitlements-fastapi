@@ -86,7 +86,10 @@ export const referencePlans: CatalogPlan[] = (
   ),
 }));
 
-export const referenceCatalog: CatalogResponse = { plans: referencePlans };
+export const referenceCatalog: CatalogResponse = {
+  transition_policy: "full_period_reset",
+  plans: referencePlans,
+};
 
 export function referenceEntitlements(planKey: string): Entitlement[] {
   return referencePlans.find((plan) => plan.key === planKey)?.entitlements ?? [];

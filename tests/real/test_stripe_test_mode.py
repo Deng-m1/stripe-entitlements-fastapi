@@ -6,6 +6,7 @@ import os
 import time
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import asyncpg
@@ -45,15 +46,27 @@ def _dict(value: Any) -> dict[str, Any]:
     return parsed
 
 
+async def _auto_paging_dicts(operation: Any, /, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+    """Consume every page from a Stripe list operation outside the event loop."""
+
+    def _load() -> list[dict[str, Any]]:
+        page = operation(*args, **kwargs)
+        return [_dict(item) for item in page.auto_paging_iter()]
+
+    return await asyncio.to_thread(_load)
+
+
 async def _wait_event(key: str, event_type: str, object_id: str) -> dict[str, Any]:
     __tracebackhide__ = True
     deadline = time.monotonic() + 45
     while time.monotonic() < deadline:
-        page = await asyncio.to_thread(
-            stripe.Event.list, type=event_type, limit=20, **_options(key)
+        events = await _auto_paging_dicts(
+            stripe.Event.list,
+            type=event_type,
+            limit=100,
+            **_options(key),
         )
-        for candidate in page.data:
-            event = _dict(candidate)
+        for event in events:
             obj = event.get("data", {}).get("object", {})
             if obj.get("id") == object_id:
                 return event
@@ -64,11 +77,13 @@ async def _wait_event(key: str, event_type: str, object_id: str) -> dict[str, An
 
 
 async def _latest_charge_for_invoice(key: str, invoice_id: str) -> str:
-    payments = await asyncio.to_thread(
-        stripe.InvoicePayment.list, invoice=invoice_id, limit=10, **_options(key)
+    payments = await _auto_paging_dicts(
+        stripe.InvoicePayment.list,
+        invoice=invoice_id,
+        limit=100,
+        **_options(key),
     )
-    for payment in payments.data:
-        raw = _dict(payment)
+    for raw in payments:
         payment_ref = raw.get("payment") or {}
         intent_id = payment_ref.get("payment_intent")
         if intent_id:
@@ -107,20 +122,19 @@ async def _wait_paid_invoice(
 ) -> dict[str, Any]:
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
-        invoices = await asyncio.to_thread(
+        invoices = await _auto_paging_dicts(
             stripe.Invoice.list,
             subscription=subscription_id,
             status="paid",
-            limit=10,
+            limit=100,
             **_options(key),
         )
-        for candidate in invoices.data:
-            raw = _dict(candidate)
-            if excluding and str(raw.get("id")) in excluding:
+        for invoice in invoices:
+            if excluding and str(invoice.get("id")) in excluding:
                 continue
-            if billing_reason and raw.get("billing_reason") != billing_reason:
+            if billing_reason and invoice.get("billing_reason") != billing_reason:
                 continue
-            return raw
+            return invoice
         await asyncio.sleep(1)
     raise AssertionError("Stripe did not expose the expected paid invoice")
 
@@ -137,6 +151,52 @@ async def _cleanup_call(
 def _assert_cleanup(errors: list[str]) -> None:
     if errors:
         pytest.fail("real Stripe cleanup failed: " + ", ".join(errors))
+
+
+class _TestClockRecoveryManifest:
+    """Atomically retain only non-secret identities needed for interrupted cleanup."""
+
+    def __init__(self, run_id: str) -> None:
+        raw_path = os.getenv("TEST_CLOCK_RECOVERY_MANIFEST", "").strip()
+        self.path = Path(raw_path) if raw_path else None
+        self.state: dict[str, Any] = {
+            "schema_version": 1,
+            "run_id": run_id,
+            "stripe_api_version": STRIPE_API_VERSION,
+            "secret_free": True,
+            "status": "initialized",
+        }
+        self.update()
+
+    def update(self, **values: Any) -> None:
+        self.state.update(values)
+        self.state["updated_at_unix"] = int(time.time())
+        if self.path is None:
+            return
+        temporary = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}.tmp")
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                descriptor = None
+                json.dump(self.state, handle, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self.path)
+            self.path.chmod(0o600)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            temporary.unlink(missing_ok=True)
+
+    def remove(self) -> None:
+        if self.path is not None:
+            self.path.unlink(missing_ok=True)
 
 
 async def _cleanup_standard_objects(
@@ -223,49 +283,138 @@ async def _cleanup_schedule(
         errors.append(f"subscription_schedule:{type(exc).__name__}")
 
 
+async def _inventory_page(
+    errors: list[str],
+    label: str,
+    operation: Any,
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> list[dict[str, Any]]:
+    try:
+        return await _auto_paging_dicts(operation, *args, **kwargs)
+    except stripe.StripeError as exc:
+        errors.append(f"{label}_inventory:{type(exc).__name__}")
+        return []
+
+
+async def _run_inventory(
+    errors: list[str], key: str, run_id: str, *, phase: str
+) -> dict[str, list[dict[str, Any]]]:
+    subscriptions = [
+        raw
+        for raw in await _inventory_page(
+            errors,
+            f"{phase}_subscription",
+            stripe.Subscription.list,
+            status="all",
+            limit=100,
+            **_options(key),
+        )
+        if (raw.get("metadata") or {}).get("run_id") == run_id
+    ]
+    subscription_ids = {str(raw["id"]) for raw in subscriptions}
+    schedules = []
+    for raw in await _inventory_page(
+        errors,
+        f"{phase}_schedule",
+        stripe.SubscriptionSchedule.list,
+        limit=100,
+        **_options(key),
+    ):
+        subscription = raw.get("subscription")
+        subscription_id = (
+            str(subscription.get("id"))
+            if isinstance(subscription, dict)
+            else str(subscription or "")
+        )
+        product_line = str((raw.get("metadata") or {}).get("product_line") or "")
+        if subscription_id in subscription_ids or run_id in product_line:
+            schedules.append(raw)
+    customers = [
+        raw
+        for raw in await _inventory_page(
+            errors,
+            f"{phase}_customer",
+            stripe.Customer.list,
+            limit=100,
+            **_options(key),
+        )
+        if (raw.get("metadata") or {}).get("run_id") == run_id
+    ]
+    prices = [
+        raw
+        for raw in await _inventory_page(
+            errors,
+            f"{phase}_price",
+            stripe.Price.list,
+            limit=100,
+            **_options(key),
+        )
+        if (raw.get("metadata") or {}).get("run_id") == run_id
+    ]
+    products = [
+        raw
+        for raw in await _inventory_page(
+            errors,
+            f"{phase}_product",
+            stripe.Product.list,
+            limit=100,
+            **_options(key),
+        )
+        if (raw.get("metadata") or {}).get("run_id") == run_id
+    ]
+    clocks = [
+        raw
+        for raw in await _inventory_page(
+            errors,
+            f"{phase}_test_clock",
+            stripe.test_helpers.TestClock.list,
+            limit=100,
+            **_options(key),
+        )
+        if raw.get("name") == f"stripe-entitlements-annual-{run_id}"
+    ]
+    return {
+        "subscriptions": subscriptions,
+        "schedules": schedules,
+        "customers": customers,
+        "prices": prices,
+        "products": products,
+        "test_clocks": clocks,
+    }
+
+
+async def _assert_run_inventory_empty(errors: list[str], key: str, run_id: str) -> None:
+    inventory = await _run_inventory(errors, key, run_id, phase="post_cleanup")
+    residual_counts = {
+        "subscriptions": sum(raw.get("status") != "canceled" for raw in inventory["subscriptions"]),
+        "customers": len(inventory["customers"]),
+        "active_prices": sum(bool(raw.get("active")) for raw in inventory["prices"]),
+        "active_products": sum(bool(raw.get("active")) for raw in inventory["products"]),
+        "test_clocks": len(inventory["test_clocks"]),
+        "unfinished_schedules": sum(
+            raw.get("status") not in {"released", "canceled", "completed"}
+            for raw in inventory["schedules"]
+        ),
+    }
+    for label, count in residual_counts.items():
+        if count:
+            errors.append(f"post_cleanup_{label}_remaining:{count}")
+
+
 async def _sweep_run_objects(errors: list[str], key: str, run_id: str) -> None:
-    owned_subscriptions: list[dict[str, Any]] = []
-    try:
-        subscriptions = await asyncio.to_thread(
-            stripe.Subscription.list, status="all", limit=100, **_options(key)
-        )
-        for subscription in subscriptions.data:
-            raw = _dict(subscription)
-            if (raw.get("metadata") or {}).get("run_id") == run_id:
-                owned_subscriptions.append(raw)
-    except stripe.StripeError as exc:
-        errors.append(f"subscription_inventory:{type(exc).__name__}")
-
-    owned_subscription_ids = {str(raw["id"]) for raw in owned_subscriptions}
-    try:
-        schedules = await asyncio.to_thread(
-            stripe.SubscriptionSchedule.list, limit=100, **_options(key)
-        )
-        for schedule in schedules.data:
-            raw = _dict(schedule)
-            metadata = raw.get("metadata") or {}
-            subscription = raw.get("subscription")
-            subscription_id = (
-                str(subscription.get("id"))
-                if isinstance(subscription, dict)
-                else str(subscription or "")
+    inventory = await _run_inventory(errors, key, run_id, phase="sweep")
+    for raw in inventory["schedules"]:
+        if raw.get("status") not in {"released", "canceled", "completed"}:
+            await _cleanup_call(
+                errors,
+                "swept_subscription_schedule",
+                stripe.SubscriptionSchedule.release,
+                raw["id"],
+                **_options(key),
             )
-            if (
-                subscription_id in owned_subscription_ids
-                and run_id in str(metadata.get("product_line") or "")
-                and raw.get("status") not in {"released", "canceled", "completed"}
-            ):
-                await _cleanup_call(
-                    errors,
-                    "swept_subscription_schedule",
-                    stripe.SubscriptionSchedule.release,
-                    raw["id"],
-                    **_options(key),
-                )
-    except stripe.StripeError as exc:
-        errors.append(f"schedule_sweep:{type(exc).__name__}")
-
-    for raw in owned_subscriptions:
+    for raw in inventory["subscriptions"]:
         if raw.get("status") != "canceled":
             await _cleanup_call(
                 errors,
@@ -274,58 +423,34 @@ async def _sweep_run_objects(errors: list[str], key: str, run_id: str) -> None:
                 raw["id"],
                 **_options(key),
             )
-
-    try:
-        customers = await asyncio.to_thread(stripe.Customer.list, limit=100, **_options(key))
-        for customer in customers.data:
-            raw = _dict(customer)
-            if (raw.get("metadata") or {}).get("run_id") == run_id:
-                await _cleanup_call(
-                    errors,
-                    "swept_customer",
-                    stripe.Customer.delete,
-                    raw["id"],
-                    **_options(key),
-                )
-    except stripe.StripeError as exc:
-        errors.append(f"customer_sweep:{type(exc).__name__}")
-
-    for resource, label in ((stripe.Price, "price"), (stripe.Product, "product")):
-        try:
-            resources = await asyncio.to_thread(resource.list, limit=100, **_options(key))
-            for candidate in resources.data:
-                raw = _dict(candidate)
-                if (
-                    (raw.get("metadata") or {}).get("run_id") == run_id
-                    and bool(raw.get("active"))
-                ):
-                    await _cleanup_call(
-                        errors,
-                        f"swept_{label}",
-                        resource.modify,
-                        raw["id"],
-                        active=False,
-                        **_options(key),
-                    )
-        except stripe.StripeError as exc:
-            errors.append(f"{label}_sweep:{type(exc).__name__}")
-
-    try:
-        clocks = await asyncio.to_thread(
-            stripe.test_helpers.TestClock.list, limit=100, **_options(key)
+    for raw in inventory["customers"]:
+        await _cleanup_call(
+            errors,
+            "swept_customer",
+            stripe.Customer.delete,
+            raw["id"],
+            **_options(key),
         )
-        for clock in clocks.data:
-            raw = _dict(clock)
-            if raw.get("name") == f"stripe-entitlements-annual-{run_id}":
+    for resource, label in ((stripe.Price, "price"), (stripe.Product, "product")):
+        for raw in inventory[f"{label}s"]:
+            if bool(raw.get("active")):
                 await _cleanup_call(
                     errors,
-                    "swept_test_clock",
-                    stripe.test_helpers.TestClock.delete,
+                    f"swept_{label}",
+                    resource.modify,
                     raw["id"],
+                    active=False,
                     **_options(key),
                 )
-    except stripe.StripeError as exc:
-        errors.append(f"test_clock_sweep:{type(exc).__name__}")
+    for raw in inventory["test_clocks"]:
+        await _cleanup_call(
+            errors,
+            "swept_test_clock",
+            stripe.test_helpers.TestClock.delete,
+            raw["id"],
+            **_options(key),
+        )
+    await _assert_run_inventory_empty(errors, key, run_id)
 
 
 async def test_real_paid_and_refund_events_converge_in_postgres(
@@ -400,21 +525,19 @@ async def test_real_paid_and_refund_events_converge_in_postgres(
                 customer.id,
                 subscription.id,
             )
-        invoices = await asyncio.to_thread(
+        invoices = await _auto_paging_dicts(
             stripe.Invoice.list,
             subscription=subscription.id,
             status="paid",
-            limit=1,
+            limit=100,
             **_options(key),
         )
-        assert invoices.data
-        invoice_id = str(invoices.data[0].id)
+        assert invoices
+        invoice_id = str(invoices[0]["id"])
         paid_event = await _wait_event(key, "invoice.paid", invoice_id)
         observed_event_version = str(paid_event.get("api_version") or "")
         assert observed_event_version
-        gateway = StripeGateway(
-            key, "whsec_not_used", product_line, api_version=STRIPE_API_VERSION
-        )
+        gateway = StripeGateway(key, "whsec_not_used", product_line, api_version=STRIPE_API_VERSION)
         prepared_paid = await gateway.prepare_event(paid_event)
         real_catalog = PlanCatalog(catalog.plans, prefix)
         processor = EventProcessor(
@@ -428,22 +551,26 @@ async def test_real_paid_and_refund_events_converge_in_postgres(
         paid_result = await processor.process(prepared_paid)
         assert paid_result.outcome == "handled"
         async with pool.acquire() as conn:
-            assert await conn.fetchval(
-                "select credits_balance from billing_accounts where id=$1::uuid", account_id
-            ) == 300
+            assert (
+                await conn.fetchval(
+                    "select credits_balance from billing_accounts where id=$1::uuid", account_id
+                )
+                == 300
+            )
 
         charge_id = await _latest_charge_for_invoice(key, invoice_id)
-        await asyncio.to_thread(
-            stripe.Refund.create, charge=charge_id, amount=950, **_options(key)
-        )
+        await asyncio.to_thread(stripe.Refund.create, charge=charge_id, amount=950, **_options(key))
         refund_event = await _wait_event(key, "charge.refunded", charge_id)
         prepared_refund = await gateway.prepare_event(refund_event)
         refund_result = await processor.process(prepared_refund)
         assert refund_result.outcome == "handled"
         async with pool.acquire() as conn:
-            assert await conn.fetchval(
-                "select credits_balance from billing_accounts where id=$1::uuid", account_id
-            ) == 150
+            assert (
+                await conn.fetchval(
+                    "select credits_balance from billing_accounts where id=$1::uuid", account_id
+                )
+                == 150
+            )
     finally:
         await _cleanup_standard_objects(
             cleanup_errors,
@@ -548,9 +675,7 @@ async def test_real_midcycle_upgrade_is_full_price_and_webhook_authoritative(
                 period_end,
             )
 
-        gateway = StripeGateway(
-            key, "whsec_not_used", product_line, api_version=STRIPE_API_VERSION
-        )
+        gateway = StripeGateway(key, "whsec_not_used", product_line, api_version=STRIPE_API_VERSION)
         real_catalog = PlanCatalog(catalog.plans, prefix)
         coordinator = PlanChangeCoordinator(pool, real_catalog, gateway)
         preview = await coordinator.preview_remote(
@@ -612,12 +737,205 @@ async def test_real_midcycle_upgrade_is_full_price_and_webhook_authoritative(
         _assert_cleanup(cleanup_errors)
 
 
+async def test_real_prorated_delta_upgrade_and_refund_preserve_funding_lineage(
+    pool: asyncpg.Pool, catalog: PlanCatalog, make_account
+) -> None:
+    key = _test_key()
+    run_id = uuid.uuid4().hex[:12]
+    cleanup_errors: list[str] = []
+    prefix = f"d{run_id}"
+    product_line = f"stripe-entitlements-delta-{run_id}"
+    account_id = await make_account(customer=None, subscription=None)
+    product = None
+    starter_price = None
+    pro_price = None
+    customer = None
+    subscription = None
+    try:
+        product = await asyncio.to_thread(
+            stripe.Product.create,
+            name=f"Stripe Entitlements delta test {run_id}",
+            metadata={"automated_test": "true", "run_id": run_id},
+            **_create_options(key, run_id, "delta-product"),
+        )
+        starter_price = await asyncio.to_thread(
+            stripe.Price.create,
+            product=product.id,
+            currency="usd",
+            unit_amount=1900,
+            recurring={"interval": "month"},
+            lookup_key=f"{prefix}_starter_month",
+            metadata={"automated_test": "true", "run_id": run_id},
+            **_create_options(key, run_id, "delta-starter-price"),
+        )
+        pro_price = await asyncio.to_thread(
+            stripe.Price.create,
+            product=product.id,
+            currency="usd",
+            unit_amount=4900,
+            recurring={"interval": "month"},
+            lookup_key=f"{prefix}_pro_month",
+            metadata={"automated_test": "true", "run_id": run_id},
+            **_create_options(key, run_id, "delta-pro-price"),
+        )
+        customer = await asyncio.to_thread(
+            stripe.Customer.create,
+            name=f"Automated delta test {run_id}",
+            metadata={
+                "automated_test": "true",
+                "run_id": run_id,
+                "account_id": account_id,
+            },
+            **_create_options(key, run_id, "delta-customer"),
+        )
+        payment_method = await asyncio.to_thread(
+            stripe.PaymentMethod.attach,
+            "pm_card_visa",
+            customer=customer.id,
+            **_options(key),
+        )
+        await asyncio.to_thread(
+            stripe.Customer.modify,
+            customer.id,
+            invoice_settings={"default_payment_method": payment_method.id},
+            **_options(key),
+        )
+        subscription = await asyncio.to_thread(
+            stripe.Subscription.create,
+            customer=customer.id,
+            items=[{"price": starter_price.id}],
+            payment_behavior="error_if_incomplete",
+            metadata={
+                "account_id": account_id,
+                "product_line": product_line,
+                "run_id": run_id,
+            },
+            **_create_options(key, run_id, "delta-subscription"),
+        )
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """update billing_accounts set stripe_customer_id=$2,
+                     stripe_subscription_id=$3 where id=$1::uuid""",
+                account_id,
+                customer.id,
+                subscription.id,
+            )
+        initial_invoices = await _auto_paging_dicts(
+            stripe.Invoice.list,
+            subscription=subscription.id,
+            status="paid",
+            limit=100,
+            **_options(key),
+        )
+        assert initial_invoices
+        initial_invoice_id = str(initial_invoices[0]["id"])
+        initial_event = await _wait_event(key, "invoice.paid", initial_invoice_id)
+        observed_event_version = str(initial_event.get("api_version") or "")
+        assert observed_event_version
+        gateway = StripeGateway(key, "whsec_not_used", product_line, api_version=STRIPE_API_VERSION)
+        real_catalog = PlanCatalog(catalog.plans, prefix)
+        processor = EventProcessor(
+            pool,
+            real_catalog,
+            product_line,
+            expected_api_version=observed_event_version,
+        )
+        initial_result = await processor.process(await gateway.prepare_event(initial_event))
+        assert initial_result.outcome == "handled"
+
+        coordinator = PlanChangeCoordinator(
+            pool,
+            real_catalog,
+            gateway,
+            transition_policy="prorated_delta",
+        )
+        preview = await coordinator.preview_remote(
+            account_id, "pro", "month", f"real-delta-{run_id}"
+        )
+        assert preview.decision.timing == "immediate"
+        assert preview.transition_policy == "prorated_delta"
+        assert preview.entitlement_credit_delta == 700
+        assert preview.estimated_amount_due is not None
+        assert preview.estimated_amount_due > 0
+        assert preview.estimated_credit_applied is not None
+        assert preview.estimated_credit_applied > 0
+
+        confirmed = await coordinator.confirm(account_id, preview.change_id)
+        assert confirmed.status == "applied"
+        updated = _dict(
+            await asyncio.to_thread(stripe.Subscription.retrieve, subscription.id, **_options(key))
+        )
+        latest_invoice = updated.get("latest_invoice")
+        upgrade_invoice_id = (
+            str(latest_invoice.get("id"))
+            if isinstance(latest_invoice, dict)
+            else str(latest_invoice)
+        )
+        assert upgrade_invoice_id not in {"", "None", initial_invoice_id}
+        upgrade_event = await _wait_event(key, "invoice.paid", upgrade_invoice_id)
+        processed = await processor.process(await gateway.prepare_event(upgrade_event))
+        assert processed.outcome == "handled"
+        async with pool.acquire() as conn:
+            account = await conn.fetchrow(
+                """select plan_key,plan_interval,credits_balance,grant_epoch,
+                          entitlement_revoked from billing_accounts where id=$1::uuid""",
+                account_id,
+            )
+            allocation = await conn.fetchrow(
+                """select * from billing_funding_allocations
+                     where stripe_invoice_id=$1""",
+                upgrade_invoice_id,
+            )
+        assert account is not None and allocation is not None
+        assert tuple(account) == ("pro", "month", 1000, 1, False)
+        assert allocation["source_invoice_id"] == initial_invoice_id
+        assert allocation["entitlement_delta"] == 700
+        assert allocation["amount_paid"] == preview.estimated_amount_due
+
+        charge_id = await _latest_charge_for_invoice(key, upgrade_invoice_id)
+        await asyncio.to_thread(
+            stripe.Refund.create,
+            charge=charge_id,
+            **_create_options(key, run_id, "delta-full-refund"),
+        )
+        refund_event = await _wait_event(key, "charge.refunded", charge_id)
+        refund_result = await processor.process(await gateway.prepare_event(refund_event))
+        assert refund_result.outcome == "handled"
+        async with pool.acquire() as conn:
+            reverted = await conn.fetchrow(
+                """select plan_key,plan_interval,credits_balance,grant_epoch,
+                          entitlement_revoked from billing_accounts where id=$1::uuid""",
+                account_id,
+            )
+            allocation_status = await conn.fetchrow(
+                """select status,refunded_units from billing_funding_allocations
+                     where stripe_invoice_id=$1""",
+                upgrade_invoice_id,
+            )
+        assert reverted is not None and allocation_status is not None
+        assert tuple(reverted) == ("starter", "month", 300, 2, False)
+        assert tuple(allocation_status) == ("closed", 700)
+    finally:
+        await _cleanup_standard_objects(
+            cleanup_errors,
+            key,
+            subscription=subscription,
+            customer=customer,
+            prices=(starter_price, pro_price),
+            product=product,
+        )
+        await _sweep_run_objects(cleanup_errors, key, run_id)
+        _assert_cleanup(cleanup_errors)
+
+
 @pytest.mark.parametrize(
     "failure_payment_method",
     ["pm_card_authenticationRequired", "pm_card_chargeCustomerFail"],
 )
+@pytest.mark.parametrize("transition_policy", ["full_period_reset", "prorated_delta"])
 async def test_real_failed_immediate_change_keeps_old_entitlement(
     failure_payment_method: str,
+    transition_policy: str,
     pool: asyncpg.Pool,
     catalog: PlanCatalog,
     make_account,
@@ -701,27 +1019,46 @@ async def test_real_failed_immediate_change_keeps_old_entitlement(
         async with pool.acquire() as conn:
             await conn.execute(
                 """update billing_accounts set stripe_customer_id=$2,
-                     stripe_subscription_id=$3,plan_key='starter',plan_interval='month',
-                     subscription_status='active',credits_balance=300,grant_epoch=1,
-                     current_period_end=$4,entitlement_period_end=$4,credit_expires_at=$4,
-                     entitlement_revoked=false where id=$1::uuid""",
+                     stripe_subscription_id=$3 where id=$1::uuid""",
                 account_id,
                 customer.id,
                 subscription.id,
-                period_end,
             )
 
-        gateway = StripeGateway(
-            key, "whsec_not_used", product_line, api_version=STRIPE_API_VERSION
-        )
+        gateway = StripeGateway(key, "whsec_not_used", product_line, api_version=STRIPE_API_VERSION)
         real_catalog = PlanCatalog(catalog.plans, prefix)
-        coordinator = PlanChangeCoordinator(pool, real_catalog, gateway)
+        initial_invoice = await _wait_paid_invoice(key, subscription.id)
+        initial_event = await _wait_event(key, "invoice.paid", str(initial_invoice["id"]))
+        observed_event_version = str(initial_event.get("api_version") or "")
+        assert observed_event_version
+        processor = EventProcessor(
+            pool,
+            real_catalog,
+            product_line,
+            expected_api_version=observed_event_version,
+        )
+        initial_result = await processor.process(await gateway.prepare_event(initial_event))
+        assert initial_result.outcome == "handled"
+        coordinator = PlanChangeCoordinator(
+            pool,
+            real_catalog,
+            gateway,
+            transition_policy=transition_policy,  # type: ignore[arg-type]
+        )
         preview = await coordinator.preview_remote(
             account_id, "pro", "month", f"real-failed-change-{run_id}"
         )
         assert preview.decision.timing == "immediate"
-        assert preview.estimated_amount_due == 4900
-        assert preview.estimated_credit_applied == 0
+        assert preview.transition_policy == transition_policy
+        if transition_policy == "prorated_delta":
+            assert preview.estimated_amount_due is not None
+            assert preview.estimated_amount_due > 0
+            assert preview.estimated_credit_applied is not None
+            assert preview.estimated_credit_applied > 0
+            assert preview.entitlement_credit_delta == 700
+        else:
+            assert preview.estimated_amount_due == 4900
+            assert preview.estimated_credit_applied == 0
 
         failing_payment_method = await asyncio.to_thread(
             stripe.PaymentMethod.attach,
@@ -751,25 +1088,14 @@ async def test_real_failed_immediate_change_keeps_old_entitlement(
         assert remote_raw.get("pending_update")
         current_price = remote_raw["items"]["data"][0]["price"]
         current_price_id = (
-            str(current_price.get("id"))
-            if isinstance(current_price, dict)
-            else str(current_price)
+            str(current_price.get("id")) if isinstance(current_price, dict) else str(current_price)
         )
         assert current_price_id == starter_price.id
         invoice = remote_raw.get("latest_invoice") or {}
         assert isinstance(invoice, dict) and invoice.get("status") == "open"
         failure_event = await _wait_event(key, "invoice.payment_failed", str(invoice["id"]))
-        observed_event_version = str(failure_event.get("api_version") or "")
-        assert observed_event_version
-        processor = EventProcessor(
-            pool,
-            real_catalog,
-            product_line,
-            expected_api_version=observed_event_version,
-        )
-        failure_result = await processor.process(
-            await gateway.prepare_event(failure_event)
-        )
+        assert failure_event.get("api_version") == observed_event_version
+        failure_result = await processor.process(await gateway.prepare_event(failure_event))
         assert failure_result.outcome == "ignored"
         assert (
             failure_result.reason
@@ -791,6 +1117,11 @@ async def test_real_failed_immediate_change_keeps_old_entitlement(
             ledger_count = await conn.fetchval(
                 "select count(*) from credit_ledger where account_id=$1::uuid", account_id
             )
+            allocation_count = await conn.fetchval(
+                """select count(*) from billing_funding_allocations
+                     where account_id=$1::uuid""",
+                account_id,
+            )
             incident_count = await conn.fetchval(
                 """select count(*) from billing_incidents
                      where account_id=$1::uuid and kind='plan_change_payment_failed'""",
@@ -808,8 +1139,13 @@ async def test_real_failed_immediate_change_keeps_old_entitlement(
             period_end,
         )
         assert account["credit_expires_at"] > datetime.now(UTC)
-        assert stored is not None and stored["status"] == "requires_action"
-        assert ledger_count == 0
+        assert stored is not None
+        assert (stored["status"], stored["transition_policy"]) == (
+            "requires_action",
+            transition_policy,
+        )
+        assert ledger_count == 1
+        assert allocation_count == 0
         assert incident_count == 1
         if result.client_secret:
             assert result.client_secret not in str(dict(stored))
@@ -918,12 +1254,8 @@ async def test_real_annual_origin_change_builds_period_end_schedule(
                 period_end,
             )
 
-        gateway = StripeGateway(
-            key, "whsec_not_used", product_line, api_version=STRIPE_API_VERSION
-        )
-        coordinator = PlanChangeCoordinator(
-            pool, PlanCatalog(catalog.plans, prefix), gateway
-        )
+        gateway = StripeGateway(key, "whsec_not_used", product_line, api_version=STRIPE_API_VERSION)
+        coordinator = PlanChangeCoordinator(pool, PlanCatalog(catalog.plans, prefix), gateway)
         preview = await coordinator.preview_remote(
             account_id, "pro", "year", f"real-annual-schedule-{run_id}"
         )
@@ -947,9 +1279,7 @@ async def test_real_annual_origin_change_builds_period_end_schedule(
         assert phases[0]["end_date"] == phases[1]["start_date"]
         target_price = phases[1]["items"][0]["price"]
         target_price_id = (
-            str(target_price.get("id"))
-            if isinstance(target_price, dict)
-            else str(target_price)
+            str(target_price.get("id")) if isinstance(target_price, dict) else str(target_price)
         )
         assert target_price_id == pro_price.id
         assert schedule_raw.get("end_behavior") == "release"
@@ -979,10 +1309,13 @@ async def test_real_test_clock_annual_slots_downtime_and_renewal(
 ) -> None:
     key = _test_key()
     run_id = uuid.uuid4().hex[:12]
+    recovery_manifest = _TestClockRecoveryManifest(run_id)
     cleanup_errors: list[str] = []
+    body_succeeded = False
     prefix = f"c{run_id}"
     product_line = f"stripe-entitlements-clock-{run_id}"
     account_id = await make_account(customer=None, subscription=None)
+    recovery_manifest.update(status="creating", account_id=account_id)
     clock = None
     product = None
     annual_price = None
@@ -995,12 +1328,14 @@ async def test_real_test_clock_annual_slots_downtime_and_renewal(
             name=f"stripe-entitlements-annual-{run_id}",
             **_create_options(key, run_id, "test-clock"),
         )
+        recovery_manifest.update(test_clock_id=str(clock.id))
         product = await asyncio.to_thread(
             stripe.Product.create,
             name=f"Stripe Entitlements annual clock test {run_id}",
             metadata={"automated_test": "true", "run_id": run_id},
             **_create_options(key, run_id, "product"),
         )
+        recovery_manifest.update(product_id=str(product.id))
         annual_price = await asyncio.to_thread(
             stripe.Price.create,
             product=product.id,
@@ -1011,6 +1346,7 @@ async def test_real_test_clock_annual_slots_downtime_and_renewal(
             metadata={"automated_test": "true", "run_id": run_id},
             **_create_options(key, run_id, "starter-price"),
         )
+        recovery_manifest.update(annual_price_id=str(annual_price.id))
         customer = await asyncio.to_thread(
             stripe.Customer.create,
             name=f"Automated annual clock test {run_id}",
@@ -1022,6 +1358,7 @@ async def test_real_test_clock_annual_slots_downtime_and_renewal(
             },
             **_create_options(key, run_id, "customer"),
         )
+        recovery_manifest.update(customer_id=str(customer.id))
         payment_method = await asyncio.to_thread(
             stripe.PaymentMethod.attach,
             "pm_card_visa",
@@ -1046,6 +1383,7 @@ async def test_real_test_clock_annual_slots_downtime_and_renewal(
             },
             **_create_options(key, run_id, "subscription"),
         )
+        recovery_manifest.update(subscription_id=str(subscription.id), status="running")
         subscription_raw = _dict(subscription)
         item = subscription_raw["items"]["data"][0]
         initial_period_end = int(item["current_period_end"])
@@ -1060,13 +1398,12 @@ async def test_real_test_clock_annual_slots_downtime_and_renewal(
 
         initial_invoice = await _wait_paid_invoice(key, subscription.id)
         initial_invoice_id = str(initial_invoice["id"])
+        recovery_manifest.update(initial_invoice_id=initial_invoice_id)
         initial_event = await _wait_event(key, "invoice.paid", initial_invoice_id)
         observed_event_version = str(initial_event.get("api_version") or "")
         assert observed_event_version
         real_catalog = PlanCatalog(catalog.plans, prefix)
-        gateway = StripeGateway(
-            key, "whsec_not_used", product_line, api_version=STRIPE_API_VERSION
-        )
+        gateway = StripeGateway(key, "whsec_not_used", product_line, api_version=STRIPE_API_VERSION)
         processor = EventProcessor(
             pool,
             real_catalog,
@@ -1142,9 +1479,7 @@ async def test_real_test_clock_annual_slots_downtime_and_renewal(
         expected_jump_slot = min(boundaries + 1, 12)
         assert expected_jump_slot > 2
         downtime_snapshot = await gateway.subscription_snapshot(subscription.id)
-        downtime_result = await service.grant_due(
-            account_id, downtime_now, downtime_snapshot
-        )
+        downtime_result = await service.grant_due(account_id, downtime_now, downtime_snapshot)
         assert downtime_result.reason == f"granted annual slot {expected_jump_slot}"
         async with pool.acquire() as conn:
             old_slots = await conn.fetch(
@@ -1182,11 +1517,10 @@ async def test_real_test_clock_annual_slots_downtime_and_renewal(
             billing_reason="subscription_cycle",
         )
         renewal_invoice_id = str(renewal_invoice["id"])
+        recovery_manifest.update(renewal_invoice_id=renewal_invoice_id)
         renewal_event = await _wait_event(key, "invoice.paid", renewal_invoice_id)
         assert renewal_event.get("api_version") == observed_event_version
-        renewal_result = await processor.process(
-            await gateway.prepare_event(renewal_event)
-        )
+        renewal_result = await processor.process(await gateway.prepare_event(renewal_event))
         assert renewal_result.outcome == "handled"
         async with pool.acquire() as conn:
             account = await conn.fetchrow(
@@ -1218,7 +1552,13 @@ async def test_real_test_clock_annual_slots_downtime_and_renewal(
             initial_period_end, tz=UTC
         )
         assert [row["grant_slot"] for row in renewal_slots] == [1]
+        recovery_manifest.update(status="assertions_passed")
+        body_succeeded = True
     finally:
+        try:
+            recovery_manifest.update(status="cleanup_started")
+        except OSError as exc:
+            cleanup_errors.append(f"recovery_manifest:{type(exc).__name__}")
         await _cleanup_standard_objects(
             cleanup_errors,
             key,
@@ -1236,4 +1576,13 @@ async def test_real_test_clock_annual_slots_downtime_and_renewal(
                 **_options(key),
             )
         await _sweep_run_objects(cleanup_errors, key, run_id)
+        if cleanup_errors:
+            try:
+                recovery_manifest.update(status="cleanup_failed", cleanup_errors=cleanup_errors)
+            except OSError as exc:
+                cleanup_errors.append(f"recovery_manifest_cleanup_failure:{type(exc).__name__}")
         _assert_cleanup(cleanup_errors)
+        if body_succeeded:
+            recovery_manifest.remove()
+        else:
+            recovery_manifest.update(status="test_failed_cleanup_succeeded")

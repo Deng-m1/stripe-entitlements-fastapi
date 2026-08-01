@@ -17,7 +17,7 @@ export const metadata: Metadata = {
   // builds. Public canonical deployments must provide NEXT_PUBLIC_SITE_URL.
   metadataBase: publicSiteUrl ?? new URL("http://localhost:3000"),
   title: {
-    default: "Open-source Stripe Billing for FastAPI",
+    default: "Stripe Subscription Billing for FastAPI & PostgreSQL",
     template: `%s · ${SITE_NAME}`,
   },
   description: SITE_DESCRIPTION,
@@ -29,12 +29,18 @@ export const metadata: Metadata = {
   keywords: [
     "Stripe subscription billing",
     "FastAPI Stripe integration",
+    "FastAPI subscription billing template",
     "SaaS billing template",
     "Stripe webhooks",
     "credit entitlements",
     "PostgreSQL billing",
+    "Stripe annual subscriptions",
+    "Stripe Test Clock",
+    "Stripe Checkout SCA",
     "Next.js pricing page",
     "subscription upgrades and downgrades",
+    "Stripe prorated subscription upgrade",
+    "Stripe proration webhook",
   ],
   robots: allowIndexing
     ? {
@@ -52,7 +58,7 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     siteName: SITE_NAME,
-    title: "Open-source Stripe Billing for FastAPI",
+    title: "Stripe Subscription Billing for FastAPI & PostgreSQL",
     description: SITE_DESCRIPTION,
     ...(absoluteSiteUrl(publicSiteUrl, "/")
       ? { url: absoluteSiteUrl(publicSiteUrl, "/") }
@@ -60,7 +66,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "Open-source Stripe Billing for FastAPI",
+    title: "Stripe Subscription Billing for FastAPI & PostgreSQL",
     description: SITE_DESCRIPTION,
   },
 };

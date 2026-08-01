@@ -2,9 +2,9 @@
 
 GitHub description:
 
-> Open-source Stripe subscription billing template for FastAPI, PostgreSQL, and
-> Next.js with race-safe webhooks, credit entitlements, annual grants, refunds,
-> Checkout, and server-controlled plan changes.
+> Open-source Stripe subscription billing and entitlements template for FastAPI,
+> PostgreSQL, and Next.js with two complete full-period/prorated upgrade policies,
+> race-safe webhooks, annual grants, refunds, SCA, and Test Clock gates.
 
 Suggested topics:
 
@@ -23,7 +23,10 @@ Suggested topics:
 - `saas`
 - `stripe-webhooks`
 - `subscription-management`
+- `stripe-proration`
 - `payment-integration`
+- `stripe-checkout`
+- `stripe-test-clock`
 
 Suggested repository settings:
 
@@ -42,6 +45,6 @@ Example authenticated administrator command:
 
 ```bash
 gh repo edit FromCSUZhou/stripe-entitlements-fastapi \\
-  --description "Open-source Stripe subscription billing template for FastAPI, PostgreSQL, and Next.js with race-safe webhooks and credit entitlements." \\
-  --add-topic stripe,fastapi,postgresql,subscriptions,billing,entitlements,webhooks,idempotency,concurrency,nextjs,python,payments,saas,stripe-webhooks,subscription-management,payment-integration
+  --description "Open-source Stripe billing and entitlements for FastAPI/PostgreSQL with two complete full-period/prorated upgrade policies and race-safe webhooks." \\
+  --add-topic stripe,fastapi,postgresql,subscriptions,billing,entitlements,webhooks,idempotency,concurrency,nextjs,python,payments,saas,stripe-webhooks,subscription-management,stripe-proration,payment-integration,stripe-checkout,stripe-test-clock
 ```

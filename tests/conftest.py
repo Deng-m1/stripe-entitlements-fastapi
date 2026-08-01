@@ -30,9 +30,12 @@ def _run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[st
 
 
 def _postgres_image() -> str:
+    configured = os.environ.get("TEST_POSTGRES_IMAGE", "").strip()
+    if configured:
+        return configured
     output = _run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"]).stdout
     for line in output.splitlines():
-        if "postgres" in line and "<none>" not in line:
+        if line == "postgres:17-alpine" or line.endswith("/postgres:17-alpine"):
             return line.strip()
     return "postgres:17-alpine"
 
@@ -49,6 +52,8 @@ def postgres_container() -> Iterator[None]:
             "-d",
             "--name",
             PG_CONTAINER,
+            "--tmpfs",
+            "/var/lib/postgresql/data:rw,nosuid,nodev,size=512m",
             "-e",
             f"POSTGRES_PASSWORD={PG_PASSWORD}",
             "-e",
@@ -82,9 +87,7 @@ def postgres_container() -> Iterator[None]:
     else:
         _run(["docker", "rm", "-f", PG_CONTAINER])
         pytest.exit("PostgreSQL did not become ready")
-    migration = "\n".join(
-        path.read_text() for path in sorted((ROOT / "migrations").glob("*.sql"))
-    )
+    migration = "\n".join(path.read_text() for path in sorted((ROOT / "migrations").glob("*.sql")))
     applied = subprocess.run(
         [
             "docker",
@@ -121,7 +124,9 @@ async def pool(postgres_container: None) -> AsyncIterator[asyncpg.Pool]:
     )
     async with database_pool.acquire() as conn:
         await conn.execute(
-            """truncate billing_plan_changes,billing_incidents,checkout_claims,
+            """truncate billing_clawback_debts,billing_funding_allocations,
+               billing_plan_changes,
+               billing_incidents,checkout_claims,
                credit_debits,credit_ledger,
                stripe_invoice_state,stripe_webhook_events,billing_accounts
                restart identity cascade"""

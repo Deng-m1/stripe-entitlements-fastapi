@@ -1,5 +1,10 @@
 export type BillingInterval = "month" | "year";
 export type ChangeTiming = "immediate" | "period_end";
+export type TransitionPolicy = "full_period_reset" | "prorated_delta";
+export type SettlementMode =
+  | "new_period_full_price"
+  | "current_period_prorated_delta"
+  | "period_end";
 
 export interface Price {
   currency: string;
@@ -25,6 +30,7 @@ export interface CatalogPlan {
 }
 
 export interface CatalogResponse {
+  transition_policy: TransitionPolicy;
   plans: CatalogPlan[];
 }
 
@@ -49,6 +55,7 @@ export interface PendingChange {
     | "completed"
     | "failed";
   payment_url?: string | null;
+  transition_policy: TransitionPolicy;
 }
 
 export interface PendingCancellation {
@@ -58,6 +65,8 @@ export interface PendingCancellation {
 }
 
 export interface AccountResponse {
+  account_id: string;
+  transition_policy: TransitionPolicy;
   plan_key: string;
   plan_interval: BillingInterval | null;
   subscription_status: "none" | "active" | "past_due" | "canceled";
@@ -96,10 +105,13 @@ export interface ChangePreview {
   target_plan_key: string;
   target_interval: BillingInterval;
   timing: ChangeTiming;
+  transition_policy: TransitionPolicy;
+  settlement_mode: SettlementMode;
   effective_at: string;
   currency: string;
   amount_due_now: number;
   credit_applied: number;
+  entitlement_credit_delta: number | null;
   next_invoice_amount: number;
 }
 
@@ -110,6 +122,7 @@ export interface ChangeConfirmRequest {
 export interface ChangeConfirmResponse {
   status: "confirmed" | "payment_required" | "action_required";
   timing: ChangeTiming;
+  transition_policy: TransitionPolicy;
   target_plan_key: string;
   target_interval: BillingInterval;
   payment_url?: string;

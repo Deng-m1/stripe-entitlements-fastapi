@@ -1,4 +1,7 @@
 import { defineConfig } from "@playwright/test";
+import { statSync } from "node:fs";
+import { resolve } from "node:path";
+import { browserProcessEnvironment } from "./lib/browser-process-environment";
 
 function requiredEnvironment(name: string, expected?: string): string {
   const value = process.env[name]?.trim();
@@ -33,6 +36,12 @@ function integerInRange(name: string, fallback: number, min: number, max: number
 
 requiredEnvironment("E2E_RUN_REAL_STRIPE", "1");
 requiredEnvironment("E2E_STRIPE_MODE", "test");
+const transitionPolicy = requiredEnvironment("E2E_TRANSITION_POLICY");
+if (!["full_period_reset", "prorated_delta"].includes(transitionPolicy)) {
+  throw new Error(
+    "E2E_TRANSITION_POLICY must be full_period_reset or prorated_delta.",
+  );
+}
 if (!requiredEnvironment("STRIPE_SECRET_KEY").startsWith("sk_test_")) {
   throw new Error("Real Stripe browser E2E refuses a key that is not sk_test_.");
 }
@@ -69,8 +78,28 @@ if (!frontend.loopback || !backend.loopback) {
   requiredEnvironment("E2E_ALLOW_REMOTE_BASE_URL", "1");
 }
 
+function validatedStorageState(): string | undefined {
+  const configured = process.env.E2E_STORAGE_STATE?.trim();
+  if (!configured) {
+    if (!frontend.loopback || !backend.loopback) {
+      throw new Error(
+        "Remote browser E2E requires E2E_STORAGE_STATE for an isolated authenticated subject.",
+      );
+    }
+    return undefined;
+  }
+  const path = resolve(configured);
+  const state = statSync(path);
+  if (!state.isFile()) throw new Error("E2E_STORAGE_STATE must identify a file.");
+  if ((state.mode & 0o077) !== 0) {
+    throw new Error("E2E_STORAGE_STATE must not be readable by group or other users.");
+  }
+  return path;
+}
+
 const lifecycleTimeout = positiveDuration("E2E_WEBHOOK_TIMEOUT_MS", 180_000);
 integerInRange("E2E_DECLINE_STABILITY_SECONDS", 10, 10, 60);
+const storageState = validatedStorageState();
 
 export default defineConfig({
   testDir: "./e2e",
@@ -79,7 +108,7 @@ export default defineConfig({
   workers: 1,
   retries: 0,
   forbidOnly: true,
-  timeout: lifecycleTimeout + 120_000,
+  timeout: 2 * lifecycleTimeout + 180_000,
   expect: { timeout: 20_000 },
   outputDir: "test-results/playwright-stripe",
   reporter: [
@@ -88,6 +117,7 @@ export default defineConfig({
   ],
   use: {
     baseURL: frontend.url.origin,
+    storageState,
     browserName: "chromium",
     headless: process.env.E2E_HEADLESS !== "0",
     locale: "en-US",
@@ -96,5 +126,8 @@ export default defineConfig({
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "off",
+    launchOptions: {
+      env: browserProcessEnvironment(process.env),
+    },
   },
 });

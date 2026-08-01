@@ -21,7 +21,10 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --frozen
       - name: Lint
-        run: uv run ruff check .
+        run: |
+          uv run ruff format --check .
+          uv run ruff check .
+          bash -n scripts/run_browser_e2e.sh scripts/run_test_clock_e2e.sh
       - name: Type check
         run: uv run mypy src
       - name: PostgreSQL and race tests

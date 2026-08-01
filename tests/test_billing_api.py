@@ -38,6 +38,7 @@ class FakeBillingGateway:
         self.checkout_kwargs = None
         self.portal_keys: list[str] = []
         self.apply_calls = 0
+        self.last_apply_kwargs = None
 
     async def create_checkout_session(self, **kwargs):  # type: ignore[no-untyped-def]
         self.checkout_kwargs = kwargs
@@ -65,14 +66,30 @@ class FakeBillingGateway:
             f"price_{target_lookup_key}",
             "year" if target_lookup_key.endswith("_year") else "month",
             datetime(2026, 7, 1, tzinfo=UTC),
-            datetime(2026, 8, 1, tzinfo=UTC),
+            datetime(2030, 8, 1, tzinfo=UTC),
             None,
         )
 
     async def preview_immediate_plan_change(
-        self, context: PlanChangeContext
+        self,
+        context: PlanChangeContext,
+        **kwargs,  # type: ignore[no-untyped-def]
     ) -> PlanChangeEstimate:
-        del context
+        if kwargs.get("policy") == "prorated_delta":
+            proration_date = int(kwargs["proration_date"])
+            return PlanChangeEstimate(
+                1500,
+                950,
+                0,
+                "usd",
+                True,
+                950,
+                2450,
+                0,
+                0,
+                datetime.fromtimestamp(proration_date, tz=UTC),
+                context.current_period_end,
+            )
         return PlanChangeEstimate(4900, 0, 0, "usd", True)
 
     async def apply_immediate_plan_change(
@@ -80,8 +97,10 @@ class FakeBillingGateway:
         context: PlanChangeContext,
         *,
         idempotency_key: str,
+        **kwargs,  # type: ignore[no-untyped-def]
     ) -> RemotePlanChange:
         del context, idempotency_key
+        self.last_apply_kwargs = kwargs
         self.apply_calls += 1
         return RemotePlanChange("sub_api")
 
@@ -220,7 +239,13 @@ async def test_http_contract_catalog_account_checkout_and_portal(
                 headers={**headers, "Idempotency-Key": "portal-1"},
                 json={"return_url": "http://localhost:3000/account"},
             )
-    assert health.json() == {"ok": True, "database": True, "stripe_mode": "test"}
+    assert health.json() == {
+        "ok": True,
+        "database": True,
+        "stripe_mode": "test",
+        "transition_policy": "full_period_reset",
+    }
+    assert catalog.json()["transition_policy"] == "full_period_reset"
     assert catalog.status_code == 200
     first = catalog.json()["plans"][0]
     assert set(first) >= {"name", "description", "display_order", "prices", "entitlements"}
@@ -254,7 +279,7 @@ async def test_http_preview_confirm_contract(postgres_container: None) -> None:
     headers = {"Authorization": "Bearer ignored", "Idempotency-Key": "preview-http-1"}
     async with app.router.lifespan_context(app):
         account = await database.account_for_external_ref("api-user")
-        period_end = datetime(2026, 8, 1, tzinfo=UTC)
+        period_end = datetime(2030, 8, 1, tzinfo=UTC)
         async with database.require_pool().acquire() as conn:
             await conn.execute(
                 """update billing_accounts set stripe_customer_id='cus_api',
@@ -268,6 +293,12 @@ async def test_http_preview_confirm_contract(postgres_container: None) -> None:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
+            catalog_response = await client.get(
+                "/api/catalog", headers={"Authorization": "Bearer ignored"}
+            )
+            account_response = await client.get(
+                "/api/account", headers={"Authorization": "Bearer ignored"}
+            )
             preview = await client.post(
                 "/api/billing/change/preview",
                 headers=headers,
@@ -280,12 +311,84 @@ async def test_http_preview_confirm_contract(postgres_container: None) -> None:
                 json={"preview_id": body["preview_id"]},
             )
     assert preview.status_code == 200, preview.text
+    assert catalog_response.json()["transition_policy"] == "full_period_reset"
+    assert account_response.json()["transition_policy"] == "full_period_reset"
     assert body["amount_due_now"] == 4900
     assert body["credit_applied"] == 0
     assert body["next_invoice_amount"] == 4900
+    assert body["transition_policy"] == "full_period_reset"
+    assert body["settlement_mode"] == "new_period_full_price"
     assert confirm.status_code == 200, confirm.text
     assert confirm.json()["status"] == "confirmed"
     assert gateway.apply_calls == 1
+
+
+async def test_http_prorated_delta_contract_is_explicit_and_server_calculated(
+    postgres_container: None,
+) -> None:
+    gateway = FakeBillingGateway()
+    database = Database(TEST_DSN)
+    settings = _settings().model_copy(update={"billing_transition_policy": "prorated_delta"})
+    app = create_app(
+        settings,
+        database=database,
+        gateway=gateway,  # type: ignore[arg-type]
+        auth_adapter=StaticAuth(),
+    )
+    headers = {"Authorization": "Bearer ignored", "Idempotency-Key": "delta-http-1"}
+    async with app.router.lifespan_context(app):
+        account = await database.account_for_external_ref("api-user")
+        period_end = datetime(2030, 8, 1, tzinfo=UTC)
+        async with database.require_pool().acquire() as conn:
+            await conn.execute(
+                """update billing_accounts set stripe_customer_id='cus_api',
+                     stripe_subscription_id='sub_api',plan_key='starter',plan_interval='month',
+                     subscription_status='active',credits_balance=300,grant_epoch=1,
+                     current_period_end=$2,entitlement_period_end=$2,credit_expires_at=$2,
+                     entitlement_revoked=false where id=$1""",
+                account["id"],
+                period_end,
+            )
+            await conn.execute(
+                """insert into credit_ledger(
+                       account_id,delta,balance_after,entitlement_units,reason,grant_epoch,
+                       stripe_invoice_id,grant_slot)
+                     values($1,300,300,300,'subscription_grant',1,'in_api_source',1)""",
+                account["id"],
+            )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            catalog_response = await client.get(
+                "/api/catalog", headers={"Authorization": "Bearer ignored"}
+            )
+            account_response = await client.get(
+                "/api/account", headers={"Authorization": "Bearer ignored"}
+            )
+            preview = await client.post(
+                "/api/billing/change/preview",
+                headers=headers,
+                json={"plan_key": "pro", "interval": "month"},
+            )
+            body = preview.json()
+            confirm = await client.post(
+                "/api/billing/change/confirm",
+                headers={"Authorization": "Bearer ignored"},
+                json={"preview_id": body["preview_id"]},
+            )
+    assert preview.status_code == 200, preview.text
+    assert catalog_response.json()["transition_policy"] == "prorated_delta"
+    assert account_response.json()["transition_policy"] == "prorated_delta"
+    assert body["transition_policy"] == "prorated_delta"
+    assert body["settlement_mode"] == "current_period_prorated_delta"
+    assert body["amount_due_now"] == 1500
+    assert body["credit_applied"] == 950
+    assert body["entitlement_credit_delta"] == 700
+    assert confirm.status_code == 200, confirm.text
+    assert confirm.json()["transition_policy"] == "prorated_delta"
+    assert gateway.last_apply_kwargs is not None
+    assert gateway.last_apply_kwargs["policy"] == "prorated_delta"
+    assert isinstance(gateway.last_apply_kwargs["proration_date"], int)
 
 
 async def test_http_confirm_rejects_expired_preview_and_requires_new_intent(
@@ -305,7 +408,7 @@ async def test_http_confirm_rejects_expired_preview_and_requires_new_intent(
     }
     async with app.router.lifespan_context(app):
         account = await database.account_for_external_ref("api-user")
-        period_end = datetime(2026, 8, 1, tzinfo=UTC)
+        period_end = datetime(2030, 8, 1, tzinfo=UTC)
         async with database.require_pool().acquire() as conn:
             await conn.execute(
                 """update billing_accounts set stripe_customer_id='cus_api',

@@ -147,9 +147,7 @@ def ensure_portal(key: str, product_line: str) -> Any:
         "metadata": {"product_line": product_line},
     }
     if existing:
-        config = stripe.billing_portal.Configuration.modify(
-            existing.id, **params, **_options(key)
-        )
+        config = stripe.billing_portal.Configuration.modify(existing.id, **params, **_options(key))
         print(f"portal updated: {config.id}")
         return config
     config = stripe.billing_portal.Configuration.create(**params, **_options(key))
@@ -189,9 +187,7 @@ def verify(key: str, catalog: PlanCatalog, product_line: str) -> None:
     for raw in _portal_configs(key):
         # List responses can omit the allowed product/price expansion. Retrieve
         # the candidate before validating the complete policy surface.
-        config = _dict(
-            stripe.billing_portal.Configuration.retrieve(raw.id, **_options(key))
-        )
+        config = _dict(stripe.billing_portal.Configuration.retrieve(raw.id, **_options(key)))
         if (config.get("metadata") or {}).get("product_line") != product_line:
             continue
         update = (config.get("features") or {}).get("subscription_update") or {}
@@ -226,9 +222,7 @@ def main() -> None:
     )
     parser.add_argument("--catalog", default="plans.toml")
     parser.add_argument("--lookup-prefix", default=os.getenv("LOOKUP_PREFIX", "ent"))
-    parser.add_argument(
-        "--product-line", default=os.getenv("PRODUCT_LINE", "example-entitlements")
-    )
+    parser.add_argument("--product-line", default=os.getenv("PRODUCT_LINE", "example-entitlements"))
     args = parser.parse_args()
     key = os.environ["STRIPE_SECRET_KEY"]
     live, label = _mode(key)

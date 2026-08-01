@@ -7,7 +7,7 @@ Host identity provider
 FastAPI billing API ───────────────► Stripe request API
   │ catalog/account                  Checkout / Portal / invoice preview
   │ Checkout + Idempotency-Key       pending_if_incomplete / Schedule
-  │ preview + confirm
+  │ preview + confirm / selected settlement policy
   ▼
 PostgreSQL primary
   ├─ billing_accounts
@@ -27,6 +27,8 @@ Transactional event processor
   ├─ stripe_invoice_state        cumulative refund/dispute facts
   ├─ credit_ledger/debits        balance audit and usage epochs
   ├─ billing_plan_changes        durable intent/completion state
+  ├─ billing_funding_allocations source → delta Invoice lineage
+  ├─ billing_clawback_debts      uncollected current-epoch clawbacks
   └─ billing_incidents           durable fail-closed queue
 
 Annual worker ── remote Subscription snapshot ──► same account/invoice locks
@@ -38,9 +40,10 @@ Next.js reference UI
 
 ## Scope boundary
 
-The backend supports one recurring subscription item, USD, fixed plan keys, monthly/yearly
-intervals, fixed monthly credit grants, and the event contract below. It is not an
-arbitrary invoice reducer. Unknown/ambiguous invoice shapes fail closed.
+The backend supports one recurring subscription item, USD, fixed plan keys,
+monthly/yearly intervals, fixed monthly credit grants, and two explicit transition
+policies. The prorated template is bounded to same-interval monthly tier upgrades. It is
+not an arbitrary Invoice reducer. Unknown/ambiguous Invoice shapes fail closed.
 
 The frontend is a reference consumer, not the system of record. Product services must
 enforce `entitlements_enforceable`, structured limits, and credit operations server-side.
@@ -58,14 +61,26 @@ ID from the browser.
 ## Why external Stripe reads happen first
 
 Network calls while holding row locks amplify latency and deadlock probability. The
-gateway resolves Price lookup keys, InvoicePayment references, Subscription snapshots and
-plan-change previews outside transactions. A short transaction snapshots or revalidates
-identity and entitlement state before and after remote work.
+gateway materializes paginated Invoice lines and resolves Price lookup keys,
+InvoicePayment references, Subscription snapshots, and plan-change previews outside
+transactions. A short transaction snapshots or revalidates identity, funding lineage,
+and entitlement state before and after remote work.
 
 Checkout uses a durable client request key and claim token. Plan changes use durable
 intent, expiring leases, and derived Stripe idempotency keys. A crash after an unknown
 remote outcome is retried with the same identity instead of creating a second logical
-operation.
+operation. Confirmation changes `previewed` to `applying` before remote work and stores
+`remote_started_at` before the Stripe call. Automatic same-key replay stops at 23 hours,
+leaving a safety margin before Stripe's idempotency retention boundary; older ambiguity
+requires exact operator proof instead of a new intent.
+
+The immediate Stripe result's latest Invoice ID is compare-and-set into
+`settlement_invoice_id`. Paid and payment-failed processing must match that exact ID;
+Subscription identity alone is insufficient because an older failed Invoice can arrive
+after a newer plan-change intent. The coordinator and a faster paid webhook may race to
+establish the same binding; both accept only the same ID. Webhook completion remains
+authoritative, and confirm reports conflict if the webhook has already failed the
+intent.
 
 ## Why PostgreSQL is the coordination layer
 
@@ -97,7 +112,24 @@ Paths that touch account and invoice state lock account first, then invoice.
   state and one-pending-change constraint;
 - an immutable `stripe_invoice_state.account_id` trigger.
 
-Both migrations are required. Apply them in filename order before deploying the matching
+`003_transition_policies.sql` adds:
+
+- persisted `full_period_reset` / `prorated_delta` policy, exact preview Invoice facts,
+  `applying`, and `remote_started_at` state to `billing_plan_changes`;
+- `stripe_invoice_state.closure_applied`, an independent business guard for terminal
+  refund/dispute effects delivered under different Event IDs;
+- a unique settlement-Invoice binding;
+- `billing_funding_allocations`, which records source/target lines, cash proration,
+  entitlement delta, grant epoch, and cumulative refund/dispute status;
+- `billing_clawback_debts`, which prevents spent current-epoch funding from reappearing
+  after a refund or dispute; and
+- reconciliation rotation state/indexes so bounded runs do not starve later accounts.
+
+Together the migrations define ten correctness tables. Backup and restore them as one
+unit; restoring account balances without their inbox, Invoice, allocation, debt, or
+intent identity can reopen a business effect.
+
+All migrations are required. Apply them in filename order before deploying the matching
 application version.
 
 ## Supported webhook Event contract
@@ -120,6 +152,8 @@ to send only this set.
 the endpoint's snapshot `api_version`; `STRIPE_WEBHOOK_API_VERSION` validates that value.
 Pinning one does not pin the other.
 
-The currently observed real test Events used `2025-12-15.clover` while outbound request
-code targeted `2026-06-24.dahlia`. A version/livemode mismatch creates a durable incident
-and does not mutate entitlement state.
+In pre-hardening test evidence, Event API retrieval used `2025-12-15.clover` while
+outbound request code targeted `2026-06-24.dahlia`; an isolated signed endpoint separately
+delivered Dahlia. The current network gates have not repeated that observation. A
+version/livemode mismatch creates a durable incident and does not mutate entitlement
+state.

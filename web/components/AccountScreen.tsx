@@ -165,6 +165,10 @@ export function AccountScreen({
               <dd><span className={`status status-${account.subscription_status}`}>{account.subscription_status}</span></dd>
             </div>
             <div>
+              <dt>Upgrade settlement</dt>
+              <dd>{account.transition_policy.replaceAll("_", " ")}</dd>
+            </div>
+            <div>
               <dt>Product access</dt>
               <dd>{account.entitlements_enforceable ? "Enforceable" : "Paused"}</dd>
             </div>

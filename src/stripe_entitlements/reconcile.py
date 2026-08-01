@@ -13,9 +13,7 @@ from .types import ProcessResult
 class ReconciliationGateway(Protocol):
     async def subscription_object(self, subscription_id: str) -> dict[str, Any]: ...
 
-    async def latest_paid_invoice_event(
-        self, subscription_id: str
-    ) -> dict[str, Any] | None: ...
+    async def latest_paid_invoice_event(self, subscription_id: str) -> dict[str, Any] | None: ...
 
 
 class ReconciliationService:
@@ -31,19 +29,40 @@ class ReconciliationService:
         self.processor = processor
         self.gateway = gateway
 
-    async def candidates(self, now: datetime, *, limit: int = 100) -> list[dict[str, Any]]:
+    async def candidates(
+        self,
+        now: datetime,
+        *,
+        limit: int = 100,
+        attempted_before: datetime | None = None,
+    ) -> list[dict[str, Any]]:
         stale_before = now - timedelta(days=3)
+        pending_before = now - timedelta(minutes=5)
+        attempted_before = attempted_before or now
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                """select distinct a.id,a.stripe_subscription_id
+                """select distinct a.id,a.stripe_subscription_id,a.last_reconciled_at
                      from billing_accounts a
                      left join billing_incidents i on i.account_id=a.id and i.resolved_at is null
-                     where a.stripe_subscription_id is not null and (
+                     where a.stripe_subscription_id is not null
+                       and (a.last_reconciled_at is null or a.last_reconciled_at < $4)
+                       and (
                        a.subscription_status='past_due'
                        or (a.subscription_status='active' and a.current_period_end < $1)
+                       or (a.subscription_status='active'
+                           and a.entitlement_period_end < $2)
                        or i.kind in ('stale_paid_event','annual_plan_mismatch')
-                     ) order by a.id limit $2""",
+                       or exists(
+                         select 1 from billing_plan_changes p
+                          where p.account_id=a.id
+                            and p.status in ('applying','applied','requires_action')
+                            and p.updated_at < $3
+                       )
+                     ) order by a.last_reconciled_at nulls first,a.id limit $5""",
                 stale_before,
+                now,
+                pending_before,
+                attempted_before,
                 limit,
             )
         return [dict(row) for row in rows]
@@ -55,6 +74,11 @@ class ReconciliationService:
             )
         if account is None or not account["stripe_subscription_id"]:
             return ProcessResult("ignored", "account has no subscription", account_id)
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "update billing_accounts set last_reconciled_at=now() where id=$1::uuid",
+                account_id,
+            )
         expected_subscription = str(account["stripe_subscription_id"])
         expected_account = {
             "stripe_subscription_id": expected_subscription,
@@ -69,7 +93,8 @@ class ReconciliationService:
             event = {
                 "id": (
                     f"reconcile:{expected_subscription}:deleted:"
-                    f"{subscription.get('canceled_at') or 0}"
+                    f"{subscription.get('canceled_at') or 0}:"
+                    f"{expected_account['event_created']}:{expected_account['event_rank']}"
                 ),
                 "object": "event",
                 "type": "customer.subscription.deleted",

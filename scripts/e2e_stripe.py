@@ -35,9 +35,7 @@ def _test_key() -> str:
 def _options() -> dict[str, Any]:
     return {
         "api_key": _test_key(),
-        "stripe_version": os.environ.get(
-            "STRIPE_API_VERSION", "2026-06-24.dahlia"
-        ),
+        "stripe_version": os.environ.get("STRIPE_API_VERSION", "2026-06-24.dahlia"),
     }
 
 
@@ -52,6 +50,12 @@ def _object_id(value: Any) -> str | None:
     if isinstance(value, dict) and value.get("id"):
         return str(value["id"])
     return None
+
+
+def _all_list_items(operation: Any, /, *args: Any, **kwargs: Any) -> list[Any]:
+    page = operation(*args, **kwargs)
+    iterator = getattr(page, "auto_paging_iter", None)
+    return list(iterator()) if callable(iterator) else list(page.data)
 
 
 def create_webhook(args: argparse.Namespace) -> None:
@@ -112,13 +116,15 @@ def delete_webhook(args: argparse.Namespace) -> None:
         raise RuntimeError("refusing to delete a live webhook endpoint")
     if raw.get("description") != args.description:
         raise RuntimeError("refusing to delete an endpoint outside this E2E run")
-    endpoint.delete(**_options())
+    deleted = _dict(endpoint.delete(**_options()))
+    if not bool(deleted.get("deleted")):
+        raise RuntimeError("run-owned Webhook Endpoint did not delete")
 
 
 def delete_webhook_by_description(args: argparse.Namespace) -> None:
-    endpoints = stripe.WebhookEndpoint.list(limit=100, **_options())
+    endpoints = _all_list_items(stripe.WebhookEndpoint.list, limit=100, **_options())
     matches = []
-    for endpoint in endpoints.data:
+    for endpoint in endpoints:
         raw = _dict(endpoint)
         if (
             not bool(raw.get("livemode"))
@@ -129,7 +135,9 @@ def delete_webhook_by_description(args: argparse.Namespace) -> None:
     if len(matches) > 1:
         raise RuntimeError("multiple Webhook Endpoints matched one E2E run identity")
     if matches:
-        matches[0].delete(**_options())
+        deleted = _dict(matches[0].delete(**_options()))
+        if not bool(deleted.get("deleted")):
+            raise RuntimeError("recovered Webhook Endpoint did not delete")
 
 
 async def write_cleanup_manifest(args: argparse.Namespace) -> None:
@@ -169,6 +177,7 @@ async def write_cleanup_manifest(args: argparse.Namespace) -> None:
             await conn.close()
     except (OSError, asyncpg.PostgresError):
         pass
+
     def _write() -> None:
         output = Path(args.output)
         output.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
@@ -181,26 +190,193 @@ async def verify_database(args: argparse.Namespace) -> None:
     conn = await asyncpg.connect(args.database_url)
     try:
         account = await conn.fetchrow(
-            """select plan_key,plan_interval,subscription_status,credits_balance,
+            """select id,stripe_customer_id,stripe_subscription_id,plan_key,
+                      plan_interval,subscription_status,credits_balance,
                       entitlement_revoked
                  from billing_accounts where external_ref=$1""",
             args.external_ref,
         )
         if account is None:
             raise RuntimeError("browser E2E account was not created")
-        if tuple(account) != ("starter", "month", "active", 300, False):
-            raise RuntimeError(f"unexpected browser E2E account projection: {tuple(account)!r}")
+        expected = (args.expected_plan, "month", "active", args.expected_credits, False)
+        projection = tuple(account)[3:]
+        if projection != expected:
+            raise RuntimeError(f"unexpected browser E2E account projection: {projection!r}")
+        account_id = str(account["id"])
+        customer_id = str(account["stripe_customer_id"] or "")
+        subscription_id = str(account["stripe_subscription_id"] or "")
+        if not customer_id or not subscription_id:
+            raise RuntimeError("browser E2E account is missing Stripe identity")
+
+        changes = await conn.fetch(
+            """select id,transition_policy,target_plan_key,target_interval,status,
+                      settlement_invoice_id
+                 from billing_plan_changes where account_id=$1::uuid""",
+            account_id,
+        )
+        if len(changes) != 1 or tuple(changes[0])[1:5] != (
+            args.transition_policy,
+            "pro",
+            "month",
+            "completed",
+        ):
+            raise RuntimeError("browser plan-change intent did not complete exactly once")
+        settlement_invoice_id = str(changes[0]["settlement_invoice_id"] or "")
+        if not settlement_invoice_id:
+            raise RuntimeError("browser plan change has no immutable settlement Invoice")
+
+        grants = await conn.fetch(
+            """select stripe_invoice_id,stripe_event_id,reason,entitlement_units
+                 from credit_ledger
+                where account_id=$1::uuid and grant_slot=1
+                order by id""",
+            account_id,
+        )
+        if len(grants) != 2:
+            raise RuntimeError("browser E2E must create exactly two funded grant slots")
+        initial_grants = [
+            row for row in grants if row["stripe_invoice_id"] != settlement_invoice_id
+        ]
+        settlement_grants = [
+            row for row in grants if row["stripe_invoice_id"] == settlement_invoice_id
+        ]
+        if (
+            len(initial_grants) != 1
+            or initial_grants[0]["reason"] != "subscription_grant"
+            or int(initial_grants[0]["entitlement_units"]) != 300
+            or len(settlement_grants) != 1
+        ):
+            raise RuntimeError("browser E2E funding grants are ambiguous")
+        initial_invoice_id = str(initial_grants[0]["stripe_invoice_id"] or "")
+        if not initial_invoice_id or initial_invoice_id == settlement_invoice_id:
+            raise RuntimeError("initial and upgrade settlement Invoices must be distinct")
+        expected_settlement_grant = (
+            ("upgrade_delta_grant", 700)
+            if args.transition_policy == "prorated_delta"
+            else ("subscription_grant", 1000)
+        )
+        if (
+            settlement_grants[0]["reason"],
+            int(settlement_grants[0]["entitlement_units"]),
+        ) != expected_settlement_grant:
+            raise RuntimeError("settlement Invoice did not fund the selected policy")
+
+        invoice_states = await conn.fetch(
+            """select invoice_id,account_id from stripe_invoice_state
+                where invoice_id=any($1::text[])""",
+            [initial_invoice_id, settlement_invoice_id],
+        )
+        if len(invoice_states) != 2 or any(
+            str(row["account_id"]) != account_id for row in invoice_states
+        ):
+            raise RuntimeError("funding Invoice state is not bound to this E2E account")
+
+        allocations = await conn.fetch(
+            """select transition_policy,target_plan_key,entitlement_delta,status,
+                      stripe_invoice_id,source_invoice_id,stripe_event_id
+                 from billing_funding_allocations where account_id=$1::uuid""",
+            account_id,
+        )
+        if args.transition_policy == "prorated_delta":
+            if len(allocations) != 1 or tuple(allocations[0])[:4] != (
+                "prorated_delta",
+                "pro",
+                700,
+                "active",
+            ):
+                raise RuntimeError("browser delta funding allocation is missing or invalid")
+            if (
+                allocations[0]["stripe_invoice_id"] != settlement_invoice_id
+                or allocations[0]["source_invoice_id"] != initial_invoice_id
+            ):
+                raise RuntimeError("browser delta allocation funding lineage is invalid")
+        elif allocations:
+            raise RuntimeError("full-period browser run unexpectedly created a delta allocation")
+
         events = await conn.fetch(
             """select id,event_type,outcome,payload->>'id' as payload_id,
-                      payload->>'api_version' as api_version,livemode
+                      payload->>'api_version' as api_version,livemode,
+                      payload#>>'{data,object,id}' as object_id,
+                      payload#>>'{data,object,client_reference_id}' as client_reference_id
                  from stripe_webhook_events
-                where event_type=any($1::text[])""",
+                where event_type=any($1::text[])
+                  and (
+                    payload#>>'{data,object,client_reference_id}'=$2
+                    or payload#>>'{data,object,metadata,account_id}'=$2
+                    or payload#>>'{data,object,parent,subscription_details,metadata,account_id}'=$2
+                    or payload#>>'{data,object,subscription_details,metadata,account_id}'=$2
+                    or payload#>>'{data,object,customer}'=$3
+                    or payload#>>'{data,object,customer,id}'=$3
+                    or payload#>>'{data,object,subscription}'=$4
+                    or payload#>>'{data,object,subscription,id}'=$4
+                    or payload#>>'{data,object,parent,subscription_details,subscription}'=$4
+                    or payload#>>'{data,object,parent,subscription_details,subscription,id}'=$4
+                    or (event_type like 'customer.subscription.%'
+                        and payload#>>'{data,object,id}'=$4)
+                  )""",
             list(SUPPORTED_EVENTS),
+            account_id,
+            customer_id,
+            subscription_id,
         )
-        handled = {str(row["event_type"]) for row in events if row["outcome"] == "handled"}
-        required = {"checkout.session.completed", "invoice.paid"}
-        if not required.issubset(handled):
-            raise RuntimeError(f"required webhook outcomes missing: {sorted(required - handled)}")
+        checkout_events = [
+            row
+            for row in events
+            if row["event_type"] == "checkout.session.completed"
+            and row["client_reference_id"] == account_id
+            and row["outcome"] == "handled"
+        ]
+        initial_paid_events = [
+            row
+            for row in events
+            if row["event_type"] == "invoice.paid"
+            and row["object_id"] == initial_invoice_id
+            and row["outcome"] == "handled"
+        ]
+        settlement_paid_events = [
+            row
+            for row in events
+            if row["event_type"] == "invoice.paid"
+            and row["object_id"] == settlement_invoice_id
+            and row["outcome"] == "handled"
+        ]
+        if not (
+            len(checkout_events) == len(initial_paid_events) == len(settlement_paid_events) == 1
+        ):
+            raise RuntimeError(
+                "this E2E subject must have one Checkout and two distinct handled paid Events"
+            )
+        checkout_session_id = str(checkout_events[0]["object_id"] or "")
+        if not checkout_session_id.startswith("cs_test_"):
+            raise RuntimeError("handled Checkout Event is not bound to a test Session")
+        if initial_grants[0]["stripe_event_id"] != initial_paid_events[0]["id"]:
+            raise RuntimeError("initial grant is not bound to its paid Event")
+        if settlement_grants[0]["stripe_event_id"] != settlement_paid_events[0]["id"]:
+            raise RuntimeError("settlement grant is not bound to its paid Event")
+        if (
+            args.transition_policy == "prorated_delta"
+            and allocations[0]["stripe_event_id"] != settlement_paid_events[0]["id"]
+        ):
+            raise RuntimeError("delta allocation is not bound to its paid Event")
+
+        essential_event_ids = [
+            str(checkout_events[0]["id"]),
+            str(initial_paid_events[0]["id"]),
+            str(settlement_paid_events[0]["id"]),
+        ]
+        unresolved = await conn.fetchval(
+            """select count(*) from billing_incidents
+                where resolved_at is null and (
+                  account_id=$1::uuid or invoice_id=any($2::text[])
+                  or stripe_event_id=any($3::text[])
+                )""",
+            account_id,
+            [initial_invoice_id, settlement_invoice_id],
+            essential_event_ids,
+        )
+        if unresolved:
+            raise RuntimeError("browser E2E account has unresolved billing incidents")
+
         stripe_event_api_versions: set[str] = set()
         for row in events:
             if row["payload_id"] != row["id"]:
@@ -209,12 +385,9 @@ async def verify_database(args: argparse.Namespace) -> None:
                 raise RuntimeError("live Event reached the test E2E database")
             if row["api_version"] != args.event_api_version:
                 raise RuntimeError(
-                    "webhook payload version mismatch: "
-                    f"{row['event_type']}={row['api_version']!r}"
+                    f"webhook payload version mismatch: {row['event_type']}={row['api_version']!r}"
                 )
-            remote = await asyncio.to_thread(
-                stripe.Event.retrieve, str(row["id"]), **_options()
-            )
+            remote = await asyncio.to_thread(stripe.Event.retrieve, str(row["id"]), **_options())
             remote_raw = _dict(remote)
             if (
                 remote_raw.get("id") != row["id"]
@@ -225,15 +398,73 @@ async def verify_database(args: argparse.Namespace) -> None:
                     "stored signed payload identity/mode differs from Stripe Event truth"
                 )
             stripe_event_api_versions.add(str(remote_raw.get("api_version") or "unset"))
+        total_events = int(await conn.fetchval("select count(*) from stripe_webhook_events") or 0)
         print(
             "verified signed webhook projection: "
-            f"plan=starter/month credits=300 events={len(events)} "
+            f"plan={args.expected_plan}/month credits={args.expected_credits} "
+            f"policy={args.transition_policy} account_events={len(events)} "
+            f"unrelated_events={total_events - len(events)} essential_events=3 "
             f"endpoint_payload_api_version={args.event_api_version} "
             "stripe_event_api_view_versions="
             f"{','.join(sorted(stripe_event_api_versions))}"
         )
     finally:
         await conn.close()
+
+
+async def prepare_upgrade_payment_method(args: argparse.Namespace) -> None:
+    if not args.database_url or not args.external_ref:
+        raise ValueError("upgrade PaymentMethod database URL and external ref are required")
+    conn = await asyncpg.connect(args.database_url)
+    try:
+        row = await conn.fetchrow(
+            """select id,stripe_customer_id,stripe_subscription_id
+                 from billing_accounts where external_ref=$1""",
+            args.external_ref,
+        )
+    finally:
+        await conn.close()
+    if row is None or not row["stripe_customer_id"] or not row["stripe_subscription_id"]:
+        raise RuntimeError("browser E2E paid account is missing Stripe identity")
+    if args.payment_method not in {
+        "pm_card_authenticationRequired",
+        "pm_card_visa",
+    }:
+        raise ValueError("upgrade PaymentMethod is not an allowlisted Stripe test fixture")
+    account_id = str(row["id"])
+    customer_id = str(row["stripe_customer_id"])
+    subscription_id = str(row["stripe_subscription_id"])
+    subscription = await asyncio.to_thread(
+        stripe.Subscription.retrieve, subscription_id, **_options()
+    )
+    raw = _dict(subscription)
+    metadata = raw.get("metadata") or {}
+    if (
+        bool(raw.get("livemode"))
+        or _object_id(raw.get("customer")) != customer_id
+        or str(metadata.get("account_id")) != account_id
+        or str(metadata.get("product_line")) != E2E_PRODUCT_LINE
+    ):
+        raise RuntimeError("refusing to modify a Subscription outside this E2E run")
+    payment_method = await asyncio.to_thread(
+        stripe.PaymentMethod.attach,
+        args.payment_method,
+        customer=customer_id,
+        **_options(),
+    )
+    await asyncio.to_thread(
+        stripe.Customer.modify,
+        customer_id,
+        invoice_settings={"default_payment_method": payment_method.id},
+        **_options(),
+    )
+    await asyncio.to_thread(
+        stripe.Subscription.modify,
+        subscription_id,
+        default_payment_method=payment_method.id,
+        **_options(),
+    )
+    print("prepared run-owned upgrade PaymentMethod")
 
 
 async def wait_database(args: argparse.Namespace) -> None:
@@ -251,12 +482,24 @@ async def wait_database(args: argparse.Namespace) -> None:
     raise RuntimeError("disposable PostgreSQL was not reachable before timeout") from last_error
 
 
-async def _assert_declined_session(
-    *, session_id: str, account_id: str
-) -> None:
-    session = await asyncio.to_thread(
-        stripe.checkout.Session.retrieve, session_id, **_options()
-    )
+async def resolve_account(args: argparse.Namespace) -> None:
+    if not args.database_url or not args.external_ref:
+        raise ValueError("account resolution database URL and external ref are required")
+    conn = await asyncpg.connect(args.database_url)
+    try:
+        account_id = await conn.fetchval(
+            "select id from billing_accounts where external_ref=$1",
+            args.external_ref,
+        )
+    finally:
+        await conn.close()
+    if account_id is None:
+        raise RuntimeError("authenticated E2E subject has no billing account")
+    print(f"account-id={account_id}")
+
+
+async def _assert_declined_session(*, session_id: str, account_id: str) -> None:
+    session = await asyncio.to_thread(stripe.checkout.Session.retrieve, session_id, **_options())
     raw = _dict(session)
     metadata = raw.get("metadata") or {}
     if (
@@ -333,10 +576,7 @@ async def verify_decline(args: argparse.Namespace) -> None:
         if str(claim_session) != session_id:
             raise RuntimeError("Checkout claim changed during the decline barrier")
         await _assert_declined_session(session_id=session_id, account_id=account_id)
-        print(
-            "verified decline stability: account=free credits=0 ledger=0 "
-            "session=open/unpaid"
-        )
+        print("verified decline stability: account=free credits=0 ledger=0 session=open/unpaid")
     finally:
         await conn.close()
 
@@ -362,10 +602,13 @@ async def cleanup_account(args: argparse.Namespace) -> None:
     owned_customer_id: str | None = None
     if not session_id:
         sessions = await asyncio.to_thread(
-            stripe.checkout.Session.list, limit=100, **_options()
+            _all_list_items,
+            stripe.checkout.Session.list,
+            limit=100,
+            **_options(),
         )
         owned_sessions = []
-        for candidate in sessions.data:
+        for candidate in sessions:
             raw = _dict(candidate)
             metadata = raw.get("metadata") or {}
             if (
@@ -398,7 +641,9 @@ async def cleanup_account(args: argparse.Namespace) -> None:
             if subscription_id is None and session_subscription_id:
                 subscription_id = session_subscription_id
             if raw.get("status") == "open":
-                await asyncio.to_thread(session.expire, **_options())
+                expired = _dict(await asyncio.to_thread(session.expire, **_options()))
+                if expired.get("status") != "expired":
+                    raise RuntimeError("run-owned Checkout Session did not expire")
         except stripe.InvalidRequestError:
             pass
     if subscription_id:
@@ -414,19 +659,15 @@ async def cleanup_account(args: argparse.Namespace) -> None:
                 and str(metadata.get("account_id")) == str(row["id"])
                 and metadata.get("product_line") == E2E_PRODUCT_LINE
                 and subscription_customer_id is not None
-                and (
-                    customer_id is None
-                    or subscription_customer_id == str(customer_id)
-                )
-                and (
-                    owned_customer_id is None
-                    or subscription_customer_id == owned_customer_id
-                )
+                and (customer_id is None or subscription_customer_id == str(customer_id))
+                and (owned_customer_id is None or subscription_customer_id == owned_customer_id)
             )
             if not owned:
                 raise RuntimeError("refusing to cancel a Subscription outside this E2E run")
             owned_customer_id = subscription_customer_id
-            await asyncio.to_thread(subscription.cancel, **_options())
+            canceled = _dict(await asyncio.to_thread(subscription.cancel, **_options()))
+            if canceled.get("status") != "canceled":
+                raise RuntimeError("run-owned Subscription did not cancel")
         except stripe.InvalidRequestError:
             pass
     customer_to_delete = str(customer_id) if customer_id else owned_customer_id
@@ -440,7 +681,9 @@ async def cleanup_account(args: argparse.Namespace) -> None:
             customer_raw = _dict(customer)
             if bool(customer_raw.get("livemode")):
                 raise RuntimeError("refusing to delete a live Customer")
-            await asyncio.to_thread(customer.delete, **_options())
+            deleted = _dict(await asyncio.to_thread(customer.delete, **_options()))
+            if not bool(deleted.get("deleted")):
+                raise RuntimeError("run-owned Customer did not delete")
         except stripe.InvalidRequestError:
             pass
 
@@ -485,12 +728,33 @@ def parser() -> argparse.ArgumentParser:
     database.add_argument("--database-url", required=True)
     database.add_argument("--external-ref", required=True)
     database.add_argument("--event-api-version", required=True)
+    database.add_argument("--expected-plan", default="starter")
+    database.add_argument("--expected-credits", type=int, default=300)
+    database.add_argument(
+        "--transition-policy",
+        choices=("full_period_reset", "prorated_delta"),
+        default="full_period_reset",
+    )
     database.set_defaults(run=verify_database)
+
+    upgrade = commands.add_parser("prepare-upgrade-payment-method")
+    upgrade.add_argument("--database-url", default=os.environ.get("E2E_DATABASE_URL"))
+    upgrade.add_argument("--external-ref", default=os.environ.get("E2E_EXTERNAL_REF"))
+    upgrade.add_argument(
+        "--payment-method",
+        default=os.environ.get("E2E_UPGRADE_PAYMENT_METHOD", "pm_card_authenticationRequired"),
+    )
+    upgrade.set_defaults(run=prepare_upgrade_payment_method)
 
     wait = commands.add_parser("wait-database")
     wait.add_argument("--database-url", required=True)
     wait.add_argument("--timeout-seconds", type=int, default=60)
     wait.set_defaults(run=wait_database)
+
+    account = commands.add_parser("resolve-account")
+    account.add_argument("--database-url", default=os.environ.get("E2E_DATABASE_URL"))
+    account.add_argument("--external-ref", default=os.environ.get("E2E_EXTERNAL_REF"))
+    account.set_defaults(run=resolve_account)
 
     decline = commands.add_parser("verify-decline")
     decline.add_argument("--database-url", default=os.environ.get("E2E_DATABASE_URL"))

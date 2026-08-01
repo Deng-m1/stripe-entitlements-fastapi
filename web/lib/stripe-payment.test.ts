@@ -32,6 +32,7 @@ describe("Stripe payment authentication", () => {
       await confirmRequiredStripePayment({
         status: "action_required",
         timing: "immediate",
+        transition_policy: "full_period_reset",
         target_plan_key: "pro",
         target_interval: "year",
         payment_client_secret: clientSecret,

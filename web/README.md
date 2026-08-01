@@ -2,7 +2,9 @@
 
 This directory is a minimal Next.js App Router UI for the repository's Stripe
 entitlement model. It consumes the backend's catalog, account, Checkout, Portal,
-and preview/confirm endpoints through a replaceable authentication adapter.
+and preview/confirm endpoints through a replaceable authentication adapter. It renders
+three monthly/yearly tiers, positive same-currency annual savings, and the server's two
+complete 6 × 6 transition policies: `full_period_reset` and `prorated_delta`.
 
 ## Run locally
 
@@ -79,6 +81,7 @@ subdomains. Arbitrary HTTP(S) destinations are rejected.
 
 ```json
 {
+  "transition_policy": "full_period_reset",
   "plans": [
     {
       "key": "starter",
@@ -111,6 +114,7 @@ claim. This calculation never determines upgrade/downgrade direction.
 
 ```json
 {
+  "transition_policy": "full_period_reset",
   "plan_key": "starter",
   "plan_interval": "month",
   "subscription_status": "active",
@@ -134,6 +138,7 @@ claim. This calculation never determines upgrade/downgrade direction.
     "target_plan_key": "pro",
     "target_interval": "year",
     "timing": "period_end",
+    "transition_policy": "full_period_reset",
     "effective_at": "2026-08-31T00:00:00Z"
   }
 }
@@ -181,7 +186,7 @@ changes cannot bypass the server's safe transition matrix.
 
 ### `POST /api/billing/change/preview`
 
-Request: `{"plan_key":"pro","interval":"year"}`.
+Request: `{"plan_key":"pro","interval":"month"}`.
 
 ```json
 {
@@ -189,29 +194,37 @@ Request: `{"plan_key":"pro","interval":"year"}`.
   "current_plan_key": "starter",
   "current_interval": "month",
   "target_plan_key": "pro",
-  "target_interval": "year",
+  "target_interval": "month",
   "timing": "immediate",
+  "transition_policy": "prorated_delta",
+  "settlement_mode": "current_period_prorated_delta",
   "effective_at": "2026-07-31T12:00:00Z",
   "currency": "USD",
-  "amount_due_now": 35300,
-  "credit_applied": 0,
-  "next_invoice_amount": 35300
+  "amount_due_now": 1500,
+  "credit_applied": 950,
+  "entitlement_credit_delta": 700,
+  "next_invoice_amount": 4900
 }
 ```
 
-`timing` and all amounts are server-authoritative. An immediate preview is
-accepted only for a full target invoice with zero cross-invoice proration and
-zero customer-balance credit. Confirmation may charge the payment method or
-require authentication; entitlements still wait for paid
-invoice webhook projection. A `period_end` preview says no charge today and
+`timing`, `transition_policy`, `settlement_mode`, and all amounts are
+server-authoritative. `new_period_full_price` means one independently funded target
+period. `current_period_prorated_delta` means the current period remains unchanged,
+`credit_applied` is the unused source-plan cash credit, and
+`entitlement_credit_delta` is the fixed product-credit difference. Confirmation may
+charge the payment method or require authentication; entitlements still wait for paid
+Invoice webhook projection. The backend compare-and-set binds the immediate result's
+exact settlement Invoice to the intent, so a delayed failure from an older Invoice
+cannot hijack the new UI state. If the paid webhook finishes first, confirm may return a
+conflict rather than falsely claiming synchronous success; only a later authenticated
+account read is entitlement truth. A `period_end` preview says no charge today and
 preserves current benefits until `effective_at`.
 
-Policy note: every non-noop change from a yearly plan is period-end, including
-yearly-to-yearly tier upgrades. This avoids crossing annual-invoice funding and
-later refund/dispute attribution. Monthly-origin cells marked immediate are only
-preview-eligible; any nonzero old-invoice proration makes the server defer them.
-The backend returns that decision explicitly; the browser never reconstructs it
-from tier order or price.
+Policy note: every non-noop change from a yearly plan is period-end under both
+templates. The delta template also defers every interval change and downgrade; only a
+higher monthly tier remaining monthly is eligible. Unsupported tax, discount, credit
+note, customer balance, and Invoice line shapes fail closed. The backend returns that
+decision explicitly; the browser never reconstructs it from tier order or price.
 
 ### `POST /api/billing/change/confirm`
 
@@ -223,34 +236,37 @@ Period-end or completed response:
 {
   "status": "confirmed",
   "timing": "period_end",
+  "transition_policy": "prorated_delta",
   "target_plan_key": "starter",
   "target_interval": "month"
 }
 ```
 
 An immediate update using Stripe `pending_if_incomplete` may require payment
-recovery/SCA. Prefer a Stripe-hosted invoice when available. The UI keeps
-showing the old account entitlements and presents an explicit payment CTA:
+recovery/SCA. The UI keeps showing the old account entitlements. When a confirmation
+secret is present it first uses Stripe.js in memory; a Stripe-hosted Invoice URL is the
+fallback recovery CTA when no client secret is returned:
 
 ```json
 {
   "status": "payment_required",
   "timing": "immediate",
+  "transition_policy": "prorated_delta",
   "target_plan_key": "pro",
-  "target_interval": "year",
+  "target_interval": "month",
   "payment_url": "https://invoice.stripe.com/..."
 }
 ```
 
-The optional client-secret path is an enhancement when a hosted invoice URL is
-not available:
+Client-secret-first response:
 
 ```json
 {
   "status": "action_required",
   "timing": "immediate",
+  "transition_policy": "prorated_delta",
   "target_plan_key": "pro",
-  "target_interval": "year",
+  "target_interval": "month",
   "payment_client_secret": "short-lived value",
   "payment_confirmation_method": "confirm_payment"
 }
@@ -290,11 +306,21 @@ npm run test:e2e:stripe
 ```
 
 It submits a real decline, then completes test 3DS in the same Checkout Session, and
-accepts success only after the browser observes the webhook-projected account. It stops
-before card entry unless the hosted Session is `cs_test_`. Prefer the isolated full-stack
-runner and follow all prerequisites in [the browser E2E runbook](../docs/BROWSER_E2E.md).
+accepts success only after the browser observes the webhook-projected account. The
+default upgrade fixture then requires a second Stripe.js SCA flow before the settlement
+paid Event can project Pro/Monthly/1,000. It stops before card entry unless the hosted
+Session is `cs_test_`. The full runner keeps the Stripe test key and database DSN in the
+Playwright Node helper, starts Next.js without them, and removes them from Chromium's
+process environment. Remote existing-stack runs additionally require a private mode-
+`0600` `E2E_STORAGE_STATE` for the same one-run subject as `E2E_EXTERNAL_REF`. Prefer
+the isolated full-stack runner and follow all prerequisites in
+[the browser E2E runbook](../docs/BROWSER_E2E.md).
 
-The verified 2026-08-01 RTL/Vitest run contains 59 passing tests covering annual
-pricing math, immediate and period-end copy, Checkout, Portal, pending changes,
-redirect allowlisting, missing SCA configuration, webhook polling, SEO configuration,
-server-rendered plans, JSON-LD, and fail-closed indexing defaults.
+Current hardened-tree evidence recorded on 2026-08-01 is 62 passing RTL/Vitest tests,
+plus passing lint, typecheck, production build, and production-dependency audit. It
+covers annual pricing math, both transition policies and period-end copy, Checkout,
+Portal, client-secret-first SCA and hosted-Invoice fallback, webhook polling, browser
+secret isolation, SEO configuration, server-rendered plans, JSON-LD, and fail-closed
+indexing. The earlier 60-test result is historical. The real-browser policies were not
+rerun after the current hardening, so this frontend result is not Stripe network or
+signed-webhook evidence.

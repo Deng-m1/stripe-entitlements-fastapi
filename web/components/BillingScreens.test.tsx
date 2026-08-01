@@ -26,10 +26,13 @@ function preview(
     target_plan_key: "pro",
     target_interval: "year",
     timing: "immediate",
+    transition_policy: "full_period_reset",
+    settlement_mode: "new_period_full_price",
     effective_at: "2026-08-01T00:00:00.000Z",
     currency: "USD",
     amount_due_now: 35300,
     credit_applied: 0,
+    entitlement_credit_delta: null,
     next_invoice_amount: 35300,
     ...values,
   };
@@ -47,6 +50,7 @@ function testApi(options: {
     ({
       status: "confirmed",
       timing: changePreview.timing,
+      transition_policy: changePreview.transition_policy,
       target_plan_key: changePreview.target_plan_key,
       target_interval: changePreview.target_interval,
       account,
@@ -158,6 +162,43 @@ describe("billing screens", () => {
     });
   });
 
+  it("renders server-authoritative prorated-delta settlement and entitlement copy", async () => {
+    const user = userEvent.setup();
+    const api = testApi({
+      changePreview: preview({
+        target_plan_key: "pro",
+        target_interval: "month",
+        transition_policy: "prorated_delta",
+        settlement_mode: "current_period_prorated_delta",
+        amount_due_now: 1500,
+        credit_applied: 950,
+        entitlement_credit_delta: 700,
+        next_invoice_amount: 4900,
+      }),
+    });
+    render(
+      <PricingScreen
+        api={api}
+        billingRedirect={vi.fn()}
+        internalRedirect={vi.fn()}
+      />,
+    );
+
+    await screen.findByRole("heading", { name: "Starter" });
+    await user.click(screen.getByRole("button", { name: "Choose Pro month" }));
+    expect(
+      await screen.findByRole("heading", {
+        name: "Pay the prorated difference for this period",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Prorated amount due: $15.00")).toBeInTheDocument();
+    expect(screen.getByText(/adds exactly 700 credits/)).toBeInTheDocument();
+    expect(screen.getByText("$9.50")).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: /charge the prorated difference/ }),
+    ).toBeInTheDocument();
+  });
+
   it("uses explicit period-end copy and then displays pending state", async () => {
     const user = userEvent.setup();
     const pendingAccount: AccountResponse = {
@@ -167,6 +208,7 @@ describe("billing screens", () => {
         target_interval: "month",
         timing: "period_end",
         effective_at: "2026-09-01T00:00:00.000Z",
+        transition_policy: "full_period_reset",
       },
     };
     const api = testApi({
@@ -177,6 +219,7 @@ describe("billing screens", () => {
         target_plan_key: "starter",
         target_interval: "month",
         timing: "period_end",
+        settlement_mode: "period_end",
         amount_due_now: 0,
         credit_applied: 0,
         next_invoice_amount: 1900,
@@ -185,6 +228,7 @@ describe("billing screens", () => {
       confirm: {
         status: "confirmed",
         timing: "period_end",
+        transition_policy: "full_period_reset",
         target_plan_key: "starter",
         target_interval: "month",
         account: pendingAccount,
@@ -359,6 +403,7 @@ describe("billing screens", () => {
           target_interval: "year",
           timing: "period_end",
           effective_at: "2026-09-01T00:00:00.000Z",
+          transition_policy: "full_period_reset",
         },
       },
     });
@@ -474,6 +519,7 @@ describe("billing screens", () => {
       confirm: {
         status: "action_required",
         timing: "immediate",
+        transition_policy: "full_period_reset",
         target_plan_key: "pro",
         target_interval: "year",
         payment_client_secret: "pi_demo_secret_not_logged",
@@ -513,6 +559,7 @@ describe("billing screens", () => {
       confirm: {
         status: "action_required",
         timing: "immediate",
+        transition_policy: "full_period_reset",
         target_plan_key: "pro",
         target_interval: "year",
         payment_url: "https://invoice.stripe.com/i/test-hosted-invoice",
@@ -552,6 +599,48 @@ describe("billing screens", () => {
     expect(redirect).toHaveBeenCalledWith(
       "https://invoice.stripe.com/i/test-hosted-invoice",
     );
+  });
+
+  it("prefers in-memory Stripe.js authentication when both recovery paths exist", async () => {
+    const user = userEvent.setup();
+    const redirect = vi.fn();
+    const api = testApi({
+      confirm: {
+        status: "action_required",
+        timing: "immediate",
+        transition_policy: "full_period_reset",
+        target_plan_key: "pro",
+        target_interval: "year",
+        payment_url: "https://invoice.stripe.com/i/fallback-only",
+        payment_client_secret: "pi_ephemeral_secret_not_persisted",
+        payment_confirmation_method: "confirm_payment",
+      },
+    });
+    render(
+      <PricingScreen
+        api={api}
+        billingRedirect={redirect}
+        internalRedirect={redirect}
+      />,
+    );
+
+    await screen.findByRole("heading", { name: "Starter" });
+    await user.click(screen.getByRole("button", { name: "Yearly" }));
+    await user.click(screen.getByRole("button", { name: "Choose Pro year" }));
+    await user.click(
+      await screen.findByRole("checkbox", {
+        name: /may charge me and still requires webhook confirmation/,
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: "Confirm billing change" }));
+
+    expect(
+      await screen.findByText(/NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY is not configured/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Open Stripe invoice" }),
+    ).not.toBeInTheDocument();
+    expect(redirect).not.toHaveBeenCalled();
   });
 
   it("polls account state until the target webhook projection appears", async () => {

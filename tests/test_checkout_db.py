@@ -86,9 +86,7 @@ async def test_stale_checkout_completion_does_not_bind_subscription(
     account_id = await make_account(customer=None, subscription=None)
     coordinator = CheckoutCoordinator(pool)
     claim = await coordinator.reserve(account_id, "starter", "month")
-    assert await coordinator.attach_session(
-        claim, "cs_current", "https://checkout/current"
-    )
+    assert await coordinator.attach_session(claim, "cs_current", "https://checkout/current")
     result = await processor.process(
         checkout_event(
             "checkout.session.completed",

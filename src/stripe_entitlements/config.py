@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -26,6 +27,7 @@ class Settings(BaseSettings):
     demo_bearer_token: str | None = None
     demo_bearer_subject: str = "demo-user"
     demo_bearer_email: str | None = None
+    billing_transition_policy: Literal["full_period_reset", "prorated_delta"] = "full_period_reset"
 
 
 @lru_cache

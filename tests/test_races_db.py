@@ -45,9 +45,13 @@ async def test_concurrent_different_events_same_invoice_grant_once(
     assert sum(result.outcome == "handled" for result in results) == 1
     assert sum(result.outcome in {"replayed", "ignored"} for result in results) == 9
     async with pool.acquire() as conn:
-        assert await conn.fetchval(
-            "select count(*) from credit_ledger where stripe_invoice_id='in_concurrent_business'"
-        ) == 1
+        assert (
+            await conn.fetchval(
+                "select count(*) from credit_ledger "
+                "where stripe_invoice_id='in_concurrent_business'"
+            )
+            == 1
+        )
 
 
 async def test_concurrent_paid_and_partial_refund_converge(
@@ -90,9 +94,12 @@ async def test_concurrent_cumulative_refunds_keep_greatest_amount(
     )
     assert await _balance(pool, account_id) == 150
     async with pool.acquire() as conn:
-        assert await conn.fetchval(
-            "select amount_refunded from stripe_invoice_state where invoice_id='in_refund_race'"
-        ) == 950
+        assert (
+            await conn.fetchval(
+                "select amount_refunded from stripe_invoice_state where invoice_id='in_refund_race'"
+            )
+            == 950
+        )
 
 
 async def test_same_second_paid_and_failed_race_always_ends_active(

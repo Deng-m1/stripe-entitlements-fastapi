@@ -33,7 +33,12 @@ async def _grant_due() -> None:
         catalog = PlanCatalog.from_toml(settings.plan_catalog_path, settings.lookup_prefix)
         processor = EventProcessor(db.require_pool(), catalog, settings.product_line)
         service = AnnualGrantService(db.require_pool(), catalog, processor)
-        gateway = StripeGateway(settings.stripe_secret_key, settings.stripe_webhook_secret)
+        gateway = StripeGateway(
+            settings.stripe_secret_key,
+            settings.stripe_webhook_secret,
+            settings.product_line,
+            api_version=settings.stripe_api_version,
+        )
         for candidate in await service.due_accounts(datetime.now(UTC)):
             snapshot = await gateway.subscription_snapshot(candidate["stripe_subscription_id"])
             result = await service.grant_due(str(candidate["id"]), datetime.now(UTC), snapshot)
@@ -55,11 +60,17 @@ async def _reconcile() -> None:
             settings.stripe_secret_key,
             settings.stripe_webhook_secret,
             settings.product_line,
+            api_version=settings.stripe_api_version,
         )
         service = ReconciliationService(db.require_pool(), processor, gateway)
-        for candidate in await service.candidates(datetime.now(UTC)):
-            result = await service.reconcile_account(str(candidate["id"]))
-            print(candidate["id"], result.outcome, result.reason or "")
+        run_started = datetime.now(UTC)
+        while True:
+            candidates = await service.candidates(datetime.now(UTC), attempted_before=run_started)
+            if not candidates:
+                break
+            for candidate in candidates:
+                result = await service.reconcile_account(str(candidate["id"]))
+                print(candidate["id"], result.outcome, result.reason or "")
     finally:
         await db.close()
 

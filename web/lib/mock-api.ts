@@ -28,6 +28,8 @@ export function createMockBillingApi(
   initial?: Partial<AccountResponse>,
 ): BillingApi {
   let account: AccountResponse = {
+    account_id: "00000000-0000-0000-0000-000000000001",
+    transition_policy: catalog.transition_policy,
     plan_key: "starter",
     plan_interval: "month",
     subscription_status: "active",
@@ -83,6 +85,9 @@ export function createMockBillingApi(
       target_plan_key: target.key,
       target_interval: input.interval,
       timing,
+      transition_policy: catalog.transition_policy,
+      settlement_mode:
+        timing === "immediate" ? "new_period_full_price" : "period_end",
       effective_at:
         timing === "immediate"
           ? new Date().toISOString()
@@ -90,6 +95,7 @@ export function createMockBillingApi(
       currency: targetPrice.currency,
       amount_due_now: timing === "immediate" ? targetPrice.unit_amount : 0,
       credit_applied: creditApplied,
+      entitlement_credit_delta: null,
       next_invoice_amount: targetPrice.unit_amount,
     };
   }
@@ -169,12 +175,14 @@ export function createMockBillingApi(
             target_interval: result.target_interval,
             timing: result.timing,
             effective_at: result.effective_at,
+            transition_policy: result.transition_policy,
           },
         };
       }
       return {
         status: "confirmed",
         timing: result.timing,
+        transition_policy: result.transition_policy,
         target_plan_key: result.target_plan_key,
         target_interval: result.target_interval,
         account: structuredClone(account),
@@ -193,6 +201,8 @@ export function demoAccount(
 ): AccountResponse {
   const selected = plans.find((plan) => plan.key === planKey) ?? plans[0];
   return {
+    account_id: "00000000-0000-0000-0000-000000000001",
+    transition_policy: catalog.transition_policy,
     plan_key: selected.key,
     plan_interval: interval,
     subscription_status: "active",

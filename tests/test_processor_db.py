@@ -5,6 +5,7 @@ from typing import Any
 import asyncpg
 import pytest
 
+from stripe_entitlements.credits import CreditService
 from stripe_entitlements.processor import EventProcessor
 from tests.builders import (
     dispute,
@@ -38,6 +39,34 @@ async def test_catalog_amount_currency_and_quantity_drift_fail_closed(
             "select credits_balance from billing_accounts where id=$1::uuid", account_id
         )
     assert row is not None and row["credits_balance"] == 0
+
+
+@pytest.mark.parametrize(
+    "adjustment",
+    ["amount_due", "subtotal", "balance", "credit_note", "tax", "discount"],
+)
+async def test_full_period_paid_invoice_adjustments_fail_closed(
+    adjustment: str, processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account()
+    payload = paid_invoice(account_id, invoice_id=f"in_full_adjustment_{adjustment}")
+    invoice = payload["data"]["object"]
+    if adjustment == "amount_due":
+        invoice["amount_due"] = 1800
+    elif adjustment == "subtotal":
+        invoice["subtotal"] = 1800
+    elif adjustment == "balance":
+        invoice["starting_balance"] = -100
+    elif adjustment == "credit_note":
+        invoice["pre_payment_credit_notes_amount"] = 100
+    elif adjustment == "tax":
+        invoice["lines"]["data"][0]["tax_amounts"] = [{"amount": 100}]
+    else:
+        invoice["total_discount_amounts"] = [{"amount": 100}]
+
+    result = await processor.process(payload)
+    assert result.outcome == "ignored"
+    assert (await _account(pool, account_id))["credits_balance"] == 0
 
 
 async def _account(pool: asyncpg.Pool, account_id: str) -> dict[str, Any]:
@@ -202,9 +231,12 @@ async def test_positive_proration_fails_closed(
     )
     assert result.reason == "cross-invoice proration is unsafe"
     async with pool.acquire() as conn:
-        assert await conn.fetchval(
-            "select count(*) from billing_incidents where kind='unsafe_cross_invoice_proration'"
-        ) == 1
+        assert (
+            await conn.fetchval(
+                "select count(*) from billing_incidents where kind='unsafe_cross_invoice_proration'"
+            )
+            == 1
+        )
 
 
 async def test_negative_proration_also_fails_closed_without_funding_lineage(
@@ -229,6 +261,75 @@ async def test_partial_refund_after_paid_claws_cumulative_ratio(
     assert [row["delta"] for row in await _ledger(pool, account_id)] == [300, -150]
 
 
+async def test_partial_refund_debt_absorbs_same_epoch_usage_refund(
+    processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account()
+    await processor.process(paid_invoice(account_id, invoice_id="in_spent_partial"))
+    credits = CreditService(pool)
+    assert (await credits.charge(account_id, 300, "spent-before-refund")).balance == 0
+    await processor.process(refunded_charge(invoice_id="in_spent_partial", amount_refunded=950))
+    refunded = await credits.refund("spent-before-refund")
+    assert refunded.balance == 150
+    async with pool.acquire() as conn:
+        debt = await conn.fetchrow(
+            """select target_units,collected_units from billing_clawback_debts
+                 where account_id=$1::uuid and stripe_invoice_id='in_spent_partial'""",
+            account_id,
+        )
+    assert debt is not None and tuple(debt) == (150, 150)
+
+
+async def test_cross_account_refund_cannot_mutate_invoice_or_balance(
+    processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    owner_id = await make_account(customer="cus_owner", subscription="sub_owner")
+    other_id = await make_account(customer="cus_other", subscription="sub_other")
+    await processor.process(
+        paid_invoice(
+            owner_id,
+            invoice_id="in_owner_only",
+            customer="cus_owner",
+            subscription="sub_owner",
+        )
+    )
+    result = await processor.process(
+        refunded_charge(
+            invoice_id="in_owner_only",
+            customer="cus_other",
+            amount_refunded=1900,
+            refunded=True,
+            event_id="evt_cross_account_refund",
+        )
+    )
+    assert result.outcome == "ignored"
+    async with pool.acquire() as conn:
+        owner = await conn.fetchrow(
+            "select credits_balance from billing_accounts where id=$1::uuid", owner_id
+        )
+        other = await conn.fetchrow(
+            "select credits_balance from billing_accounts where id=$1::uuid", other_id
+        )
+        state = await conn.fetchrow(
+            """select account_id,amount_refunded,fully_refunded,disputed
+                 from stripe_invoice_state where invoice_id='in_owner_only'"""
+        )
+        incident = await conn.fetchval(
+            """select count(*) from billing_incidents
+                 where kind='clawback_invoice_identity_conflict'"""
+        )
+    assert owner is not None and owner["credits_balance"] == 300
+    assert other is not None and other["credits_balance"] == 0
+    assert state is not None
+    assert (str(state["account_id"]), *tuple(state)[1:]) == (
+        owner_id,
+        0,
+        False,
+        False,
+    )
+    assert incident == 1
+
+
 @pytest.mark.parametrize("refund_first", [False, True])
 async def test_partial_refund_order_converges(
     refund_first: bool, processor: EventProcessor, pool: asyncpg.Pool, make_account
@@ -236,7 +337,7 @@ async def test_partial_refund_order_converges(
     account_id = await make_account()
     paid = paid_invoice(account_id, invoice_id="in_partial_order")
     refund = refunded_charge(invoice_id="in_partial_order", amount_refunded=475)
-    for payload in ([refund, paid] if refund_first else [paid, refund]):
+    for payload in [refund, paid] if refund_first else [paid, refund]:
         await processor.process(payload)
     account = await _account(pool, account_id)
     assert account["credits_balance"] == 225
@@ -248,10 +349,8 @@ async def test_full_refund_order_converges(
 ) -> None:
     account_id = await make_account()
     paid = paid_invoice(account_id, invoice_id="in_full_order")
-    refund = refunded_charge(
-        invoice_id="in_full_order", amount_refunded=1900, refunded=True
-    )
-    for payload in ([refund, paid] if refund_first else [paid, refund]):
+    refund = refunded_charge(invoice_id="in_full_order", amount_refunded=1900, refunded=True)
+    for payload in [refund, paid] if refund_first else [paid, refund]:
         await processor.process(payload)
     account = await _account(pool, account_id)
     assert account["credits_balance"] == 0
@@ -269,14 +368,10 @@ async def test_multiple_partial_refunds_use_cumulative_amount(
     account_id = await make_account()
     await processor.process(paid_invoice(account_id, invoice_id="in_multi_refund"))
     await processor.process(
-        refunded_charge(
-            invoice_id="in_multi_refund", amount_refunded=475, event_id="evt_refund_25"
-        )
+        refunded_charge(invoice_id="in_multi_refund", amount_refunded=475, event_id="evt_refund_25")
     )
     await processor.process(
-        refunded_charge(
-            invoice_id="in_multi_refund", amount_refunded=950, event_id="evt_refund_50"
-        )
+        refunded_charge(invoice_id="in_multi_refund", amount_refunded=950, event_id="evt_refund_50")
     )
     assert (await _account(pool, account_id))["credits_balance"] == 150
     rows = await _ledger(pool, account_id)
@@ -290,7 +385,7 @@ async def test_dispute_order_converges(
     account_id = await make_account()
     paid = paid_invoice(account_id, invoice_id="in_dispute")
     disputed = dispute(invoice_id="in_dispute")
-    for payload in ([disputed, paid] if dispute_first else [paid, disputed]):
+    for payload in [disputed, paid] if dispute_first else [paid, disputed]:
         await processor.process(payload)
     assert (await _account(pool, account_id))["credits_balance"] == 0
     async with pool.acquire() as conn:
@@ -395,9 +490,12 @@ async def test_processing_exception_rolls_back_event_claim(
     with pytest.raises(RuntimeError, match="simulated crash"):
         await exploding.process(payload)
     async with pool.acquire() as conn:
-        assert await conn.fetchval(
-            "select count(*) from stripe_webhook_events where id='evt_retry_after_rollback'"
-        ) == 0
+        assert (
+            await conn.fetchval(
+                "select count(*) from stripe_webhook_events where id='evt_retry_after_rollback'"
+            )
+            == 0
+        )
     assert (await processor.process(payload)).outcome == "handled"
 
 

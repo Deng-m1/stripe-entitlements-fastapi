@@ -17,7 +17,7 @@ from .plan_changes import (
     RemotePlanChange,
 )
 from .portal_policy import portal_configuration_is_safe
-from .transitions import BillingInterval
+from .transitions import BillingInterval, TransitionPolicy
 from .types import SubscriptionSnapshot
 
 
@@ -62,7 +62,7 @@ class StripeGateway:
         event_type = prepared.get("type")
         obj = prepared.get("data", {}).get("object", {})
         if event_type in {"invoice.paid", "invoice.payment_failed"}:
-            await self._resolve_lookups((obj.get("lines") or {}).get("data") or [])
+            await self._prepare_invoice_lines(obj)
         elif event_type in {
             "customer.subscription.updated",
             "customer.subscription.deleted",
@@ -97,6 +97,46 @@ class StripeGateway:
             if invoice_id:
                 obj["_resolved_invoice_id"] = invoice_id
         return prepared
+
+    async def _prepare_invoice_lines(self, invoice: dict[str, Any]) -> None:
+        """Materialize the complete Invoice line collection before DB processing."""
+        container = invoice.get("lines") or {}
+        lines = list(container.get("data") or []) if isinstance(container, Mapping) else []
+        if isinstance(container, Mapping) and container.get("has_more"):
+            invoice_id = self._object_id(invoice.get("id"))
+            if not invoice_id:
+                raise RuntimeError("paginated Invoice lines require an Invoice id")
+            lines = await self._list_invoice_lines(invoice_id)
+        await self._resolve_lookups(lines)
+        invoice["lines"] = {
+            **(dict(container) if isinstance(container, Mapping) else {}),
+            "data": lines,
+            "has_more": False,
+            "_all_lines_loaded": True,
+        }
+
+    async def _list_invoice_lines(self, invoice_id: str) -> list[dict[str, Any]]:
+        lines: list[dict[str, Any]] = []
+        starting_after: str | None = None
+        while True:
+            params: dict[str, Any] = {"invoice": invoice_id, "limit": 100}
+            if starting_after:
+                params["starting_after"] = starting_after
+            page = await asyncio.to_thread(
+                stripe.Invoice.list_lines,
+                invoice_id,
+                **{key: value for key, value in params.items() if key != "invoice"},
+                **self._request_options,
+            )
+            page_lines = [json.loads(str(item)) for item in page.data]
+            lines.extend(page_lines)
+            if len(lines) > 1000:
+                raise RuntimeError("Invoice has more than the supported 1000 lines")
+            if not getattr(page, "has_more", False):
+                return lines
+            if not page_lines or not page_lines[-1].get("id"):
+                raise RuntimeError("Stripe Invoice line pagination did not advance")
+            starting_after = str(page_lines[-1]["id"])
 
     @staticmethod
     def _object_id(value: Any) -> str | None:
@@ -142,13 +182,18 @@ class StripeGateway:
         lookup = lookup or (items[0].get("_resolved_lookup_key") if len(items) == 1 else None)
         return SubscriptionSnapshot(subscription_id, subscription.get("status", ""), lookup)
 
-    async def subscription_object(self, subscription_id: str) -> dict[str, Any]:
+    async def subscription_object(
+        self, subscription_id: str, *, expand: list[str] | None = None
+    ) -> dict[str, Any]:
+        options: dict[str, Any] = dict(self._request_options)
+        if expand:
+            options["expand"] = expand
         subscription: dict[str, Any] = json.loads(
             str(
                 await asyncio.to_thread(
                     stripe.Subscription.retrieve,
                     subscription_id,
-                    **self._request_options,
+                    **options,
                 )
             )
         )
@@ -156,9 +201,7 @@ class StripeGateway:
         await self._resolve_lookups(items)
         return subscription
 
-    async def latest_paid_invoice_event(
-        self, subscription_id: str
-    ) -> dict[str, Any] | None:
+    async def latest_paid_invoice_event(self, subscription_id: str) -> dict[str, Any] | None:
         invoices = await asyncio.to_thread(
             stripe.Invoice.list,
             subscription=subscription_id,
@@ -217,9 +260,7 @@ class StripeGateway:
             or int(price_raw.get("unit_amount") or 0) != expected_unit_amount
             or recurring.get("interval") != expected_interval
         ):
-            raise CheckoutCreationRejected(
-                f"Stripe price {lookup_key!r} drifted from the catalog"
-            )
+            raise CheckoutCreationRejected(f"Stripe price {lookup_key!r} drifted from the catalog")
         params: dict[str, Any] = {
             "mode": "subscription",
             "client_reference_id": account_id,
@@ -323,10 +364,10 @@ class StripeGateway:
             or int(target_price.get("unit_amount") or 0) != expected_unit_amount
             or recurring.get("interval") != target_interval
         ):
-            raise RuntimeError(
-                f"Stripe price {target_lookup_key!r} drifted from the catalog"
-            )
-        subscription = await self.subscription_object(subscription_id)
+            raise RuntimeError(f"Stripe price {target_lookup_key!r} drifted from the catalog")
+        subscription = await self.subscription_object(
+            subscription_id, expand=["latest_invoice.confirmation_secret"]
+        )
         items = list((subscription.get("items") or {}).get("data") or [])
         if len(items) != 1:
             raise RuntimeError("subscription must contain exactly one item")
@@ -340,6 +381,14 @@ class StripeGateway:
         if start is None or end is None:
             raise RuntimeError("subscription item period is missing")
         schedule_id = self._object_id(subscription.get("schedule"))
+        pending = subscription.get("pending_update") or {}
+        latest = subscription.get("latest_invoice")
+        latest_invoice = latest if isinstance(latest, Mapping) else {}
+        confirmation = latest_invoice.get("confirmation_secret") or {}
+        client_secret = (
+            confirmation.get("client_secret") if isinstance(confirmation, Mapping) else None
+        )
+        pending_expires = pending.get("expires_at") if isinstance(pending, Mapping) else None
         return PlanChangeContext(
             subscription_id,
             str(item["id"]),
@@ -350,39 +399,64 @@ class StripeGateway:
             datetime.fromtimestamp(int(start), tz=UTC),
             datetime.fromtimestamp(int(end), tz=UTC),
             schedule_id,
+            str(subscription.get("status") or ""),
+            bool(subscription.get("cancel_at_period_end")),
+            bool(pending),
+            datetime.fromtimestamp(int(pending_expires), tz=UTC) if pending_expires else None,
+            (
+                str(latest_invoice["hosted_invoice_url"])
+                if latest_invoice.get("hosted_invoice_url")
+                else None
+            ),
+            str(client_secret) if client_secret else None,
         )
 
     async def preview_immediate_plan_change(
         self,
         context: PlanChangeContext,
+        *,
+        policy: TransitionPolicy = "full_period_reset",
+        proration_date: int | None = None,
     ) -> PlanChangeEstimate:
+        subscription_details: dict[str, Any] = {
+            "items": [
+                {
+                    "id": context.subscription_item_id,
+                    "price": context.target_price_id,
+                }
+            ]
+        }
+        if policy == "full_period_reset":
+            subscription_details.update(
+                {"billing_cycle_anchor": "now", "proration_behavior": "none"}
+            )
+        else:
+            if proration_date is None:
+                raise RuntimeError("prorated_delta requires a fixed proration_date")
+            subscription_details.update(
+                {
+                    "proration_behavior": "always_invoice",
+                    "proration_date": proration_date,
+                }
+            )
         preview = await asyncio.to_thread(
             stripe.Invoice.create_preview,
             subscription=context.subscription_id,
-            subscription_details={
-                "items": [
-                    {
-                        "id": context.subscription_item_id,
-                        "price": context.target_price_id,
-                    }
-                ],
-                "billing_cycle_anchor": "now",
-                "proration_behavior": "none",
-            },
+            subscription_details=cast(Any, subscription_details),
             **self._request_options,
         )
         raw: dict[str, Any] = json.loads(str(preview))
-        lines = list((raw.get("lines") or {}).get("data") or [])
+        container = raw.get("lines") or {}
+        lines = list(container.get("data") or []) if isinstance(container, Mapping) else []
+        has_more = bool(container.get("has_more")) if isinstance(container, Mapping) else True
+        invoice_currency = str(raw.get("currency") or "").lower()
+        total = int(raw.get("total") or 0)
+        amount_due = int(raw.get("amount_due") or 0)
+        subtotal = int(raw.get("subtotal", total) or 0)
         target_non_proration = [
             line
             for line in lines
-            if not self._line_is_proration(line)
-            and self._price_id(line) == context.target_price_id
-        ]
-        other_positive = [
-            line
-            for line in lines
-            if int(line.get("amount") or 0) > 0 and line not in target_non_proration
+            if not self._line_is_proration(line) and self._price_id(line) == context.target_price_id
         ]
         starting_balance = int(raw.get("starting_balance") or 0)
         ending_balance = int(raw.get("ending_balance") or 0)
@@ -391,12 +465,126 @@ class StripeGateway:
             for line in lines
             if self._line_is_proration(line) and int(line.get("amount") or 0) < 0
         )
+        source_prorations = [
+            line
+            for line in lines
+            if self._line_is_proration(line)
+            and self._price_id(line) == context.current_price_id
+            and int(line.get("amount") or 0) < 0
+        ]
+        target_prorations = [
+            line
+            for line in lines
+            if self._line_is_proration(line)
+            and self._price_id(line) == context.target_price_id
+            and int(line.get("amount") or 0) > 0
+        ]
+        tax_items = list(raw.get("total_tax_amounts") or []) + list(raw.get("total_taxes") or [])
+        for line in lines:
+            tax_items.extend(line.get("tax_amounts") or [])
+            tax_items.extend(line.get("taxes") or [])
+        tax_amount = sum(
+            int(item.get("amount") or 0) for item in tax_items if isinstance(item, Mapping)
+        )
+        discount_items = list(raw.get("total_discount_amounts") or [])
+        unsupported_line_adjustment = False
+        for line in lines:
+            discount_items.extend(line.get("discount_amounts") or [])
+            for item in line.get("pretax_credit_amounts") or []:
+                if isinstance(item, Mapping) and int(item.get("amount") or 0) != 0:
+                    unsupported_line_adjustment = True
+        discount_amount = sum(
+            int(item.get("amount") or 0) for item in discount_items if isinstance(item, Mapping)
+        )
+        if raw.get("discounts") and discount_amount == 0:
+            discount_amount = 1
+        balance_fields = (
+            starting_balance,
+            ending_balance,
+            int(raw.get("pre_payment_credit_notes_amount") or 0),
+            int(raw.get("post_payment_credit_notes_amount") or 0),
+        )
+        common_safe = bool(
+            not has_more
+            and all(value == 0 for value in balance_fields)
+            and tax_amount == 0
+            and discount_amount == 0
+            and not unsupported_line_adjustment
+        )
+        period_start: datetime | None = None
+        period_end: datetime | None = None
+        if policy == "prorated_delta":
+            if len(source_prorations) == 1 and len(target_prorations) == 1:
+                source_period = source_prorations[0].get("period") or {}
+                target_period = target_prorations[0].get("period") or {}
+                if source_period == target_period:
+                    try:
+                        period_start = datetime.fromtimestamp(int(target_period["start"]), tz=UTC)
+                        period_end = datetime.fromtimestamp(int(target_period["end"]), tz=UTC)
+                    except (KeyError, TypeError, ValueError, OSError):
+                        period_start = None
+                        period_end = None
+            source_amount = (
+                int(source_prorations[0].get("amount") or 0) if len(source_prorations) == 1 else 0
+            )
+            target_amount = (
+                int(target_prorations[0].get("amount") or 0) if len(target_prorations) == 1 else 0
+            )
+            safe_shape = bool(
+                common_safe
+                and len(lines) == 2
+                and len(source_prorations) == 1
+                and len(target_prorations) == 1
+                and all(line.get("id") for line in lines)
+                and all(int(line.get("quantity") or 0) == 1 for line in lines)
+                and source_amount < 0
+                and target_amount > -source_amount > 0
+                and source_amount + target_amount == total
+                and total == amount_due == subtotal
+                and bool(invoice_currency)
+                and all(
+                    str(line.get("currency") or invoice_currency).lower() == invoice_currency
+                    for line in lines
+                )
+                and period_start is not None
+                and period_end is not None
+                and period_end > period_start
+                and int(period_start.timestamp()) == proration_date
+                and period_end == context.current_period_end
+            )
+        else:
+            target_line = target_non_proration[0] if len(target_non_proration) == 1 else {}
+            target_period = target_line.get("period") or {}
+            try:
+                full_period_start = datetime.fromtimestamp(int(target_period["start"]), tz=UTC)
+                full_period_end = datetime.fromtimestamp(int(target_period["end"]), tz=UTC)
+                valid_full_period = full_period_end > full_period_start
+            except (KeyError, TypeError, ValueError, OSError):
+                valid_full_period = False
+            safe_shape = bool(
+                common_safe
+                and len(lines) == 1
+                and len(target_non_proration) == 1
+                and target_line.get("id")
+                and int(target_line.get("quantity") or 0) == 1
+                and int(target_line.get("amount") or 0) > 0
+                and int(target_line.get("amount") or 0) == total == amount_due == subtotal
+                and str(target_line.get("currency") or invoice_currency).lower() == invoice_currency
+                and bool(invoice_currency)
+                and valid_full_period
+            )
         return PlanChangeEstimate(
-            int(raw.get("amount_due") or 0),
+            amount_due,
             proration_credit,
             max(-starting_balance, -ending_balance, 0),
             str(raw.get("currency") or "usd"),
-            len(target_non_proration) == 1 and not other_positive,
+            safe_shape,
+            (-int(source_prorations[0].get("amount") or 0) if len(source_prorations) == 1 else 0),
+            (int(target_prorations[0].get("amount") or 0) if len(target_prorations) == 1 else 0),
+            tax_amount,
+            discount_amount,
+            period_start,
+            period_end,
         )
 
     async def apply_immediate_plan_change(
@@ -404,7 +592,23 @@ class StripeGateway:
         context: PlanChangeContext,
         *,
         idempotency_key: str,
+        policy: TransitionPolicy = "full_period_reset",
+        proration_date: int | None = None,
     ) -> RemotePlanChange:
+        settlement: dict[str, Any]
+        if policy == "full_period_reset":
+            settlement = {
+                "billing_cycle_anchor": "now",
+                "proration_behavior": "none",
+            }
+        else:
+            if proration_date is None:
+                raise RuntimeError("prorated_delta requires a fixed proration_date")
+            settlement = {
+                "proration_behavior": "always_invoice",
+                "proration_date": proration_date,
+            }
+
         def _modify() -> Any:
             return stripe.Subscription.modify(
                 context.subscription_id,
@@ -414,8 +618,7 @@ class StripeGateway:
                         "price": context.target_price_id,
                     }
                 ],
-                billing_cycle_anchor="now",
-                proration_behavior="none",
+                **settlement,
                 payment_behavior="pending_if_incomplete",
                 expand=["latest_invoice.confirmation_secret"],
                 idempotency_key=idempotency_key,
@@ -437,6 +640,7 @@ class StripeGateway:
             datetime.fromtimestamp(int(expires), tz=UTC) if expires else None,
             str(invoice["hosted_invoice_url"]) if invoice.get("hosted_invoice_url") else None,
             str(client_secret) if client_secret else None,
+            self._object_id(invoice),
         )
 
     async def schedule_plan_change(
@@ -457,6 +661,10 @@ class StripeGateway:
             raise RuntimeError("subscription is controlled by an unrelated Stripe Schedule")
         schedule_raw: dict[str, Any] = json.loads(str(schedule))
         phases = list(schedule_raw.get("phases") or [])
+        if len(phases) == 2:
+            if not self._configured_schedule_matches(schedule_raw, context, idempotency_key):
+                raise RuntimeError("existing Stripe Schedule differs from this plan change")
+            return RemotePlanChange(str(schedule.id))
         if len(phases) != 1:
             raise RuntimeError("new subscription schedule must contain one current phase")
         current_phase = self._schedule_phase_payload(phases[0])
@@ -487,15 +695,52 @@ class StripeGateway:
             )
 
         configured = await asyncio.to_thread(_configure)
+        verified = await asyncio.to_thread(
+            stripe.SubscriptionSchedule.retrieve,
+            configured.id,
+            **self._request_options,
+        )
+        verified_raw: dict[str, Any] = json.loads(str(verified))
+        if not self._configured_schedule_matches(verified_raw, context, idempotency_key):
+            raise RuntimeError("configured Stripe Schedule failed policy verification")
         return RemotePlanChange(str(configured.id))
+
+    def _configured_schedule_matches(
+        self,
+        schedule: Mapping[str, Any],
+        context: PlanChangeContext,
+        plan_change_key: str,
+    ) -> bool:
+        phases = list(schedule.get("phases") or [])
+        if len(phases) != 2:
+            return False
+        metadata = schedule.get("metadata") or {}
+        subscription_id = self._object_id(schedule.get("subscription"))
+        current_items = list(phases[0].get("items") or [])
+        target_items = list(phases[1].get("items") or [])
+        boundary = int(context.current_period_end.timestamp())
+        return bool(
+            subscription_id == context.subscription_id
+            and schedule.get("end_behavior") == "release"
+            and metadata.get("product_line") == self.product_line
+            and metadata.get("plan_change_key") == plan_change_key
+            and phases[0].get("end_date") == boundary
+            and phases[1].get("start_date") == boundary
+            and phases[0].get("proration_behavior") == "none"
+            and phases[1].get("proration_behavior") == "none"
+            and len(current_items) == 1
+            and len(target_items) == 1
+            and self._price_id(current_items[0]) == context.current_price_id
+            and self._price_id(target_items[0]) == context.target_price_id
+            and int(current_items[0].get("quantity") or 0) == 1
+            and int(target_items[0].get("quantity") or 0) == 1
+        )
 
     @staticmethod
     def _line_is_proration(line: Mapping[str, Any]) -> bool:
         return bool(
             line.get("proration")
-            or ((line.get("parent") or {}).get("subscription_item_details") or {}).get(
-                "proration"
-            )
+            or ((line.get("parent") or {}).get("subscription_item_details") or {}).get("proration")
         )
 
     @staticmethod

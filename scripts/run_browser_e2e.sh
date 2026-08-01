@@ -15,6 +15,16 @@ esac
 
 e2e_request_version="${STRIPE_API_VERSION:-2026-06-24.dahlia}"
 e2e_event_version="${E2E_STRIPE_EVENT_API_VERSION:-2026-06-24.dahlia}"
+e2e_transition_policy="${E2E_TRANSITION_POLICY:-full_period_reset}"
+case "$e2e_transition_policy" in
+  full_period_reset|prorated_delta) ;;
+  *) echo "E2E_TRANSITION_POLICY must be full_period_reset or prorated_delta" >&2; exit 2 ;;
+esac
+e2e_upgrade_payment_method="${E2E_UPGRADE_PAYMENT_METHOD:-pm_card_authenticationRequired}"
+case "$e2e_upgrade_payment_method" in
+  pm_card_authenticationRequired|pm_card_visa) ;;
+  *) echo "E2E_UPGRADE_PAYMENT_METHOD is not an allowlisted Stripe test fixture" >&2; exit 2 ;;
+esac
 e2e_cloudflared="${CLOUDFLARED_BIN:-cloudflared}"
 e2e_postgres_image="${E2E_POSTGRES_IMAGE:-postgres:17-alpine}"
 if [[ -z "$e2e_postgres_image" ]]; then
@@ -34,6 +44,13 @@ e2e_webhook_create_started=0
 e2e_tunnel_pid=""
 e2e_backend_pid=""
 e2e_frontend_pid=""
+e2e_tunnel_start=""
+e2e_backend_start=""
+e2e_frontend_start=""
+e2e_child_path="${PATH:-/usr/local/bin:/usr/bin:/bin}"
+e2e_child_home="${HOME:-/tmp}"
+e2e_child_tmp="${TMPDIR:-/tmp}"
+e2e_child_lang="${LANG:-C.UTF-8}"
 
 e2e_free_port() {
   uv run python -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
@@ -54,12 +71,34 @@ e2e_backend_url="http://127.0.0.1:${e2e_backend_port}"
 e2e_frontend_url="http://127.0.0.1:${e2e_frontend_port}"
 e2e_demo_token="$(uv run python -c 'import secrets; print(secrets.token_urlsafe(32))')"
 
+e2e_pid_start() {
+  local e2e_pid="${1:-}"
+  [[ "$e2e_pid" =~ ^[0-9]+$ && -r "/proc/$e2e_pid/stat" ]] || return 1
+  awk '{print $22}' "/proc/$e2e_pid/stat"
+}
+
 e2e_stop_pid() {
   local e2e_pid="${1:-}"
-  if [[ "$e2e_pid" =~ ^[0-9]+$ ]] && kill -0 "$e2e_pid" 2>/dev/null; then
-    kill "$e2e_pid" 2>/dev/null || true
-    wait "$e2e_pid" 2>/dev/null || true
+  local e2e_expected_start="${2:-}"
+  [[ "$e2e_pid" =~ ^[0-9]+$ ]] || return 0
+  kill -0 "$e2e_pid" 2>/dev/null || return 0
+  local e2e_observed_start
+  e2e_observed_start="$(e2e_pid_start "$e2e_pid" 2>/dev/null || true)"
+  if [[ -z "$e2e_expected_start" || "$e2e_observed_start" != "$e2e_expected_start" ]]; then
+    echo "refusing to stop PID $e2e_pid after process identity changed" >&2
+    return 1
   fi
+  kill -TERM "$e2e_pid" 2>/dev/null || true
+  for _ in $(seq 1 50); do
+    [[ ! -r "/proc/$e2e_pid/stat" ]] && break
+    [[ "$(awk '{print $3}' "/proc/$e2e_pid/stat" 2>/dev/null)" == "Z" ]] && break
+    sleep 0.1
+  done
+  if kill -0 "$e2e_pid" 2>/dev/null && \
+      [[ "$(awk '{print $3}' "/proc/$e2e_pid/stat" 2>/dev/null)" != "Z" ]]; then
+    kill -KILL "$e2e_pid" 2>/dev/null || true
+  fi
+  wait "$e2e_pid" 2>/dev/null || true
 }
 
 e2e_cleanup() {
@@ -115,9 +154,15 @@ e2e_cleanup() {
       e2e_cleanup_failed=1
     fi
   fi
-  e2e_stop_pid "$e2e_frontend_pid"
-  e2e_stop_pid "$e2e_backend_pid"
-  e2e_stop_pid "$e2e_tunnel_pid"
+  if ! e2e_stop_pid "$e2e_frontend_pid" "$e2e_frontend_start"; then
+    e2e_cleanup_failed=1
+  fi
+  if ! e2e_stop_pid "$e2e_backend_pid" "$e2e_backend_start"; then
+    e2e_cleanup_failed=1
+  fi
+  if ! e2e_stop_pid "$e2e_tunnel_pid" "$e2e_tunnel_start"; then
+    e2e_cleanup_failed=1
+  fi
   case "$e2e_pg_container" in
     stripe-entitlements-browser-e2e-pg-[0-9]*)
       if ! docker rm -f "$e2e_pg_container" >/dev/null 2>&1; then
@@ -153,21 +198,27 @@ if [[ ! -x "$e2e_cloudflared" ]] && ! command -v "$e2e_cloudflared" >/dev/null; 
 fi
 
 docker run -d --rm --name "$e2e_pg_container" \
+  --tmpfs /var/lib/postgresql/data:rw,nosuid,nodev,size=512m \
   -e POSTGRES_DB=stripe_entitlements \
   -e POSTGRES_USER=postgres \
   -e POSTGRES_PASSWORD=local-only \
   -p "127.0.0.1:${e2e_pg_port}:5432" \
   "$e2e_postgres_image" >"$e2e_tmp_dir/postgres.id"
 
+e2e_pg_ready=0
 for _ in $(seq 1 60); do
   if docker exec "$e2e_pg_container" pg_isready -U postgres \
     -d stripe_entitlements >/dev/null 2>&1; then
+    e2e_pg_ready=1
     break
   fi
   sleep 1
 done
-docker exec "$e2e_pg_container" pg_isready -U postgres \
-  -d stripe_entitlements >/dev/null
+if [[ "$e2e_pg_ready" -ne 1 ]]; then
+  docker logs "$e2e_pg_container" >"$e2e_tmp_dir/postgres.log" 2>&1 || true
+  echo "disposable PostgreSQL did not become ready; inspect postgres.log" >&2
+  exit 1
+fi
 
 uv run python scripts/e2e_stripe.py wait-database \
   --database-url "$e2e_database_url" --timeout-seconds 60
@@ -186,6 +237,7 @@ fi
 "$e2e_cloudflared" tunnel --no-autoupdate \
   --url "$e2e_backend_url" >"$e2e_tmp_dir/cloudflared.log" 2>&1 &
 e2e_tunnel_pid="$!"
+e2e_tunnel_start="$(e2e_pid_start "$e2e_tunnel_pid")"
 e2e_tunnel_url=""
 for _ in $(seq 1 60); do
   e2e_tunnel_url="$(rg -o 'https://[-a-z0-9]+\.trycloudflare\.com' \
@@ -224,6 +276,7 @@ env \
   PRODUCT_LINE=example-entitlements \
   LOOKUP_PREFIX=ent \
   PLAN_CATALOG_PATH="$e2e_repo_root/plans.toml" \
+  BILLING_TRANSITION_POLICY="$e2e_transition_policy" \
   CHECKOUT_SUCCESS_URL="${e2e_frontend_url}/billing/success" \
   CHECKOUT_CANCEL_URL="${e2e_frontend_url}/pricing" \
   PORTAL_RETURN_URL="${e2e_frontend_url}/account" \
@@ -236,6 +289,7 @@ env \
     --host 127.0.0.1 --port "$e2e_backend_port" \
     >"$e2e_tmp_dir/backend.log" 2>&1 &
 e2e_backend_pid="$!"
+e2e_backend_start="$(e2e_pid_start "$e2e_backend_pid")"
 
 for _ in $(seq 1 60); do
   curl -fsS "${e2e_backend_url}/health" >/dev/null 2>&1 && break
@@ -245,7 +299,12 @@ curl -fsS "${e2e_backend_url}/health" >/dev/null
 
 (
   cd web
-  exec env \
+  exec env -i \
+    PATH="$e2e_child_path" \
+    HOME="$e2e_child_home" \
+    TMPDIR="$e2e_child_tmp" \
+    LANG="$e2e_child_lang" \
+    NEXT_TELEMETRY_DISABLED=1 \
     NEXT_PUBLIC_BILLING_API_MODE=http \
     NEXT_PUBLIC_BILLING_API_BASE_URL="$e2e_backend_url" \
     NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY="$STRIPE_PUBLISHABLE_KEY" \
@@ -254,6 +313,7 @@ curl -fsS "${e2e_backend_url}/health" >/dev/null
       --port "$e2e_frontend_port"
 ) >"$e2e_tmp_dir/frontend.log" 2>&1 &
 e2e_frontend_pid="$!"
+e2e_frontend_start="$(e2e_pid_start "$e2e_frontend_pid")"
 
 for _ in $(seq 1 90); do
   curl -fsS "${e2e_frontend_url}/pricing" >/dev/null 2>&1 && break
@@ -269,13 +329,15 @@ env \
   E2E_DATABASE_URL="$e2e_database_url" \
   E2E_EXTERNAL_REF="$e2e_external_ref" \
   E2E_DECLINE_STABILITY_SECONDS="${E2E_DECLINE_STABILITY_SECONDS:-10}" \
-  E2E_EXPECTED_PLAN=starter \
-  E2E_EXPECTED_INTERVAL=month \
+  E2E_TRANSITION_POLICY="$e2e_transition_policy" \
+  E2E_UPGRADE_PAYMENT_METHOD="$e2e_upgrade_payment_method" \
   npm --prefix web run test:e2e:stripe
 
 STRIPE_API_VERSION="$e2e_request_version" uv run python scripts/e2e_stripe.py \
   verify-database --database-url "$e2e_database_url" \
   --external-ref "$e2e_external_ref" \
-  --event-api-version "$e2e_event_version"
+  --event-api-version "$e2e_event_version" \
+  --expected-plan pro --expected-credits 1000 \
+  --transition-policy "$e2e_transition_policy"
 
-echo "browser Stripe Checkout and signed webhook E2E passed"
+echo "browser Stripe Checkout, $e2e_transition_policy upgrade, and signed webhook E2E passed"

@@ -13,6 +13,17 @@ Test Clock renewal, and safe plan changes. It must not claim coupons, trials, ta
 multi-currency, seats, or metered billing unless those policies are implemented and
 tested first.
 
+The site may describe both implemented transition templates: full-price period reset and
+bounded same-period monthly prorated-delta upgrades. Copy must state that annual
+transitions, discounts, tax, credit notes, and customer-balance funding are not handled
+by the delta reducer.
+
+Use the stable policy names `full_period_reset` and `prorated_delta` in technical copy,
+and explain that each defines all 36 cells across Starter/Pro/Ultra monthly/yearly
+states. Do not turn “tests exist” into “Stripe was verified”: current local evidence,
+opt-in test-mode network evidence, historical runs, and live-production evidence must
+remain visibly separate.
+
 ## Canonical deployment configuration
 
 Preview, local, and staging deployments fail closed to `noindex`. Enable public indexing
@@ -66,6 +77,11 @@ Before publishing, apply the description and topics recorded in
 natural developer search phrases such as “Stripe subscription billing”, “FastAPI Stripe
 integration”, “PostgreSQL entitlements”, and “Next.js pricing” without hiding scope
 limits or stuffing keywords.
+
+The public title/description/FAQ should naturally cover the two selectable plan-change
+templates, monthly and yearly tiers, positive annual-savings display, Stripe webhooks,
+SCA, and Test Clock gates. Avoid asserting that a gate passed unless the release record
+belongs to the exact published commit.
 
 After the repository exists:
 

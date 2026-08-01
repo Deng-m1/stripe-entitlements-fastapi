@@ -153,11 +153,14 @@ export function PricingScreen({
         result.status === "payment_required" ||
         result.status === "action_required"
       ) {
-        if (result.payment_url) {
+        if (result.payment_client_secret) {
+          await confirmRequiredStripePayment(result);
+        } else if (result.payment_url) {
           setPaymentUrl(result.payment_url);
           return;
+        } else {
+          await confirmRequiredStripePayment(result);
         }
-        await confirmRequiredStripePayment(result);
       }
       if (result.timing === "immediate") {
         // A successful confirmation request (including SCA) is not entitlement

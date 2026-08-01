@@ -17,9 +17,7 @@ class AnnualGrantService:
     concurrently: the account row lock and invoice/slot unique index converge them.
     """
 
-    def __init__(
-        self, pool: asyncpg.Pool, catalog: PlanCatalog, processor: EventProcessor
-    ) -> None:
+    def __init__(self, pool: asyncpg.Pool, catalog: PlanCatalog, processor: EventProcessor) -> None:
         self.pool = pool
         self.catalog = catalog
         self.processor = processor

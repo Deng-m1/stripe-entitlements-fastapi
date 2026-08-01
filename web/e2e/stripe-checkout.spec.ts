@@ -17,6 +17,8 @@ const DEFAULT_TEST_EMAIL = "browser-checkout@example.test";
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
 interface AccountProjection {
+  account_id: string;
+  transition_policy: "full_period_reset" | "prorated_delta";
   plan_key: string;
   plan_interval: string | null;
   subscription_status: string;
@@ -27,6 +29,31 @@ interface AccountProjection {
   entitlements_enforceable: boolean;
 }
 
+async function expectedAccountId(): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    execFile(
+      "uv",
+      ["run", "python", "scripts/e2e_stripe.py", "resolve-account"],
+      {
+        cwd: REPOSITORY_ROOT,
+        env: process.env,
+        timeout: 30_000,
+        maxBuffer: 16 * 1024,
+      },
+      (error, stdout) => {
+        const match = stdout.match(
+          /account-id=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i,
+        );
+        if (error || !match) {
+          reject(new Error("Authenticated E2E subject could not be bound to PostgreSQL."));
+          return;
+        }
+        resolve(match[1]);
+      },
+    );
+  });
+}
+
 interface CheckoutRedirect {
   url: string;
 }
@@ -35,6 +62,7 @@ interface BackendHealth {
   ok: boolean;
   database: boolean;
   stripe_mode: "test" | "live";
+  transition_policy: "full_period_reset" | "prorated_delta";
 }
 
 function timeoutFromEnvironment(): number {
@@ -61,6 +89,37 @@ async function verifyTestBackend(
       "Refusing all stateful browser requests: backend did not attest Stripe test mode.",
     );
   }
+  const expectedPolicy = process.env.E2E_TRANSITION_POLICY;
+  if (health.transition_policy !== expectedPolicy) {
+    throw new Error("Backend transition policy differs from E2E_TRANSITION_POLICY.");
+  }
+}
+
+async function prepareUpgradePaymentMethod(): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    execFile(
+      "uv",
+      [
+        "run",
+        "python",
+        "scripts/e2e_stripe.py",
+        "prepare-upgrade-payment-method",
+      ],
+      {
+        cwd: REPOSITORY_ROOT,
+        env: process.env,
+        timeout: 90_000,
+        maxBuffer: 64 * 1024,
+      },
+      (error, stdout) => {
+        if (error || !stdout.includes("prepared run-owned upgrade PaymentMethod")) {
+          reject(new Error("Run-owned upgrade PaymentMethod preparation failed."));
+          return;
+        }
+        resolve();
+      },
+    );
+  });
 }
 
 async function verifyDeclineStability(): Promise<void> {
@@ -244,6 +303,9 @@ async function loadAccountProjection(
 async function waitForPaidProjection(
   page: Page,
   baseURL: string,
+  expectedPlan = "starter",
+  expectedBalance = 300,
+  expectedGrant = 300,
 ): Promise<AccountProjection> {
   let latest: AccountProjection | undefined;
   await expect
@@ -270,11 +332,11 @@ async function waitForPaidProjection(
       },
     )
     .toEqual({
-      plan_key: "starter",
+      plan_key: expectedPlan,
       plan_interval: "month",
       subscription_status: "active",
-      balance: 300,
-      grant_amount: 300,
+      balance: expectedBalance,
+      grant_amount: expectedGrant,
       entitlements_enforceable: true,
     });
   if (!latest) throw new Error("The paid account projection was not captured.");
@@ -566,6 +628,7 @@ test.describe("real Stripe hosted Checkout", () => {
 
     const accountPage = await context.newPage();
     const initial = await loadAccountProjection(accountPage, baseURL);
+    expect(initial.account_id).toBe(await expectedAccountId());
     expect(initial.plan_key).toBe("free");
     expect(initial.credits.balance).toBe(0);
     expect(initial.entitlements_enforceable).toBe(false);
@@ -639,6 +702,60 @@ test.describe("real Stripe hosted Checkout", () => {
         has: accountPage.getByText("Credits", { exact: true }),
       });
       await expect(credits.getByText("300", { exact: true }).first()).toBeVisible();
+    });
+
+    await test.step("browser previews and confirms the configured real upgrade template", async () => {
+      await prepareUpgradePaymentMethod();
+      await openPricingThroughExpectedBackend(accountPage, baseURL, backendURL);
+      await accountPage.getByRole("button", { name: "Choose Pro month" }).click();
+      const policy = process.env.E2E_TRANSITION_POLICY;
+      if (policy === "prorated_delta") {
+        await expect(
+          accountPage.getByRole("heading", {
+            name: "Pay the prorated difference for this period",
+          }),
+        ).toBeVisible();
+        await expect(
+          accountPage.locator(".timing-panel").filter({ hasText: "700 credits" }),
+        ).toBeVisible();
+      } else {
+        await expect(
+          accountPage.getByRole("heading", {
+            name: "This change requires immediate settlement",
+          }),
+        ).toBeVisible();
+      }
+      await accountPage.getByRole("checkbox").check();
+      await accountPage
+        .getByRole("button", { name: "Confirm billing change" })
+        .click();
+      if (
+        (process.env.E2E_UPGRADE_PAYMENT_METHOD ??
+          "pm_card_authenticationRequired") === "pm_card_authenticationRequired"
+      ) {
+        await completeScaChallenge(accountPage);
+      }
+      await accountPage.waitForURL(
+        (url) => url.pathname === "/billing/success",
+        { timeout: 90_000 },
+      );
+    });
+
+    await test.step("upgrade access still waits for its paid webhook projection", async () => {
+      await waitForPaidProjection(page, baseURL, "pro", 1000, 1000);
+      await accountPage.goto(accountPage.url());
+      await expect(
+        accountPage.getByRole("heading", { name: "Webhook-backed account state is ready" }),
+      ).toBeVisible();
+      await page.goto(frontendUrl(baseURL, "/account"));
+      const subscription = page.locator(".account-card").filter({
+        has: page.getByText("Subscription", { exact: true }),
+      });
+      await expect(subscription.getByRole("heading", { name: "Pro" })).toBeVisible();
+      const credits = page.locator(".account-card").filter({
+        has: page.getByText("Credits", { exact: true }),
+      });
+      await expect(credits.getByText("1,000", { exact: true }).first()).toBeVisible();
     });
   });
 });

@@ -32,15 +32,16 @@ async def test_same_charge_idempotency_key_never_double_spends(
     account_id = await make_account()
     await processor.process(paid_invoice(account_id))
     service = CreditService(pool)
-    results = await asyncio.gather(
-        *(service.charge(account_id, 25, "same-job") for _ in range(20))
-    )
+    results = await asyncio.gather(*(service.charge(account_id, 25, "same-job") for _ in range(20)))
     assert sum(result.outcome == "charged" for result in results) == 1
     assert sum(result.outcome == "replayed" for result in results) == 19
     async with pool.acquire() as conn:
-        assert await conn.fetchval(
-            "select credits_balance from billing_accounts where id=$1::uuid", account_id
-        ) == 275
+        assert (
+            await conn.fetchval(
+                "select credits_balance from billing_accounts where id=$1::uuid", account_id
+            )
+            == 275
+        )
 
 
 async def test_concurrent_distinct_charges_cannot_overdraw(
@@ -60,9 +61,12 @@ async def test_concurrent_distinct_charges_cannot_overdraw(
     assert results.count("charged") == 3
     assert results.count("insufficient") == 7
     async with pool.acquire() as conn:
-        assert await conn.fetchval(
-            "select credits_balance from billing_accounts where id=$1::uuid", account_id
-        ) == 0
+        assert (
+            await conn.fetchval(
+                "select credits_balance from billing_accounts where id=$1::uuid", account_id
+            )
+            == 0
+        )
 
 
 async def test_concurrent_refund_happens_once(

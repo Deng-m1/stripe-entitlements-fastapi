@@ -4,10 +4,11 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12%2B-3776AB.svg)](pyproject.toml)
 
-An open-source Stripe subscription billing template for FastAPI, PostgreSQL, and
-Next.js. It demonstrates credit entitlements, monthly and annual plans, Checkout,
-refunds, disputes, SCA recovery, Test Clock renewals, and server-controlled plan
-changes under duplicate, delayed, concurrent, and out-of-order webhook events.
+An open-source Stripe subscription billing and entitlement template for FastAPI,
+PostgreSQL, and Next.js. It implements two complete, selectable plan-change policies,
+three monthly/yearly tiers, annual savings display, Checkout, refunds, disputes, SCA
+recovery, Test Clock renewals, and webhook-authoritative credits under duplicate,
+delayed, concurrent, and out-of-order Events.
 
 > This is an independent community project, not an official Stripe product.
 > It is a reference implementation, not a universal SaaS billing framework and
@@ -17,10 +18,12 @@ changes under duplicate, delayed, concurrent, and out-of-order webhook events.
 
 - [Implemented scope](#what-is-completeand-what-is-not)
 - [Plan catalog and annual savings](#plan-catalog)
-- [Safe upgrades and downgrades](#safe-plan-transitions)
+- [Two plan-change templates](#safe-stripe-plan-transitions-full-price-or-prorated-difference)
 - [Correctness and distributed deployment](#correctness-model)
 - [Quick start](#quick-start)
 - [Test evidence](#verification-and-evidence-boundary)
+- [SQL and production cutover](#sql-migrations-and-production-cutover)
+- [Repository map](#repository-map)
 - [Frequently asked questions](#frequently-asked-questions)
 
 ## Why this Stripe billing reference exists
@@ -38,7 +41,14 @@ reviewable reference rather than a copy-paste Checkout snippet.
 
 ## What is complete—and what is not
 
-The repository implements one deliberately bounded product policy:
+The repository implements two complete, deliberately bounded transition templates:
+
+- `full_period_reset`: immediately start a full-price target period without proration;
+- `prorated_delta`: preserve the current monthly period, pay the prorated difference,
+  and add the catalog entitlement difference.
+
+Their complete 6 × 6 matrices are selected with one environment setting and persisted
+per intent. Shared scope:
 
 - one subscription item and one currency (USD);
 - three fixed plans, each available monthly or yearly;
@@ -51,7 +61,8 @@ The repository implements one deliberately bounded product policy:
 - a Next.js reference UI for pricing, account state, payment recovery, and
   webhook-backed success polling;
 - PostgreSQL event/business idempotency, row locks, durable plan-change intent,
-  refund/dispute convergence, and fail-closed incidents.
+  cross-Invoice funding allocation, refund/dispute convergence, and fail-closed
+  incidents.
 
 It does **not** implement multi-currency, seats or quantities, trials, coupons,
 tax calculation, metered billing, arbitrary mixed invoice items, revenue
@@ -94,34 +105,36 @@ trials, and time-limited campaigns remain outside this reference's implemented s
 The API returns these as structured entitlements. Product code still has to
 enforce them; displaying an entitlement is not enforcement.
 
-## Safe plan transitions
+## Safe Stripe plan transitions: full price or prorated difference
 
 Abbreviations combine plan and interval: `SM` is Starter Monthly, `SY` is
 Starter Yearly, and so on.
 
-| From / To | SM | SY | PM | PY | UM | UY |
-| --- | --- | --- | --- | --- | --- | --- |
-| **SM** | noop | immediate | immediate | immediate | immediate | immediate |
-| **SY** | period end | noop | period end | period end | period end | period end |
-| **PM** | period end | period end | noop | immediate | immediate | immediate |
-| **PY** | period end | period end | period end | noop | period end | period end |
-| **UM** | period end | period end | period end | period end | noop | immediate |
-| **UY** | period end | period end | period end | period end | period end | noop |
+Set `BILLING_TRANSITION_POLICY=full_period_reset` or `prorated_delta` before starting
+the API. Health, catalog, account, preview, and confirm responses expose the selected
+mode; every intent stores it durably.
 
-Every non-noop change from an annual plan is period-end, including a nominal tier
-upgrade such as `SY → PY` or `PY → UY`. The paid annual invoice owns a 12-slot
-funding lineage. Replacing it early can use a negative proration from that old
-invoice to fund the new one; a later refund or dispute would then require a
-cross-invoice funding ledger that this bounded reference intentionally does not
-claim to implement.
+`full_period_reset` keeps the original matrix: monthly-origin higher tiers and
+month-to-year targets are preview-eligible immediately; downgrades and all
+annual-origin changes are period-end. Immediate apply uses
+`billing_cycle_anchor=now` and `proration_behavior=none`, and the paid target Invoice
+resets the monthly credit pool.
 
-“Immediate” means eligible for immediate settlement, not guaranteed activation.
-The server first previews the invoice. It remains immediate only when quantity,
-currency and amount exactly match the catalog, the full target charge is funded
-without any nonzero proration, and no customer-balance credit participates.
-Otherwise it fails closed to period-end. After confirm, new entitlements appear
-only when a paid invoice webhook completes the durable intent. See
-[Plan transition policy](docs/PLAN_TRANSITIONS.md).
+`prorated_delta` permits immediate settlement only for a higher monthly tier while
+remaining monthly. For example, Starter Monthly → Pro Monthly pays Stripe's net
+remaining-period difference and adds exactly `1,000 - 300 = 700` credits while keeping
+the same period and unused balance. Month/year conversions, downgrades, and every
+annual-origin change are period-end.
+
+The delta webhook path loads all Invoice line pages, requires one negative source and
+one positive target catalog proration at the same fraction, and stores their
+cross-Invoice funding allocation. Tax, discounts, customer balance, credit notes,
+unknown/missing lines, and inconsistent periods fail closed. Partial refunds claw back
+the proportional delta; closing a leaf upgrade reverts to the still-funded source,
+while closing a source/intermediate lineage revokes enforcement for repair.
+
+Both full 6 × 6 matrices, Invoice acceptance rules, refund semantics, and failure
+behavior are in [Plan transition policies](docs/PLAN_TRANSITIONS.md).
 
 ## Correctness model
 
@@ -134,8 +147,19 @@ only when a paid invoice webhook completes the durable intent. See
 - `(event.created, event_rank)` prevents older/weaker subscription projections
   from overwriting newer state.
 - Refund/dispute facts persist even when they arrive before the paid grant.
+- Delta allocations preserve source/target Invoice lineage across refunds and disputes.
+- If a current-epoch clawback is larger than the spendable balance,
+  `billing_clawback_debts` retains the missing units and consumes later same-epoch
+  usage refunds or delta grants before they become spendable.
 - Checkout and plan-change operations use durable, caller-replayable request
   identities and Stripe idempotency keys.
+- Confirm atomically moves a preview to `applying` and records `remote_started_at`
+  before Stripe mutation. Unknown outcomes younger than 23 hours use only the same
+  derived Stripe key; older ambiguity stops for operator proof.
+- Paid and payment-failed plan-change Events must match the intent's compare-and-set
+  settlement Invoice ID; Subscription identity alone cannot attach an older failure.
+  A paid webhook may win the coordinator-finish race, but both paths can bind only the
+  same Invoice and a POST response never grants access.
 - A 2xx fail-closed decision creates durable state or a `billing_incidents` row.
 
 PostgreSQL is the coordination and writable truth. Multiple API/worker processes
@@ -177,12 +201,13 @@ are documented in [web/README.md](web/README.md).
   equal that actual Event value and is a required startup setting; it deliberately
   has no fallback to `STRIPE_API_VERSION`.
 
-The request version does not rewrite webhook payloads. On the currently observed
-test account, Event API retrievals reported `2025-12-15.clover`; an isolated real
-endpoint pinned to Dahlia delivered signed `2026-06-24.dahlia` payloads for the same
-browser lifecycle. A mismatch is recorded as `webhook_contract_mismatch` and ignored
-fail-closed. This repository does not infer request, Event API view, or endpoint payload
-versions from one another. See [Testing](docs/TESTING.md),
+The request version does not rewrite webhook payloads. In the historical pre-hardening
+test run, Event API retrievals reported `2025-12-15.clover`; an isolated endpoint
+pinned to Dahlia delivered signed `2026-06-24.dahlia` payloads for the same browser
+lifecycle. The current browser gates have not repeated that observation. A mismatch is
+recorded as `webhook_contract_mismatch` and ignored fail-closed. This repository does
+not infer request, Event API view, or endpoint payload versions from one another. See
+[Testing](docs/TESTING.md),
 [Stripe CLI](docs/STRIPE_CLI.md), and
 [Webhook verification](docs/WEBHOOK_VERIFICATION.md).
 
@@ -193,6 +218,7 @@ Stripe test-mode account.
 
 ```bash
 cp .env.example .env
+# Choose full_period_reset or prorated_delta in .env.
 docker compose up -d postgres
 uv sync --frozen
 uv run stripe-entitlements migrate
@@ -236,20 +262,32 @@ entitlement lifecycle test.
 
 ## Verification and evidence boundary
 
-Latest verified 2026-07-31 baseline:
+Evidence is split by execution layer; collecting a test or retaining an older run does
+not prove the current tree against Stripe's network.
 
-- 168 local/backend tests passed;
-- 6 opt-in real Stripe test-mode tests passed;
-- 59 frontend tests passed, followed by a successful production build;
-- frontend production-dependency audit reported zero vulnerabilities.
-- the full npm audit still reports 9 high-severity development-tooling findings in the
-  ESLint/minimatch tree; npm offers only the breaking ESLint 10 upgrade.
-- 1 real-browser decline → 3DS → signed-webhook lifecycle passed, including
-  PostgreSQL projection and Stripe Event identity/mode verification.
+Current hardened-tree evidence recorded on 2026-08-01:
+
+- 269 local/backend tests passed against disposable PostgreSQL 17; the full collection
+  contained 278 cases and 9 `real_stripe` cases were deselected;
+- 62 frontend tests passed, and lint, typecheck, production build, and
+  production-dependency audit passed;
+- the 9 real Stripe cases were collected successfully but were **not executed** because
+  test credentials were not available in this environment;
+- the two real-browser policy gates were **not rerun** after the current hardening;
+- no live-production webhook payload verification is claimed.
+
+Historical pre-hardening evidence from earlier on 2026-08-01 was 239 local/backend
+tests, 7 real Stripe test-mode tests, 60 frontend tests, and 2 browser policy runs. It is
+useful regression history only, not current-tree network evidence. Those historical
+browser runs happened to observe five signed account-related Events per run; the current
+gate instead requires exactly three identity-bound essential Events—the run's Checkout,
+initial paid Invoice, and settlement paid Invoice—and validates every additional
+account-matched Event without requiring an incidental total of five.
 
 Default CI:
 
 ```bash
+uv run ruff format --check .
 uv run ruff check .
 uv run mypy src
 uv run pytest -m "not real_stripe"
@@ -268,7 +306,8 @@ transactions, locks, constraints, duplicate/out-of-order events, refunds,
 annual-worker concurrency, Checkout, plan-change leases, API responses, and
 fail-closed paths.
 
-The opt-in `real_stripe` suite rejects live keys. It currently proves:
+The opt-in `real_stripe` suite rejects live keys. Its current nine-case inventory is
+designed to verify:
 
 - creation of isolated real test-mode Product/Price/Customer/Subscription
   objects;
@@ -277,6 +316,9 @@ The opt-in `real_stripe` suite rejects live keys. It currently proves:
 - outbound Dahlia requests for a real mid-cycle Starter Monthly → Pro Monthly
   change, charged as a new $49 full-price period with no old-invoice proration,
   then projected from its separately versioned paid Event to Pro/1,000 credits;
+- a real Starter Monthly → Pro Monthly prorated-delta change whose two paid
+  proration lines add 700 credits, link back to the source Invoice, and whose real
+  full refund returns the local entitlement to Starter/300;
 - outbound Dahlia requests for a real Starter Yearly → Pro Yearly change,
   deferred through a two-phase Subscription Schedule at the annual boundary;
 - authentication-required and attachable customer-charge-failure plan changes,
@@ -289,17 +331,23 @@ The opt-in `real_stripe` suite rejects live keys. It currently proves:
   run-marked inventory error;
 - direct Event polling and PostgreSQL projection for those networked API cases.
 
+That list describes executable assertions, not a current pass claim. Run all nine with
+an isolated test account and record the result before release.
+
 The Test Clock and plan-change cases do not prove signed endpoint delivery. The
 separate opt-in browser runner creates a temporary test endpoint and exercises a
-decline → 3DS → signed webhook → UI projection lifecycle. Use
+decline → 3DS → signed webhook → browser plan upgrade → second paid projection
+lifecycle. Run it once per transition policy. Use
 `scripts/run_test_clock_e2e.sh` for the isolated time-travel gate and
 `scripts/run_browser_e2e.sh` for browser/transport evidence; a skipped or partially
 completed run is not evidence.
 
-The latest browser run handled the two required Events, projected
-Starter/Monthly/300, verified a Dahlia signed endpoint payload independently from the
-Clover Event API retrieval view, and returned the temporary endpoint inventory to zero.
-This remains test-mode evidence; no live-production payload is claimed.
+The current browser verifier binds its final result to one account, Checkout Session,
+initial Invoice, settlement Invoice, and their three essential signed Events. It also
+requires no unresolved incident for that identity and verifies one 700-credit delta
+allocation or no allocation according to policy. The older five-Event observation is
+not a fixed assertion. This remains a test-mode gate; it has not been rerun on the
+current hardened tree and no live-production payload is claimed.
 
 Manual test-mode observations from 2026-07-31 additionally covered:
 
@@ -321,10 +369,13 @@ customer, Event, Invoice, or secret identifiers are committed. See
    claims, and incidents;
 2. `002_plan_transitions.sql`: entitlement expiry/revocation columns, durable
    plan-change state, request identity, one-pending-change constraint, and
-   immutable invoice/account attribution.
+   immutable invoice/account attribution;
+3. `003_transition_policies.sql`: persisted policy/preview/remote-call snapshots,
+   unique settlement binding, cross-Invoice funding allocations, clawback debt,
+   terminal-closure business idempotency, and reconciliation rotation state.
 
 Apply every migration before routing traffic to the new application version.
-Back up all eight correctness tables together and test point-in-time restore.
+Back up all ten correctness tables together and test point-in-time restore.
 
 Production is a deliberate separate cutover:
 
@@ -369,15 +420,23 @@ credit projection.
 ### Does it support monthly and annual subscriptions?
 
 Yes. Starter, Pro, and Ultra each have monthly and annual prices. Annual invoices fund
-up to 12 monthly credit slots, and the real Stripe suite advances a Test Clock through a
-cross-year renewal.
+up to 12 monthly credit slots, and the opt-in real Stripe suite contains a Test Clock
+gate for cross-year renewal. That network gate must actually run for release evidence.
 
 ### Are upgrades, downgrades, and failed payments covered?
 
-Yes within the documented six-state policy. Monthly-origin eligible upgrades use a
-full-price, no-proration target invoice. Annual-origin changes and downgrades wait until
-period end. Authentication-required and customer-charge-failure paths preserve the old
-paid entitlement until a target invoice is actually paid.
+Yes within either documented six-state policy. Choose a full-price new period or a
+same-period monthly prorated-difference upgrade. Both use paid Invoice lines as the
+authority; annual-origin changes and downgrades wait until period end.
+Authentication-required and customer-charge-failure paths preserve the old paid
+entitlement until a target Invoice is actually paid.
+
+### How does the Stripe prorated upgrade calculate credits?
+
+Cash and product entitlement stay separate. Stripe calculates the remaining-period
+source credit and target charge. After the matching paid Invoice is verified, the
+application adds `target.monthly_credits - source.monthly_credits`. A shorter remaining
+period changes money due, not the fixed tier entitlement difference.
 
 ### Does it include coupons, trials, tax, or multi-currency billing?
 

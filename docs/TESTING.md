@@ -1,25 +1,38 @@
 # Testing strategy and evidence boundary
 
 The project separates deterministic local/PostgreSQL tests, opt-in automated Stripe
-test-mode tests, manual Stripe observations, and production verification. Passing one
-layer must not be described as passing another.
+test-mode tests, real-browser signed-delivery tests, manual observations, and live
+production verification. Passing one layer must not be described as passing another.
 
-Latest verified 2026-08-01 result: 168 local/backend tests, 6 real Stripe
-test-mode tests, 59 frontend tests, and 1 real-browser Stripe lifecycle passed;
-the frontend production build and production-dependency audit also passed.
-`npm audit --omit=dev` reported zero; the full audit still reports nine high-severity
-development-only ESLint/minimatch/brace-expansion advisories whose available npm fix is
-the breaking ESLint 10 upgrade.
+Current hardened-tree evidence recorded on 2026-08-01:
+
+| Layer | Current result | Boundary |
+| --- | --- | --- |
+| Local/backend | 269 passed from 278 collected; 9 `real_stripe` cases deselected | Real PostgreSQL, mocked Stripe responses |
+| Frontend | 62 passed; lint, typecheck, production build, and production-dependency audit passed | No Stripe network |
+| Real Stripe suite | 9 cases collected; **not executed** because test credentials were unavailable | Collection is not execution evidence |
+| Browser policy gates | **not rerun** after the current hardening | Both policies remain release gates |
+| Live production payload | **not run** | Test mode never substitutes for live mode |
+
+The earlier 2026-08-01 pre-hardening baseline—239 local/backend, 7 real Stripe,
+60 frontend, and 2 browser policy runs—is retained only as historical regression
+evidence. It must not be cited as proof of the current tree. The earlier full npm audit
+also reported nine high-severity development-only ESLint/minimatch/brace-expansion
+advisories whose available npm fix was the breaking ESLint 10 upgrade; the current
+record above claims only the production-dependency audit that was actually rerun.
 
 ## Default backend suite
 
 `pytest -m "not real_stripe"` starts a disposable PostgreSQL 17 container on a
 workspace-derived loopback port, applies all real SQL migrations, and removes the
-container after the session. Each test truncates all correctness tables.
+container after the session. Its data directory is a 512 MiB container tmpfs, so test
+data is never persisted and the gate does not consume Docker writable-layer storage.
+Set `TEST_POSTGRES_IMAGE` to an equivalent trusted PostgreSQL 17 image when the
+canonical tag is unavailable locally. Each test truncates all correctness tables.
 
 Coverage includes:
 
-- plan catalog validation and the complete 6 × 6 transition matrix;
+- plan catalog validation and both complete 6 × 6 transition matrices;
 - raw webhook signature, livemode and Event snapshot-version rejection;
 - authenticated catalog/account/Checkout/Portal/preview/confirm APIs;
 - fail-closed production auth and explicit test-only demo auth;
@@ -30,8 +43,32 @@ Coverage includes:
 - Checkout reservation, same-request replay, attach, expiration and stale Events;
 - annual multi-worker grants, downtime slot jumps, mismatch and refund reduction;
 - plan-change request replay, leases, preview fallback, Schedule and pending payment;
-- paid-invoice authorization of plan changes and rejection without durable intent;
+- atomic `previewed → applying`, `remote_started_at`, same-key recovery below 23
+  hours, and an automatic-replay stop at the 23-hour boundary;
+- Schedule create-only crash recovery, configured-policy verification, and rejection of
+  unrelated or drifted Schedules;
+- paid-Invoice authorization of plan changes and rejection without durable intent;
+- exact settlement-Invoice binding for paid/payment-failed Events, including delayed
+  old failures that create an incident without changing the new intent or source access;
+- paid-webhook-before-coordinator-finish races, including atomic same-ID binding,
+  blocked-paid failure, and confirm conflict instead of false synchronous success;
+- full-period reset and prorated-delta preview/apply parameter contracts;
+- exact delta preview-to-paid source/target/net/currency/period binding and symmetric
+  full-period preview/paid rejection of balance, credit note, tax, discount, pagination,
+  quantity, and amount drift;
+- complete Invoice line pagination plus legacy and Dahlia Price references;
+- delta paid/update/reconciliation order permutations and stale funding snapshots;
+- delta source/target ambiguity, missing/unknown lines, zero target, inconsistent
+  fractions, balance, tax, discount, and period drift fail-closed cases;
+- delta delivery/business duplicates, real PostgreSQL concurrency, rollback/retry,
+  chained allocation, old-epoch, refund-before-paid, and dispute-before-paid cases;
+- cross-account Invoice/grant/allocation clawback rejection, insufficient-balance
+  clawback debt, and same-epoch debt collection from usage refunds or delta grants;
+- distinct-Event terminal-closure idempotency for refund-before-paid blocks, delta leaf
+  reversion, and annual funding closure through `closure_applied`;
 - product credit charges/refunds across entitlement epochs and revocation;
+- bounded reconciliation rotation across `applying`, `applied`, `requires_action`, and
+  expired-entitlement candidates;
 - incident deduplication and database constraints.
 
 These tests use real PostgreSQL transactions and constraints but mocked Stripe responses.
@@ -52,12 +89,15 @@ npm test
 npm run build
 ```
 
-The suite covers annual total/equivalent/savings display, explicit immediate and
-period-end copy, all annual-origin policy cases (including `SY → PY/UY`), Checkout and
-preview idempotency-key reuse, Portal, pending state, hosted-invoice recovery, missing
-Stripe.js configuration, and polling until webhook-projected target state. It also
-covers fail-closed public-site URL/indexing configuration, server-rendered reference
+The 62-test suite covers annual total/equivalent/savings display, full-period and
+prorated-delta immediate copy, explicit period-end copy, all annual-origin policy cases
+(including `SY → PY/UY`), Checkout and preview idempotency-key reuse, Portal, pending
+state, hosted-invoice recovery, missing Stripe.js configuration, client-secret-first
+SCA with hosted-Invoice fallback, and polling until webhook-projected target state. It
+also covers fail-closed public-site URL/indexing configuration, server-rendered reference
 plans before account hydration, visible landing/FAQ JSON-LD, and metadata-route defaults.
+The browser-process environment test proves that Chromium receives only a narrow
+runtime allowlist, not the Node helper's Stripe test key or database DSN.
 The backend additionally verifies that the public JSON catalog cannot drift from
 `plans.toml` prices, entitlements, descriptions, or order.
 
@@ -69,12 +109,19 @@ The frontend never tests or grants backend entitlement by itself.
 network-free CI job. It requires an isolated Free account and real Stripe test-mode
 Checkout. One serial Session first submits Stripe's decline card, proves the account is
 still Free, then submits Stripe's 3DS-required card, completes the challenge, and waits
-for `GET /api/account` to expose Starter Monthly with 300 enforceable credits.
+for `GET /api/account` to expose Starter Monthly with 300 enforceable credits. It then
+uses the real Next.js preview/confirm UI for the configured transition policy and waits
+for Pro Monthly with 1,000 credits.
 
 The browser refuses card entry unless the actual hosted URL contains a `cs_test_`
 Session. A remote base URL requires a second explicit acknowledgement. The full-stack
 runner also creates and verifies a temporary test Webhook Endpoint and inspects
-PostgreSQL for handled signed Events at the configured snapshot version.
+PostgreSQL for handled signed Events at the configured snapshot version. Its final
+verifier binds exactly one Checkout Event, one initial `invoice.paid`, and one
+settlement `invoice.paid` to this run's account, Session, two funding Invoices, grants,
+and allocation policy; it also requires no unresolved incident for those identities.
+Every additional account-matched Event is checked against Stripe's identity, type, mode,
+and version, but an incidental total Event count is not part of the invariant.
 
 This gate proves the browser/Checkout/SCA/webhook/UI path only when actually run. Its
 existence or `--list` output is not execution evidence. See
@@ -84,11 +131,12 @@ artifact handling, and evidence boundaries.
 Endpoint metadata, signed transport, database projection and live-production evidence
 requirements are separated in [the webhook verification runbook](WEBHOOK_VERIFICATION.md).
 
-The verified 2026-07-31 browser run completed in about one minute, including a 10-second
-decline stability barrier. Its two required handled Events projected
-Starter/Monthly/300. The signed endpoint payloads used
-`2026-06-24.dahlia`; retrieving the same Event IDs through Stripe's Event API exposed
-the independent `2025-12-15.clover` view. Cleanup left zero run-owned Webhook Endpoints.
+Historical note: the pre-hardening 2026-08-01 full-period and prorated-delta runs each
+completed in about 1.2 minutes and happened to store five account-related signed Events.
+They projected Starter/Monthly/300 and Pro/Monthly/1,000, observed Dahlia endpoint
+payloads versus the independent Clover Event API view, and cleaned up their endpoints.
+Those two runs predate the current account/Invoice/Event binding, SCA, and secret-
+isolation hardening and therefore are not current-tree browser evidence.
 
 ## Automated real Stripe suite
 
@@ -96,7 +144,7 @@ Tests marked `real_stripe` make network calls only when `STRIPE_SECRET_KEY` star
 `sk_test_`. Live keys fail before a network call. Objects are uniquely marked and cleanup
 targets only objects created by that run.
 
-As of 2026-07-31, the automated suite proves:
+The current nine-case automated suite is designed to assert:
 
 - creation of isolated real test-mode Products, monthly/yearly Prices, Customers and
   Subscriptions;
@@ -106,6 +154,10 @@ As of 2026-07-31, the automated suite proves:
 - outbound Dahlia preview/update calls for a real mid-cycle Starter Monthly →
   Pro Monthly full-price/no-proration change, followed by a separately versioned
   `invoice.paid` Event converging to Pro/1,000 credits in PostgreSQL;
+- a real Starter Monthly → Pro Monthly prorated-delta lifecycle: initial paid Invoice,
+  fixed-date preview/apply, two-line paid upgrade Invoice, 700-credit allocation linked
+  to the source Invoice, and a real full refund returning to Starter/300 without
+  revoking the still-funded source entitlement;
 - outbound Dahlia calls for a real Starter Yearly → Pro Yearly period-end
   change producing a two-phase contiguous Subscription Schedule with
   `end_behavior=release`;
@@ -119,8 +171,14 @@ As of 2026-07-31, the automated suite proves:
   a single current-slot grant after a jump to approximately +190 days without backfill,
   and a real renewal `invoice.paid` after `period_end + 1 hour` resetting the new funding
   invoice to slot 1 and extending an active, non-revoked, enforceable entitlement period;
-- cleanup of only run-marked objects, idempotent create identities, a metadata recovery
-  sweep, and a test failure if any cleanup or inventory operation fails.
+- cleanup of only run-marked objects, idempotent create identities, and complete
+  auto-pagination for every Stripe list/inventory operation;
+- a post-cleanup zero-inventory assertion covering non-canceled Subscriptions, Customers,
+  active Prices/Products, Test Clocks, and unfinished Subscription Schedules;
+- a test failure if cleanup, inventory, or zero-inventory verification fails.
+
+These assertions have not been executed against Stripe after the current hardening.
+The earlier seven-case run is historical evidence only.
 
 The plan-change and Test Clock tests use direct Stripe test-mode requests plus Event
 polling, followed by the real PostgreSQL processor. They do **not** prove signed webhook
@@ -136,6 +194,13 @@ Run only the annual time-travel lifecycle with a fail-fast key guard:
 ```bash
 scripts/run_test_clock_e2e.sh
 ```
+
+The wrapper creates a private mode-`0700` recovery directory containing a mode-`0600`,
+secret-free JSON manifest. The test atomically records its run ID and each created Stripe
+object ID as creation proceeds. A fully successful test removes the manifest and the
+wrapper removes the directory. A failure, skip, cleanup error, or shell interruption
+retains the directory and prints its exact path for bounded manual recovery. The manifest
+never contains an API key, webhook secret, database URL, client secret, or recovery URL.
 
 Run it explicitly:
 
@@ -155,7 +220,7 @@ CI:
 | Scenario | Observed result | What it supports |
 | --- | --- | --- |
 | `PY → UM` preview | negative $204 | why every annual-origin transition must defer |
-| declined immediate change | old SKU and active Subscription remained; latest Invoice was open; hosted recovery URL and confirmation secret existed | originally manual; now repeated automatically with authentication-required and customer-charge-failure fixtures |
+| declined immediate change | old SKU and active Subscription remained; latest Invoice was open; hosted recovery URL and confirmation secret existed | originally manual and later repeated by the pre-hardening automation; current cases are not yet rerun |
 
 Amounts are observations for that test account/time, not universal expected values. These
 manual checks contain no committed customer, Event, Invoice or secret IDs and should be
@@ -163,18 +228,19 @@ rerun before a release that changes plan transitions or Stripe API version.
 
 ## Stripe version evidence
 
-There are three version observations that must remain independent:
+There are three version records that must remain independent:
 
 - outbound SDK requests are configured with `STRIPE_API_VERSION=2026-06-24.dahlia`;
-- real Events retrieved through the test account's Event API reported
+- historical pre-hardening Events retrieved through the test account's Event API reported
   `api_version=2025-12-15.clover`;
-- real signed payloads delivered to an isolated endpoint explicitly pinned to Dahlia
-  reported `api_version=2026-06-24.dahlia`.
+- historical pre-hardening signed payloads delivered to an isolated endpoint explicitly
+  pinned to Dahlia reported `api_version=2026-06-24.dahlia`.
 
 `STRIPE_WEBHOOK_API_VERSION` must match the endpoint's actual Event snapshot. Request
 pinning does not rewrite Events, and an Event API retrieval view must not be used as a
-substitute for the endpoint's signed delivery serialization. The browser gate now
-provides real test-mode Dahlia delivery evidence; it is not live-production evidence.
+substitute for the endpoint's signed delivery serialization. The earlier browser run
+observed real test-mode Dahlia delivery. The hardened browser gate must be rerun before
+making that claim for the current tree, and neither result is live-production evidence.
 
 Record all views separately in release evidence:
 
@@ -194,6 +260,7 @@ skipped scenarios and reason:
 
 ```bash
 uv sync --frozen
+uv run ruff format --check .
 uv run ruff check .
 uv run mypy src
 uv run pytest -m "not real_stripe"
@@ -208,7 +275,8 @@ npm run build
 
 # Explicit networked release gate; requires isolated Stripe test infrastructure.
 cd ..
-scripts/run_browser_e2e.sh
+E2E_TRANSITION_POLICY=full_period_reset scripts/run_browser_e2e.sh
+E2E_TRANSITION_POLICY=prorated_delta scripts/run_browser_e2e.sh
 
 git diff --check
 ```

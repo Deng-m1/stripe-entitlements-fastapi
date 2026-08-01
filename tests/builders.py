@@ -98,6 +98,77 @@ def paid_invoice(
     return event("invoice.paid", obj, event_id=event_id, created=created)
 
 
+def prorated_upgrade_invoice(
+    account_id: str,
+    *,
+    invoice_id: str = "in_prorated_upgrade",
+    customer: str = "cus_test",
+    subscription: str = "sub_test",
+    source_plan: str = "starter",
+    target_plan: str = "pro",
+    source_credit: int = 950,
+    target_charge: int = 2450,
+    proration_date: int = 1_801_000_000,
+    period_end: int = 1_802_592_000,
+    event_id: str | None = None,
+    created: int = 1_801_000_010,
+) -> dict[str, Any]:
+    amount = target_charge - source_credit
+    lines = [
+        {
+            "id": f"il_source_{invoice_id}",
+            "amount": -source_credit,
+            "currency": "usd",
+            "quantity": 1,
+            "price": {
+                "id": f"price_{source_plan}_month",
+                "lookup_key": f"ent_{source_plan}_month",
+            },
+            "period": {"start": proration_date, "end": period_end},
+            "proration": True,
+        },
+        {
+            "id": f"il_target_{invoice_id}",
+            "amount": target_charge,
+            "currency": "usd",
+            "quantity": 1,
+            "price": {
+                "id": f"price_{target_plan}_month",
+                "lookup_key": f"ent_{target_plan}_month",
+            },
+            "period": {"start": proration_date, "end": period_end},
+            "proration": True,
+        },
+    ]
+    obj = {
+        "id": invoice_id,
+        "customer": customer,
+        "subscription": subscription,
+        "billing_reason": "subscription_update",
+        "amount_paid": amount,
+        "amount_due": amount,
+        "subtotal": amount,
+        "total": amount,
+        "starting_balance": 0,
+        "ending_balance": 0,
+        "currency": "usd",
+        "total_tax_amounts": [],
+        "total_discount_amounts": [],
+        "discounts": [],
+        "parent": {
+            "subscription_details": {
+                "subscription": subscription,
+                "metadata": {
+                    "account_id": account_id,
+                    "product_line": "example-entitlements",
+                },
+            }
+        },
+        "lines": {"data": lines, "has_more": False, "_all_lines_loaded": True},
+    }
+    return event("invoice.paid", obj, event_id=event_id, created=created)
+
+
 def payment_failed(
     account_id: str,
     *,
@@ -158,11 +229,12 @@ def refunded_charge(
     event_id: str | None = None,
     refunded: bool | None = None,
     created: int = 1_800_000_020,
+    customer: str = "cus_test",
 ) -> dict[str, Any]:
     refunded = amount_refunded >= amount if refunded is None else refunded
     obj = {
         "id": f"ch_{invoice_id}",
-        "customer": "cus_test",
+        "customer": customer,
         "invoice": invoice_id,
         "amount": amount,
         "amount_refunded": amount_refunded,
@@ -174,6 +246,7 @@ def refunded_charge(
 def dispute(
     *,
     invoice_id: str = "in_test",
+    amount: int = 1900,
     event_id: str | None = None,
     created: int = 1_800_000_020,
 ) -> dict[str, Any]:
@@ -181,7 +254,7 @@ def dispute(
         "id": f"ch_{invoice_id}",
         "customer": "cus_test",
         "invoice": invoice_id,
-        "amount": 1900,
+        "amount": amount,
         "amount_refunded": 0,
         "refunded": False,
     }

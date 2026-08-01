@@ -16,9 +16,9 @@ import {
 } from "@/lib/site";
 
 export const metadata: Metadata = {
-  title: "Open-source Stripe Billing Template for FastAPI",
+  title: "Stripe Billing & Entitlements Template for FastAPI",
   description:
-    "A tested Stripe subscription billing starter for FastAPI, PostgreSQL, and Next.js with webhooks, credits, annual grants, refunds, and safe plan changes.",
+    "An open-source Stripe subscription billing template with FastAPI, PostgreSQL entitlements, Next.js, and complete full-period or prorated upgrade policies.",
   alternates: absoluteSiteUrl(publicSiteUrl, "/")
     ? { canonical: absoluteSiteUrl(publicSiteUrl, "/") }
     : undefined,
@@ -34,11 +34,11 @@ const capabilities = [
     body: "Structured plan limits, monthly credit grants, annual funding slots, refunds, disputes, and grant-epoch-safe usage.",
   },
   {
-    title: "Safe plan changes",
-    body: "Invoice previews, durable intent, SCA recovery, full-price immediate upgrades, and period-end annual transitions.",
+    title: "Full-price or prorated upgrades",
+    body: "Choose full_period_reset or prorated_delta. Both define a complete 6 × 6 monthly/yearly transition matrix with durable intent, SCA recovery, and refund convergence.",
   },
   {
-    title: "Real Stripe evidence",
+    title: "Real Stripe test gates",
     body: "Test-mode API, Test Clock renewal, Playwright Checkout, decline, 3DS, signed webhook, and UI projection gates.",
   },
 ];
@@ -52,7 +52,17 @@ const frequentlyAskedQuestions = [
   {
     question: "Does the template support monthly and annual subscriptions?",
     answer:
-      "Yes. Starter, Pro, and Ultra each have monthly and annual prices. Annual invoices fund monthly credit slots, including a tested cross-year renewal.",
+      "Yes. Starter, Pro, and Ultra each have monthly and annual prices. Annual invoices fund monthly credit slots, and an opt-in Stripe Test Clock gate covers cross-year renewal.",
+  },
+  {
+    question: "Does it support Stripe prorated subscription upgrades?",
+    answer:
+      "Yes. The prorated-delta template accepts a paid two-line monthly upgrade Invoice, preserves the current period, and adds the fixed catalog entitlement difference. Annual and unsupported invoice shapes defer or fail closed.",
+  },
+  {
+    question: "What do the two subscription change templates cover?",
+    answer:
+      "full_period_reset and prorated_delta each define all 36 source-to-target cells across three monthly and three yearly states. Annual-origin changes, interval changes under the delta policy, and downgrades remain period-end.",
   },
   {
     question: "How are annual savings calculated?",
@@ -111,8 +121,8 @@ export default function HomePage() {
         <h1>Race-safe Stripe billing for FastAPI, PostgreSQL, and Next.js.</h1>
         <p>
           A production-minded SaaS billing reference for subscriptions, credit
-          entitlements, annual renewals, refunds, SCA recovery, and webhook-authoritative
-          access.
+          entitlements, annual renewals, full-price or prorated upgrades, refunds, SCA
+          recovery, and webhook-authoritative access.
         </p>
         <div className="hero-actions">
           <Link className="button primary" href="/pricing">

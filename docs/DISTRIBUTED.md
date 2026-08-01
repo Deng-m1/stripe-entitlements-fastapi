@@ -15,8 +15,22 @@ is rejected.
 
 Plan-change preview stores one durable intent per account/request key. Confirm uses the
 opaque preview ID. An expiring database lease serializes remote preview/apply/schedule
-work, while distinct derived Stripe keys make unknown remote outcomes replayable. A
-partial unique index permits only one pending plan change per account.
+work. Confirm first persists `applying` and `remote_started_at`; an unknown outcome less
+than 23 hours old is replayed with the same derived Stripe key, while older ambiguity
+blocks for exact Invoice/Schedule proof. A
+partial unique index permits only one pending plan change per account. The intent stores
+its transition policy; delta intents additionally bind the source funding Invoice,
+credit difference, and fixed proration timestamp. The latest Invoice returned by an
+immediate mutation is compare-and-set into the intent; paid/failed Events must match it
+exactly rather than relying on Subscription identity.
+
+Delta paid/refund/dispute paths use the same account-first lock order and a unique
+settlement Invoice in `billing_funding_allocations`. Multiple webhook replicas and
+reconcilers can race on one Invoice without duplicating its delta.
+Outstanding current-epoch clawback units are stored in `billing_clawback_debts` and
+atomically consume later usage refunds or delta grants.
+`stripe_invoice_state.closure_applied` independently prevents distinct refund/dispute
+Event IDs from reapplying one terminal funding closure.
 
 ## Remaining single points and external dependencies
 
@@ -46,11 +60,12 @@ commit a partial effect.
 
 ## Rolling deployment and migration safety
 
-Apply `001_schema.sql` and `002_plan_transitions.sql` before sending traffic to code that
+Apply `001_schema.sql`, `002_plan_transitions.sql`, and
+`003_transition_policies.sql` before sending traffic to code that
 uses authenticated billing APIs. Avoid running a new process against an old schema.
 During a rolling deploy:
 
-1. back up all eight correctness tables;
+1. back up all ten correctness tables;
 2. apply forward-compatible migrations once;
 3. deploy API/worker replicas with identical catalog, migration and version settings;
 4. verify health, catalog and one authenticated account;
@@ -59,13 +74,14 @@ During a rolling deploy:
 
 ## Horizontal scaling checklist
 
-- All replicas use the same migrations, `plans.toml`, request API version, webhook Event
-  snapshot version and product-line prefix.
+- All replicas use the same migrations, `plans.toml`, transition policy, request API
+  version, webhook Event snapshot version, and product-line prefix.
 - Do not cache Portal configuration safety indefinitely; runtime Portal creation verifies
   that plan changes remain disabled and cancellation remains period-end.
 - Keep worker clocks synchronized; PostgreSQL timestamps remain authoritative.
 - Configure statement and lock timeouts, but let failures roll back and retry.
 - Alert on unresolved incidents, stale plan-change leases, webhook 5xx and scheduler lag.
 - Run reconciliation after outages longer than Stripe's retry window.
+- Alert before any `applying` row reaches the 23-hour automatic-replay boundary.
 - Test point-in-time restore; a backup that omits inbox, ledger, invoice or plan-change
   state can reopen duplicate or unauthorized effects.

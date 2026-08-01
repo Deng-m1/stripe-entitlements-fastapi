@@ -3,19 +3,39 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
 
 from .catalog import Plan, PlanCatalog
+from .clawbacks import collect_clawback_debts
 from .ordering import event_wins, rank_for
 from .types import ProcessResult
 
 logger = logging.getLogger("stripe_entitlements.processor")
 
 _PAID_REASONS = {"subscription_create", "subscription_cycle", "subscription_update"}
-_CLAWBACK_REASONS = {"refund_clawback", "dispute_clawback"}
+_CLAWBACK_REASONS = {
+    "refund_clawback",
+    "dispute_clawback",
+    "clawback_debt_collection",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _ProratedDeltaShape:
+    source_plan: Plan
+    target_plan: Plan
+    source_line_id: str
+    target_line_id: str
+    source_credit_amount: int
+    target_charge_amount: int
+    amount_paid: int
+    currency: str
+    period_start: datetime
+    period_end: datetime
 
 
 def _as_id(value: Any) -> str | None:
@@ -99,6 +119,35 @@ def _annual_slots_allowed(amount: int, refunded: int, minimum: int) -> int:
     # round half up: floor(12 * remaining / amount + 0.5)
     rounded = (24 * remaining + amount) // (2 * amount)
     return max(min(int(rounded), 12), minimum)
+
+
+def _has_unsupported_invoice_adjustments(
+    invoice: Mapping[str, Any], lines: list[Mapping[str, Any]]
+) -> bool:
+    balance_fields = (
+        "starting_balance",
+        "ending_balance",
+        "pre_payment_credit_notes_amount",
+        "post_payment_credit_notes_amount",
+    )
+    if any(int(invoice.get(field) or 0) != 0 for field in balance_fields):
+        return True
+    adjustments = (
+        list(invoice.get("total_tax_amounts") or [])
+        + list(invoice.get("total_taxes") or [])
+        + list(invoice.get("total_discount_amounts") or [])
+    )
+    for line in lines:
+        adjustments.extend(line.get("tax_amounts") or [])
+        adjustments.extend(line.get("taxes") or [])
+        adjustments.extend(line.get("discount_amounts") or [])
+        adjustments.extend(line.get("pretax_credit_amounts") or [])
+    return bool(
+        invoice.get("discounts")
+        or any(
+            int(item.get("amount") or 0) != 0 for item in adjustments if isinstance(item, Mapping)
+        )
+    )
 
 
 class EventProcessor:
@@ -292,9 +341,7 @@ class EventProcessor:
             event_rank=rank_for(str(event["type"])),
         )
 
-    async def _invoice_paid(
-        self, conn: asyncpg.Connection, event: dict[str, Any]
-    ) -> ProcessResult:
+    async def _invoice_paid(self, conn: asyncpg.Connection, event: dict[str, Any]) -> ProcessResult:
         invoice = event["data"]["object"]
         invoice_id = str(invoice["id"])
         metadata = _subscription_metadata(invoice)
@@ -327,6 +374,37 @@ class EventProcessor:
         nonzero_prorations = [
             line for line in lines if _line_proration(line) and int(line.get("amount") or 0) != 0
         ]
+        subscription_id = _subscription_id(invoice)
+        billing_reason = invoice.get("billing_reason")
+        prorated_transition = None
+        if billing_reason == "subscription_update" and subscription_id:
+            prorated_transition = await conn.fetchrow(
+                """select * from billing_plan_changes
+                     where account_id=$1 and stripe_subscription_id=$2
+                       and transition_policy='prorated_delta'
+                       and (
+                         settlement_invoice_id=$3
+                         or (
+                           settlement_invoice_id is null and effective_mode='immediate'
+                           and status in (
+                             'applying','applied','requires_action'
+                           )
+                         )
+                       )
+                     order by created_at desc limit 1 for update""",
+                account["id"],
+                subscription_id,
+                invoice_id,
+            )
+        if prorated_transition is not None:
+            return await self._invoice_paid_prorated_delta(
+                conn,
+                event,
+                invoice,
+                account,
+                prorated_transition,
+                lines,
+            )
         grant_lines = [line for line in lines if not _line_proration(line)]
         if len(grant_lines) != 1:
             await self._incident(
@@ -336,7 +414,7 @@ class EventProcessor:
                 dedupe_key=invoice_id,
                 invoice_id=invoice_id,
                 account_id=account["id"],
-                detail={"grant_line_count": len(grant_lines)},
+                detail={"grant_line_count": len(grant_lines), "line_count": len(lines)},
             )
             return ProcessResult("ignored", "invoice must have exactly one grant line", account_id)
         parsed = self.catalog.parse_lookup_key(_line_lookup(grant_lines[0]))
@@ -353,21 +431,23 @@ class EventProcessor:
             return ProcessResult("ignored", "price lookup key is not in the catalog", account_id)
         plan, interval = parsed
         line = grant_lines[0]
-        expected_amount = (
-            plan.month_usd if interval == "month" else plan.year_usd
-        ) * 100
+        expected_amount = (plan.month_usd if interval == "month" else plan.year_usd) * 100
         invoice_currency = str(invoice.get("currency") or "").lower()
         line_currency = str(line.get("currency") or invoice_currency).lower()
         amount_paid = max(int(invoice.get("amount_paid") or 0), 0)
         invoice_total = int(invoice.get("total") or 0)
         quantity = int(line.get("quantity") or 0)
+        unsupported_adjustments = _has_unsupported_invoice_adjustments(invoice, lines)
         if (
             quantity != 1
             or int(line.get("amount") or 0) != expected_amount
             or amount_paid != expected_amount
             or invoice_total != expected_amount
+            or int(invoice.get("amount_due", invoice_total) or 0) != expected_amount
+            or int(invoice.get("subtotal", invoice_total) or 0) != expected_amount
             or invoice_currency != plan.currency
             or line_currency != plan.currency
+            or unsupported_adjustments
         ):
             await self._incident(
                 conn,
@@ -381,6 +461,7 @@ class EventProcessor:
                     "interval": interval,
                     "expected_amount": expected_amount,
                     "quantity": quantity,
+                    "unsupported_adjustments": unsupported_adjustments,
                 },
             )
             return ProcessResult(
@@ -399,7 +480,6 @@ class EventProcessor:
                 account_id=account["id"],
             )
             return ProcessResult("ignored", "invoice service period is invalid", account_id)
-        subscription_id = _subscription_id(invoice)
         existing = await conn.fetchrow(
             """select id,account_id from credit_ledger
                  where stripe_invoice_id=$1 and grant_slot=1""",
@@ -426,7 +506,6 @@ class EventProcessor:
                 )
             return ProcessResult("replayed", "invoice grant slot already exists", account_id)
         transition = None
-        billing_reason = invoice.get("billing_reason")
         entitled_sku = (str(account["plan_key"]), account["plan_interval"])
         incoming_sku = (plan.key, interval)
         needs_intent = billing_reason == "subscription_update" or (
@@ -438,8 +517,7 @@ class EventProcessor:
                 account["id"],
             )
             checkout_authorized = bool(
-                (subscription_id
-                and account["stripe_subscription_id"] == subscription_id)
+                (subscription_id and account["stripe_subscription_id"] == subscription_id)
                 or (
                     claim is not None
                     and subscription_id
@@ -466,14 +544,16 @@ class EventProcessor:
                 """select * from billing_plan_changes
                      where account_id=$1 and stripe_subscription_id=$2
                        and target_plan_key=$3 and target_interval=$4
+                       and (settlement_invoice_id is null or settlement_invoice_id=$5)
                        and status in (
-                         'previewed','applying','scheduled','applied','requires_action'
+                         'applying','scheduled','applied','requires_action'
                        )
                      order by created_at desc limit 1 for update""",
                 account["id"],
                 subscription_id,
                 plan.key,
                 interval,
+                invoice_id,
             )
             wrong_mode = bool(
                 transition is not None
@@ -507,6 +587,17 @@ class EventProcessor:
                 detail={"line_count": len(nonzero_prorations)},
             )
             return ProcessResult("ignored", "cross-invoice proration is unsafe", account_id)
+        if len(lines) != 1:
+            await self._incident(
+                conn,
+                "ambiguous_invoice_lines",
+                event=event,
+                dedupe_key=invoice_id,
+                invoice_id=invoice_id,
+                account_id=account["id"],
+                detail={"grant_line_count": len(grant_lines), "line_count": len(lines)},
+            )
+            return ProcessResult("ignored", "invoice must have exactly one grant line", account_id)
         if (
             account["stripe_subscription_id"] is not None
             and subscription_id != account["stripe_subscription_id"]
@@ -526,12 +617,9 @@ class EventProcessor:
             return ProcessResult(
                 "ignored", "invoice belongs to a different subscription", account_id
             )
-        remote_cas_failed = event.get("_remote_verified") is True and not self._wins(
-            account, event
-        )
+        remote_cas_failed = event.get("_remote_verified") is True and not self._wins(account, event)
         stale_period = bool(
-            account["entitlement_period_end"]
-            and period_end <= account["entitlement_period_end"]
+            account["entitlement_period_end"] and period_end <= account["entitlement_period_end"]
         )
         if remote_cas_failed or stale_period:
             await self._incident(
@@ -624,18 +712,24 @@ class EventProcessor:
             )
             await conn.execute(
                 """update stripe_invoice_state set grant_units_per_slot=$2,grants_issued=1,
-                       updated_at=now() where invoice_id=$1""",
+                       closure_applied=true,updated_at=now() where invoice_id=$1""",
                 invoice_id,
                 credits,
             )
             if transition is not None:
-                await conn.execute(
+                bound = await conn.fetchval(
                     """update billing_plan_changes set status='failed',
+                           settlement_invoice_id=coalesce(settlement_invoice_id,$2),
                            last_error='invoice_funding_closed',completed_at=now(),
                            lease_token=null,lease_expires_at=null,updated_at=now()
-                         where id=$1""",
+                         where id=$1
+                           and (settlement_invoice_id is null or settlement_invoice_id=$2)
+                         returning id""",
                     transition["id"],
+                    invoice_id,
                 )
+                if bound is None:
+                    raise RuntimeError("plan-change settlement Invoice binding changed")
             return ProcessResult(
                 "ignored", "invoice funding does not cover an entitlement slot", account_id
             )
@@ -720,21 +814,461 @@ class EventProcessor:
                 """select * from billing_plan_changes
                      where account_id=$1 and stripe_subscription_id=$2
                        and target_plan_key=$3 and target_interval=$4
+                       and (settlement_invoice_id is null or settlement_invoice_id=$5)
                        and status in ('scheduled','applied','requires_action')
                      order by created_at desc limit 1 for update""",
                 account["id"],
                 subscription_id,
                 plan.key,
                 interval,
+                invoice_id,
             )
         if transition is not None:
-            await conn.execute(
+            bound = await conn.fetchval(
                 """update billing_plan_changes set status='completed',completed_at=now(),
+                       settlement_invoice_id=coalesce(settlement_invoice_id,$2),
                        lease_token=null,lease_expires_at=null,updated_at=now()
-                     where id=$1""",
+                     where id=$1
+                       and (settlement_invoice_id is null or settlement_invoice_id=$2)
+                     returning id""",
                 transition["id"],
+                invoice_id,
             )
+            if bound is None:
+                raise RuntimeError("plan-change settlement Invoice binding changed")
         return ProcessResult("handled", account_id=account_id)
+
+    async def _invoice_paid_prorated_delta(
+        self,
+        conn: asyncpg.Connection,
+        event: dict[str, Any],
+        invoice: Mapping[str, Any],
+        account: asyncpg.Record,
+        transition: asyncpg.Record,
+        lines: list[Mapping[str, Any]],
+    ) -> ProcessResult:
+        invoice_id = str(invoice["id"])
+        account_id = str(account["id"])
+        existing = await conn.fetchrow(
+            """select id,account_id from credit_ledger
+                 where stripe_invoice_id=$1 and grant_slot=1""",
+            invoice_id,
+        )
+        if existing is not None:
+            if existing["account_id"] != account["id"]:
+                await self._incident(
+                    conn,
+                    "invoice_grant_identity_conflict",
+                    event=event,
+                    dedupe_key=invoice_id,
+                    invoice_id=invoice_id,
+                    account_id=account["id"],
+                )
+                return ProcessResult("ignored", "invoice grant belongs to another account")
+            return ProcessResult("replayed", "invoice grant slot already exists", account_id)
+
+        snapshot_matches = bool(
+            account["stripe_subscription_id"] == transition["stripe_subscription_id"]
+            and account["plan_key"] == transition["from_plan_key"]
+            and account["plan_interval"] == transition["from_interval"]
+            and int(account["grant_epoch"]) == int(transition["expected_grant_epoch"])
+            and account["entitlement_period_end"] == transition["expected_entitlement_period_end"]
+            and not account["entitlement_revoked"]
+            and not transition["expected_entitlement_revoked"]
+        )
+        latest_funding = await self._latest_funding_invoice(
+            conn, account["id"], int(account["grant_epoch"])
+        )
+        if not snapshot_matches or latest_funding != transition["expected_source_invoice_id"]:
+            await self._incident(
+                conn,
+                "stale_prorated_delta_invoice",
+                event=event,
+                dedupe_key=invoice_id,
+                invoice_id=invoice_id,
+                account_id=account["id"],
+                detail={
+                    "expected_source_invoice": transition["expected_source_invoice_id"],
+                    "observed_source_invoice": latest_funding,
+                },
+            )
+            return ProcessResult(
+                "ignored", "entitlement snapshot or funding lineage changed", account_id
+            )
+
+        try:
+            shape = self._parse_prorated_delta_shape(invoice, transition, lines)
+        except ValueError as exc:
+            await self._incident(
+                conn,
+                "invalid_prorated_delta_invoice",
+                event=event,
+                dedupe_key=invoice_id,
+                invoice_id=invoice_id,
+                account_id=account["id"],
+                detail={"reason": str(exc)},
+            )
+            return ProcessResult("ignored", str(exc), account_id)
+
+        expected_delta = int(transition["expected_credit_delta"] or 0)
+        actual_delta = shape.target_plan.monthly_credits - shape.source_plan.monthly_credits
+        if expected_delta <= 0 or actual_delta != expected_delta:
+            await self._incident(
+                conn,
+                "prorated_delta_entitlement_mismatch",
+                event=event,
+                dedupe_key=invoice_id,
+                invoice_id=invoice_id,
+                account_id=account["id"],
+                detail={"expected_delta": expected_delta, "actual_delta": actual_delta},
+            )
+            return ProcessResult("ignored", "entitlement delta does not match intent", account_id)
+
+        state_before = await conn.fetchrow(
+            "select * from stripe_invoice_state where invoice_id=$1 for update", invoice_id
+        )
+        if (
+            state_before is not None
+            and state_before["account_id"] is not None
+            and state_before["account_id"] != account["id"]
+        ):
+            await self._incident(
+                conn,
+                "invoice_account_identity_conflict",
+                event=event,
+                dedupe_key=invoice_id,
+                invoice_id=invoice_id,
+                account_id=account["id"],
+            )
+            return ProcessResult("ignored", "invoice is owned by another account", account_id)
+        await conn.execute(
+            """insert into stripe_invoice_state(invoice_id,account_id,amount_total)
+                 values($1,$2,$3) on conflict(invoice_id) do update set
+                   account_id=coalesce(stripe_invoice_state.account_id,excluded.account_id),
+                   amount_total=greatest(stripe_invoice_state.amount_total,excluded.amount_total),
+                   updated_at=now()""",
+            invoice_id,
+            account["id"],
+            shape.amount_paid,
+        )
+        state = await conn.fetchrow(
+            "select * from stripe_invoice_state where invoice_id=$1 for update", invoice_id
+        )
+        assert state is not None
+        closed = bool(state["fully_refunded"] or state["disputed"])
+        refund_units = (
+            expected_delta
+            if closed
+            else _ceil_ratio(
+                expected_delta,
+                int(state["amount_refunded"]),
+                int(state["amount_total"]),
+            )
+        )
+        allocation_status = (
+            "disputed"
+            if state["disputed"]
+            else (
+                "closed"
+                if state["fully_refunded"]
+                else ("partially_refunded" if refund_units else "active")
+            )
+        )
+        allocation_id = await conn.fetchval(
+            """insert into billing_funding_allocations(
+                   account_id,plan_change_id,stripe_invoice_id,source_invoice_id,
+                   stripe_event_id,transition_policy,source_plan_key,source_interval,
+                   target_plan_key,target_interval,source_line_id,target_line_id,
+                   entitlement_delta,refunded_units,source_credit_amount,
+                   target_charge_amount,amount_paid,currency,period_start,period_end,
+                   grant_epoch,status)
+                 values($1,$2,$3,$4,$5,'prorated_delta',$6,'month',$7,'month',
+                        $8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+                 on conflict(stripe_invoice_id) do nothing returning id""",
+            account["id"],
+            transition["id"],
+            invoice_id,
+            transition["expected_source_invoice_id"],
+            event["id"],
+            shape.source_plan.key,
+            shape.target_plan.key,
+            shape.source_line_id,
+            shape.target_line_id,
+            expected_delta,
+            refund_units,
+            shape.source_credit_amount,
+            shape.target_charge_amount,
+            shape.amount_paid,
+            shape.currency,
+            shape.period_start,
+            shape.period_end,
+            account["grant_epoch"],
+            allocation_status,
+        )
+        if allocation_id is None:
+            await self._incident(
+                conn,
+                "funding_allocation_conflict",
+                event=event,
+                dedupe_key=invoice_id,
+                invoice_id=invoice_id,
+                account_id=account["id"],
+            )
+            return ProcessResult("ignored", "funding allocation already exists", account_id)
+
+        old_balance = int(account["credits_balance"])
+        if closed:
+            await conn.execute(
+                """insert into credit_ledger(
+                       account_id,delta,balance_after,entitlement_units,reason,grant_epoch,
+                       stripe_event_id,stripe_invoice_id,grant_slot)
+                     values($1,0,$2,0,'upgrade_delta_blocked',$3,$4,$5,1)""",
+                account["id"],
+                old_balance,
+                account["grant_epoch"],
+                event["id"],
+                invoice_id,
+            )
+            await conn.execute(
+                """update stripe_invoice_state set grant_units_per_slot=$2,
+                       grants_issued=1,closure_applied=true,updated_at=now()
+                     where invoice_id=$1""",
+                invoice_id,
+                expected_delta,
+            )
+            await conn.execute(
+                """update billing_plan_changes set status='failed',
+                       settlement_invoice_id=$2,last_error='invoice_funding_closed',
+                       completed_at=now(),lease_token=null,lease_expires_at=null,
+                       updated_at=now() where id=$1""",
+                transition["id"],
+                invoice_id,
+            )
+            await self._incident(
+                conn,
+                "prorated_delta_funding_closed",
+                event=event,
+                dedupe_key=invoice_id,
+                invoice_id=invoice_id,
+                account_id=account["id"],
+            )
+            return ProcessResult(
+                "ignored", "upgrade invoice funding was already closed", account_id
+            )
+
+        projection_wins = self._wins(account, event)
+        new_balance = old_balance + expected_delta
+        await conn.execute(
+            """update billing_accounts set
+                   stripe_customer_id=coalesce(stripe_customer_id,$2),
+                   plan_key=$3,plan_interval='month',subscription_status=$4,
+                   credits_balance=$5,entitlement_revoked=false,
+                   event_created=$6,event_rank=$7,updated_at=now()
+                 where id=$1""",
+            account["id"],
+            _as_id(invoice.get("customer")),
+            shape.target_plan.key,
+            "active" if projection_wins else account["subscription_status"],
+            new_balance,
+            int(event.get("created") or 0) if projection_wins else int(account["event_created"]),
+            rank_for(event["type"]) if projection_wins else int(account["event_rank"]),
+        )
+        grant = await conn.fetchrow(
+            """insert into credit_ledger(
+                   account_id,delta,balance_after,entitlement_units,reason,grant_epoch,
+                   stripe_event_id,stripe_invoice_id,grant_slot)
+                 values($1,$2,$3,$2,'upgrade_delta_grant',$4,$5,$6,1)
+                 returning id""",
+            account["id"],
+            expected_delta,
+            new_balance,
+            account["grant_epoch"],
+            event["id"],
+            invoice_id,
+        )
+        await conn.execute(
+            """update stripe_invoice_state set grant_units_per_slot=$2,
+                   grants_issued=1,updated_at=now() where invoice_id=$1""",
+            invoice_id,
+            expected_delta,
+        )
+        await collect_clawback_debts(
+            conn,
+            account_id=account["id"],
+            grant_epoch=int(account["grant_epoch"]),
+            event_id=str(event["id"]),
+        )
+        if refund_units:
+            assert grant is not None
+            await self._apply_clawback_to_grant(
+                conn,
+                account_id=account["id"],
+                invoice_id=invoice_id,
+                grant_id=int(grant["id"]),
+                entitlement_units=expected_delta,
+                amount=int(state["amount_total"]),
+                amount_refunded=int(state["amount_refunded"]),
+                full=False,
+                reason="refund_clawback",
+                event_id=event["id"],
+            )
+        await conn.execute(
+            """update billing_plan_changes set status='completed',
+                   settlement_invoice_id=$2,completed_at=now(),lease_token=null,
+                   lease_expires_at=null,updated_at=now() where id=$1""",
+            transition["id"],
+            invoice_id,
+        )
+        return ProcessResult("handled", account_id=account_id)
+
+    def _parse_prorated_delta_shape(
+        self,
+        invoice: Mapping[str, Any],
+        transition: Mapping[str, Any],
+        lines: list[Mapping[str, Any]],
+    ) -> _ProratedDeltaShape:
+        container = invoice.get("lines") or {}
+        if isinstance(container, Mapping) and container.get("has_more"):
+            raise ValueError("Invoice line pagination was not completed")
+        if len(lines) != 2:
+            raise ValueError("prorated delta requires exactly two Invoice lines")
+        source_line: Mapping[str, Any] | None = None
+        target_line: Mapping[str, Any] | None = None
+        source_plan: Plan | None = None
+        target_plan: Plan | None = None
+        for line in lines:
+            if not _line_proration(line):
+                raise ValueError("both prorated delta lines must be prorations")
+            if int(line.get("quantity") or 0) != 1 or not line.get("id"):
+                raise ValueError("prorated delta lines require identity and quantity one")
+            parsed = self.catalog.parse_lookup_key(_line_lookup(line))
+            if parsed is None:
+                raise ValueError("every prorated delta line must use a catalog Price")
+            plan, interval = parsed
+            if interval != "month":
+                raise ValueError("prorated delta is supported only for monthly Prices")
+            if plan.key == transition["from_plan_key"]:
+                if source_line is not None:
+                    raise ValueError("multiple source Price lines are ambiguous")
+                source_line, source_plan = line, plan
+            elif plan.key == transition["target_plan_key"]:
+                if target_line is not None:
+                    raise ValueError("multiple target Price lines are ambiguous")
+                target_line, target_plan = line, plan
+            else:
+                raise ValueError("Invoice contains a Price outside the authorized transition")
+        if source_line is None or target_line is None or source_plan is None or target_plan is None:
+            raise ValueError("Invoice is missing the authorized source or target Price line")
+        if (
+            transition["from_interval"] != "month"
+            or transition["target_interval"] != "month"
+            or target_plan.rank <= source_plan.rank
+        ):
+            raise ValueError("intent is not a supported monthly tier upgrade")
+        source_amount = int(source_line.get("amount") or 0)
+        target_amount = int(target_line.get("amount") or 0)
+        if source_amount >= 0 or target_amount <= 0 or target_amount <= -source_amount:
+            raise ValueError("Invoice does not contain a positive net upgrade difference")
+        source_catalog_amount = source_plan.month_usd * 100
+        target_catalog_amount = target_plan.month_usd * 100
+        ratio_error = abs(
+            (-source_amount * target_catalog_amount) - (target_amount * source_catalog_amount)
+        )
+        if ratio_error > max(source_catalog_amount, target_catalog_amount):
+            raise ValueError("source and target prorations use inconsistent period fractions")
+        invoice_currency = str(invoice.get("currency") or "").lower()
+        if not invoice_currency or source_plan.currency != target_plan.currency:
+            raise ValueError("source and target Prices must use one currency")
+        if (
+            any(
+                str(line.get("currency") or invoice_currency).lower() != invoice_currency
+                for line in lines
+            )
+            or invoice_currency != target_plan.currency
+        ):
+            raise ValueError("Invoice and line currencies do not match the catalog")
+        total = int(invoice.get("total") or 0)
+        amount_paid = int(invoice.get("amount_paid") or 0)
+        amount_due = int(invoice.get("amount_due", total) or 0)
+        subtotal = int(invoice.get("subtotal", total) or 0)
+        if (
+            amount_paid <= 0
+            or total != amount_paid
+            or amount_due != amount_paid
+            or subtotal != total
+            or source_amount + target_amount != total
+        ):
+            raise ValueError("Invoice net total must be fully paid by new cash")
+        if _has_unsupported_invoice_adjustments(invoice, lines):
+            raise ValueError("balance, credit notes, taxes and discounts are not supported")
+        source_period = source_line.get("period") or {}
+        target_period = target_line.get("period") or {}
+        if source_period != target_period:
+            raise ValueError("source and target proration periods must match")
+        period_start = _timestamp(target_period.get("start"))
+        period_end = _timestamp(target_period.get("end"))
+        if period_start is None or period_end is None or period_end <= period_start:
+            raise ValueError("proration service period is invalid")
+        proration_date = transition.get("proration_date")
+        if proration_date is None or int(period_start.timestamp()) != int(proration_date):
+            raise ValueError("Invoice proration date differs from the durable preview")
+        if period_end != transition["expected_entitlement_period_end"]:
+            raise ValueError("Invoice period end differs from the funded entitlement period")
+        preview_facts = (
+            transition.get("estimated_source_proration"),
+            transition.get("estimated_target_proration"),
+            transition.get("estimated_amount_due"),
+            transition.get("estimated_period_start"),
+            transition.get("estimated_period_end"),
+            transition.get("estimate_currency"),
+        )
+        if any(value is None for value in preview_facts):
+            raise ValueError("durable prorated preview facts are incomplete")
+        if (
+            int(transition["estimated_source_proration"]) != -source_amount
+            or int(transition["estimated_target_proration"]) != target_amount
+            or int(transition["estimated_amount_due"]) != amount_paid
+            or transition["estimated_period_start"] != period_start
+            or transition["estimated_period_end"] != period_end
+            or str(transition["estimate_currency"]).lower() != invoice_currency
+        ):
+            raise ValueError("paid Invoice differs from the durable prorated preview")
+        return _ProratedDeltaShape(
+            source_plan,
+            target_plan,
+            str(source_line["id"]),
+            str(target_line["id"]),
+            -source_amount,
+            target_amount,
+            amount_paid,
+            invoice_currency,
+            period_start,
+            period_end,
+        )
+
+    @staticmethod
+    async def _latest_funding_invoice(
+        conn: asyncpg.Connection, account_id: Any, grant_epoch: int
+    ) -> str | None:
+        value = await conn.fetchval(
+            """select stripe_invoice_id from credit_ledger
+                 where account_id=$1 and grant_epoch=$2 and grant_slot is not null
+                   and entitlement_units > 0
+                   and reason in ('subscription_grant','upgrade_delta_grant')
+                 order by id desc limit 1""",
+            account_id,
+            grant_epoch,
+        )
+        if not value:
+            value = await conn.fetchval(
+                """select source_invoice_id from billing_funding_allocations
+                     where account_id=$1 and grant_epoch=$2
+                       and status in ('closed','disputed')
+                     order by id desc limit 1""",
+                account_id,
+                grant_epoch,
+            )
+        return str(value) if value else None
 
     async def _apply_clawback_to_grant(
         self,
@@ -750,8 +1284,8 @@ class EventProcessor:
         reason: str,
         event_id: str,
     ) -> int:
-        target = entitlement_units if full else _ceil_ratio(
-            entitlement_units, amount_refunded, amount
+        target = (
+            entitlement_units if full else _ceil_ratio(entitlement_units, amount_refunded, amount)
         )
         already = int(
             await conn.fetchval(
@@ -789,11 +1323,29 @@ class EventProcessor:
                 event_id,
                 invoice_id,
             )
+        if target:
+            await conn.execute(
+                """insert into billing_clawback_debts(
+                       account_id,grant_epoch,stripe_invoice_id,
+                       target_units,collected_units)
+                     values($1,$2,$3,$4,$5)
+                     on conflict(account_id,grant_epoch,stripe_invoice_id) do update set
+                       target_units=greatest(
+                         billing_clawback_debts.target_units,excluded.target_units
+                       ),
+                       collected_units=greatest(
+                         billing_clawback_debts.collected_units,excluded.collected_units
+                       ),
+                       updated_at=now()""",
+                account_id,
+                row["grant_epoch"],
+                invoice_id,
+                target,
+                min(target, already + removed),
+            )
         return removed
 
-    async def _clawback(
-        self, conn: asyncpg.Connection, event: dict[str, Any]
-    ) -> ProcessResult:
+    async def _clawback(self, conn: asyncpg.Connection, event: dict[str, Any]) -> ProcessResult:
         raw = event["data"]["object"]
         dispute = event["type"] == "charge.dispute.created"
         charge = raw.get("_resolved_charge") if dispute else raw
@@ -856,6 +1408,25 @@ class EventProcessor:
             )
             return ProcessResult("ignored", "account not found; invoice flag retained")
         account_id = str(account["id"])
+        known_state = await conn.fetchrow(
+            "select account_id from stripe_invoice_state where invoice_id=$1 for update",
+            invoice_id,
+        )
+        if (
+            known_state is not None
+            and known_state["account_id"] is not None
+            and known_state["account_id"] != account["id"]
+        ):
+            await self._incident(
+                conn,
+                "clawback_invoice_identity_conflict",
+                event=event,
+                dedupe_key=f"{account_id}:{invoice_id}",
+                invoice_id=invoice_id,
+                account_id=account["id"],
+                detail={"invoice_account_id": str(known_state["account_id"])},
+            )
+            return ProcessResult("ignored", "invoice belongs to a different account", account_id)
         await conn.execute(
             """insert into stripe_invoice_state
                    (invoice_id,account_id,amount_total,amount_refunded,fully_refunded,disputed)
@@ -878,27 +1449,112 @@ class EventProcessor:
             "select * from stripe_invoice_state where invoice_id=$1 for update", invoice_id
         )
         assert state is not None
+        if state["account_id"] is not None and state["account_id"] != account["id"]:
+            await self._incident(
+                conn,
+                "clawback_invoice_identity_conflict",
+                event=event,
+                dedupe_key=f"{account_id}:{invoice_id}",
+                invoice_id=invoice_id,
+                account_id=account["id"],
+                detail={"invoice_account_id": str(state["account_id"])},
+            )
+            return ProcessResult("ignored", "invoice belongs to a different account", account_id)
+        closed = bool(state["fully_refunded"] or state["disputed"])
+        if closed and state["closure_applied"]:
+            return ProcessResult("replayed", "invoice closure was already applied", account_id)
         grant = await conn.fetchrow(
-            """select id,entitlement_units from credit_ledger
+            """select id,account_id,entitlement_units,grant_epoch,reason from credit_ledger
                  where stripe_invoice_id=$1 and grant_slot is not null
                  order by id desc limit 1""",
             invoice_id,
         )
         if grant is None:
             return ProcessResult("ignored", "clawback stored before grant", account_id)
-        latest_invoice = await conn.fetchval(
-            """select stripe_invoice_id from credit_ledger
-                 where account_id=$1 and grant_slot is not null order by id desc limit 1""",
-            account["id"],
+        if grant["account_id"] != account["id"]:
+            await self._incident(
+                conn,
+                "clawback_grant_identity_conflict",
+                event=event,
+                dedupe_key=f"{account_id}:{invoice_id}",
+                invoice_id=invoice_id,
+                account_id=account["id"],
+                detail={"grant_account_id": str(grant["account_id"])},
+            )
+            return ProcessResult(
+                "ignored", "invoice grant belongs to a different account", account_id
+            )
+        allocation = await conn.fetchrow(
+            """select * from billing_funding_allocations
+                 where stripe_invoice_id=$1 for update""",
+            invoice_id,
         )
-        if latest_invoice != invoice_id and account["funding_invoice_id"] != invoice_id:
+        allocation_already_closed = False
+        if allocation is not None:
+            if allocation["account_id"] != account["id"]:
+                await self._incident(
+                    conn,
+                    "clawback_allocation_identity_conflict",
+                    event=event,
+                    dedupe_key=f"{account_id}:{invoice_id}",
+                    invoice_id=invoice_id,
+                    account_id=account["id"],
+                    detail={"allocation_account_id": str(allocation["account_id"])},
+                )
+                return ProcessResult(
+                    "ignored", "funding allocation belongs to a different account", account_id
+                )
+            allocation_already_closed = allocation["status"] in {"closed", "disputed"}
+            refunded_units = (
+                int(allocation["entitlement_delta"])
+                if closed
+                else _ceil_ratio(
+                    int(allocation["entitlement_delta"]),
+                    int(state["amount_refunded"]),
+                    int(state["amount_total"]),
+                )
+            )
+            allocation_status = (
+                "disputed"
+                if state["disputed"]
+                else (
+                    "closed"
+                    if state["fully_refunded"]
+                    else ("partially_refunded" if refunded_units else "active")
+                )
+            )
+            await conn.execute(
+                """update billing_funding_allocations set
+                       refunded_units=greatest(refunded_units,$2),status=$3,
+                       updated_at=now() where id=$1""",
+                allocation["id"],
+                refunded_units,
+                allocation_status,
+            )
+            # A second Event ID can carry the same cumulative full refund/dispute.
+            # The first closure and its epoch transition committed atomically, so
+            # replaying the clawback would incorrectly recreate any old-epoch debt
+            # in the account's new epoch. Keep the monotonic Invoice/allocation facts
+            # above, then stop before touching the current credit pool.
+            if closed and allocation_already_closed:
+                return ProcessResult("replayed", "clawback was already applied", account_id)
+        active_lineage = await self._invoice_in_active_lineage(
+            conn,
+            account["id"],
+            int(account["grant_epoch"]),
+            invoice_id,
+        )
+        if (
+            int(grant["grant_epoch"]) != int(account["grant_epoch"])
+            and account["funding_invoice_id"] != invoice_id
+            and not active_lineage
+        ):
             return ProcessResult(
                 "ignored",
-                "the refunded invoice no longer owns the active pool",
+                "the refunded invoice belongs to an older entitlement epoch",
                 account_id,
             )
         annual_funding = account["funding_invoice_id"] == invoice_id
-        closed = bool(state["fully_refunded"] or state["disputed"])
         if annual_funding and not closed:
             allowed = _annual_slots_allowed(
                 int(state["amount_total"]), int(state["amount_refunded"]), 0
@@ -947,6 +1603,90 @@ class EventProcessor:
                 reason="dispute_clawback" if dispute else "refund_clawback",
                 event_id=event["id"],
             )
+        downstream = 0
+        leaf_delta_revert = False
+        if allocation is not None:
+            if closed:
+                downstream = int(
+                    await conn.fetchval(
+                        """select count(*) from billing_funding_allocations
+                             where account_id=$1
+                               and source_invoice_id=$2 and stripe_invoice_id<>$2""",
+                        account["id"],
+                        invoice_id,
+                    )
+                    or 0
+                )
+                leaf_delta_revert = bool(
+                    downstream == 0
+                    and account["plan_key"] == allocation["target_plan_key"]
+                    and account["plan_interval"] == allocation["target_interval"]
+                    and int(account["grant_epoch"]) == int(allocation["grant_epoch"])
+                )
+                if leaf_delta_revert:
+                    new_epoch = int(account["grant_epoch"]) + 1
+                    current_balance = int(
+                        await conn.fetchval(
+                            "select credits_balance from billing_accounts where id=$1",
+                            account["id"],
+                        )
+                        or 0
+                    )
+                    await conn.execute(
+                        """update billing_accounts set plan_key=$2,plan_interval=$3,
+                               grant_epoch=$4,entitlement_revoked=false,updated_at=now()
+                             where id=$1""",
+                        account["id"],
+                        allocation["source_plan_key"],
+                        allocation["source_interval"],
+                        new_epoch,
+                    )
+                    await conn.execute(
+                        """update billing_funding_allocations set grant_epoch=$2,
+                               updated_at=now() where id=$1""",
+                        allocation["id"],
+                        new_epoch,
+                    )
+                    await conn.execute(
+                        """insert into credit_ledger(
+                               account_id,delta,balance_after,entitlement_units,reason,
+                               grant_epoch,stripe_event_id,stripe_invoice_id)
+                             values($1,0,$2,0,'upgrade_funding_reverted',$3,$4,$5)""",
+                        account["id"],
+                        current_balance,
+                        new_epoch,
+                        event["id"],
+                        invoice_id,
+                    )
+                    await conn.execute(
+                        """update billing_plan_changes set status='failed',
+                               last_error='settlement_funding_closed',updated_at=now()
+                             where id=$1""",
+                        allocation["plan_change_id"],
+                    )
+                    await self._incident(
+                        conn,
+                        "upgrade_funding_closed_reverted",
+                        event=event,
+                        dedupe_key=invoice_id,
+                        invoice_id=invoice_id,
+                        account_id=account["id"],
+                        detail={
+                            "reverted_to": allocation["source_plan_key"],
+                            "disputed": bool(state["disputed"]),
+                        },
+                    )
+        if closed and downstream == 0:
+            downstream = int(
+                await conn.fetchval(
+                    """select count(*) from billing_funding_allocations
+                         where account_id=$1
+                           and source_invoice_id=$2 and stripe_invoice_id<>$2""",
+                    account["id"],
+                    invoice_id,
+                )
+                or 0
+            )
         if account["funding_invoice_id"] == invoice_id:
             funded_allowed = (
                 int(account["annual_grants_issued"])
@@ -968,12 +1708,10 @@ class EventProcessor:
         annual_overgrant = bool(
             annual_funding
             and not closed
-            and _annual_slots_allowed(
-                int(state["amount_total"]), int(state["amount_refunded"]), 0
-            )
+            and _annual_slots_allowed(int(state["amount_total"]), int(state["amount_refunded"]), 0)
             < int(account["annual_grants_issued"])
         )
-        revoke_entitlement = closed or annual_overgrant
+        revoke_entitlement = (closed and not leaf_delta_revert) or annual_overgrant
         if revoke_entitlement and not account["entitlement_revoked"]:
             await conn.execute(
                 """update billing_accounts set grant_epoch=grant_epoch+1,
@@ -982,7 +1720,53 @@ class EventProcessor:
                      updated_at=now() where id=$1""",
                 account["id"],
             )
+            if downstream:
+                await self._incident(
+                    conn,
+                    "funding_lineage_closed",
+                    event=event,
+                    dedupe_key=f"{invoice_id}:{grant['grant_epoch']}",
+                    invoice_id=invoice_id,
+                    account_id=account["id"],
+                    detail={"downstream_allocations": downstream},
+                )
+        if closed:
+            await conn.execute(
+                """update stripe_invoice_state set closure_applied=true,updated_at=now()
+                     where invoice_id=$1""",
+                invoice_id,
+            )
         return ProcessResult("handled", f"removed {removed} credits", account_id)
+
+    @staticmethod
+    async def _invoice_in_active_lineage(
+        conn: asyncpg.Connection,
+        account_id: Any,
+        grant_epoch: int,
+        invoice_id: str,
+    ) -> bool:
+        return bool(
+            await conn.fetchval(
+                """with recursive funding_chain as (
+                       select stripe_invoice_id,source_invoice_id
+                         from billing_funding_allocations
+                        where account_id=$1 and grant_epoch=$2
+                       union
+                       select parent.stripe_invoice_id,parent.source_invoice_id
+                         from billing_funding_allocations parent
+                         join funding_chain child
+                           on parent.stripe_invoice_id=child.source_invoice_id
+                        where parent.account_id=$1
+                     )
+                     select exists(
+                       select 1 from funding_chain
+                        where stripe_invoice_id=$3 or source_invoice_id=$3
+                     )""",
+                account_id,
+                grant_epoch,
+                invoice_id,
+            )
+        )
 
     async def _payment_failed(
         self, conn: asyncpg.Connection, event: dict[str, Any]
@@ -994,14 +1778,17 @@ class EventProcessor:
         account_id = str(account["id"])
         subscription_id = _subscription_id(invoice)
         if invoice.get("billing_reason") == "subscription_update" and subscription_id:
+            invoice_id = _as_id(invoice.get("id"))
             pending = await conn.fetchrow(
                 """select * from billing_plan_changes
                      where account_id=$1 and stripe_subscription_id=$2
+                       and settlement_invoice_id=$3
                        and effective_mode='immediate'
-                       and status in ('previewed','applying','applied','requires_action')
+                       and status in ('applying','applied','requires_action')
                      order by created_at desc limit 1 for update""",
                 account["id"],
                 subscription_id,
+                invoice_id,
             )
             if pending is not None:
                 await conn.execute(
@@ -1023,6 +1810,32 @@ class EventProcessor:
                     "optional plan change payment failed; paid entitlement retained",
                     account_id,
                 )
+            unbound = await conn.fetchrow(
+                """select id from billing_plan_changes
+                     where account_id=$1 and stripe_subscription_id=$2
+                       and effective_mode='immediate'
+                       and status in ('applying','applied','requires_action')
+                     order by created_at desc limit 1 for update""",
+                account["id"],
+                subscription_id,
+            )
+            await self._incident(
+                conn,
+                "unbound_plan_change_payment_failed",
+                event=event,
+                dedupe_key=str(invoice_id or event["id"]),
+                invoice_id=invoice_id,
+                account_id=account["id"],
+                detail={
+                    "subscription": subscription_id,
+                    "pending_change_id": str(unbound["id"]) if unbound is not None else None,
+                },
+            )
+            return ProcessResult(
+                "ignored",
+                "subscription-update failure is not bound to the current plan change",
+                account_id,
+            )
         if not self._wins(account, event):
             return ProcessResult("ignored", "older or weaker than the applied state", account_id)
         await conn.execute(
@@ -1170,9 +1983,7 @@ class EventProcessor:
                 dedupe_key=f"{account_id}:{session_id}",
                 account_id=account["id"],
             )
-            return ProcessResult(
-                "ignored", "completed Checkout has no subscription", account_id
-            )
+            return ProcessResult("ignored", "completed Checkout has no subscription", account_id)
         if claim is None:
             if incoming_sub and incoming_sub == account["stripe_subscription_id"]:
                 return ProcessResult("replayed", "subscription is already bound", account_id)

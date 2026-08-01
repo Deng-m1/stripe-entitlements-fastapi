@@ -27,6 +27,8 @@ export function ChangePreviewDialog({
 }: ChangePreviewDialogProps) {
   const [acknowledged, setAcknowledged] = useState(false);
   const immediate = preview.timing === "immediate";
+  const proratedDelta =
+    preview.settlement_mode === "current_period_prorated_delta";
   const dialogRef = useRef<HTMLElement>(null);
   const busyRef = useRef(busy);
   const onCancelRef = useRef(onCancel);
@@ -98,9 +100,11 @@ export function ChangePreviewDialog({
         <h2 id="change-preview-title">
           {paymentUrl
             ? "Payment required — your current plan remains active"
-            : immediate
-            ? "This change requires immediate settlement"
-            : "This change starts at period end"}
+            : proratedDelta
+              ? "Pay the prorated difference for this period"
+              : immediate
+                ? "This change requires immediate settlement"
+                : "This change starts at period end"}
         </h2>
         <p className="dialog-summary" id="change-preview-description">
           {preview.current_plan_key}/{preview.current_interval} → {targetName}/
@@ -114,6 +118,20 @@ export function ChangePreviewDialog({
               The requested target is not active. Continue to Stripe to pay or
               authenticate the invoice. After payment, this app still waits for the
               webhook-projected account before showing the new entitlements.
+            </p>
+          </div>
+        ) : proratedDelta ? (
+          <div className="timing-panel timing-immediate">
+            <strong>
+              Prorated amount due: {" "}
+              {formatMoney(preview.amount_due_now, preview.currency)}
+            </strong>
+            <p>
+              Your current billing-period end stays unchanged. Stripe credits the
+              unused source tier and charges the target tier for the same remaining
+              time. After the paid Invoice is verified, the server adds exactly {" "}
+              {(preview.entitlement_credit_delta ?? 0).toLocaleString()} credits—the
+              catalog entitlement difference, not a credit amount inferred from cash.
             </p>
           </div>
         ) : immediate ? (
@@ -141,6 +159,12 @@ export function ChangePreviewDialog({
         )}
 
         <dl className="preview-facts">
+          {proratedDelta ? (
+            <div>
+              <dt>Unused-plan credit</dt>
+              <dd>{formatMoney(preview.credit_applied, preview.currency)}</dd>
+            </div>
+          ) : null}
           <div>
             <dt>Next invoice</dt>
             <dd>{formatMoney(preview.next_invoice_amount, preview.currency)}</dd>
@@ -160,7 +184,9 @@ export function ChangePreviewDialog({
             />
             <span>
               {immediate
-                ? "I understand that immediate settlement may charge me and still requires webhook confirmation."
+                ? proratedDelta
+                  ? "I understand that Stripe will charge the prorated difference and the upgrade still requires webhook confirmation."
+                  : "I understand that immediate settlement may charge me and still requires webhook confirmation."
                 : "I understand that the current plan remains active until period end."}
             </span>
           </label>

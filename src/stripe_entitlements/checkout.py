@@ -76,9 +76,10 @@ class CheckoutCoordinator:
             )
             if account is None:
                 raise KeyError("billing account not found")
-            if account["stripe_subscription_id"] is not None or account[
-                "subscription_status"
-            ] in {"active", "past_due"}:
+            if account["stripe_subscription_id"] is not None or account["subscription_status"] in {
+                "active",
+                "past_due",
+            }:
                 raise CheckoutActiveSubscriptionError(
                     "an existing subscription must use the plan-change API"
                 )
@@ -159,9 +160,7 @@ class CheckoutCoordinator:
                 reservation.account_id,
             )
         return bool(
-            row is not None
-            and row["stripe_subscription_id"]
-            and row["claim_token"] is None
+            row is not None and row["stripe_subscription_id"] and row["claim_token"] is None
         )
 
     async def create(
@@ -179,9 +178,7 @@ class CheckoutCoordinator:
         request_key: str | None = None,
         customer_email: str | None = None,
     ) -> tuple[str, str]:
-        reservation = await self.reserve(
-            account_id, plan_key, interval, request_key=request_key
-        )
+        reservation = await self.reserve(account_id, plan_key, interval, request_key=request_key)
         if reservation.session_id and reservation.session_url:
             return reservation.session_id, reservation.session_url
         try:

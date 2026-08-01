@@ -1,6 +1,6 @@
 export const SITE_NAME = "Stripe Entitlements for FastAPI";
 export const SITE_DESCRIPTION =
-  "Open-source Stripe subscription billing and credit entitlements reference for FastAPI, PostgreSQL, and Next.js.";
+  "Open-source Stripe subscription billing and entitlements for FastAPI, PostgreSQL, and Next.js with complete full-period and prorated upgrade policies.";
 export const REPOSITORY_URL =
   "https://github.com/FromCSUZhou/stripe-entitlements-fastapi";
 

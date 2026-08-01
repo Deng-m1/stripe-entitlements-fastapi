@@ -102,9 +102,12 @@ async def test_annual_plan_mismatch_fails_closed_with_incident(
     )
     assert result.outcome == "ignored"
     async with pool.acquire() as conn:
-        assert await conn.fetchval(
-            "select count(*) from billing_incidents where kind='annual_plan_mismatch'"
-        ) == 1
+        assert (
+            await conn.fetchval(
+                "select count(*) from billing_incidents where kind='annual_plan_mismatch'"
+            )
+            == 1
+        )
 
 
 async def test_partial_annual_refund_reduces_slots_but_keeps_full_allowed_grants(
@@ -163,6 +166,54 @@ async def test_full_annual_refund_stops_future_worker_grants(
         )
     assert account is not None
     assert tuple(account) == (0, 1, 1)
+
+
+async def test_full_annual_refund_business_replay_does_not_create_new_epoch_debt(
+    processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account()
+    await _annual_setup(processor, account_id, invoice_id="in_annual_closed_replay")
+    first = await processor.process(
+        refunded_charge(
+            invoice_id="in_annual_closed_replay",
+            amount=13_700,
+            amount_refunded=13_700,
+            refunded=True,
+            event_id="evt_annual_closed_a",
+        )
+    )
+    replay = await processor.process(
+        refunded_charge(
+            invoice_id="in_annual_closed_replay",
+            amount=13_700,
+            amount_refunded=13_700,
+            refunded=True,
+            event_id="evt_annual_closed_b",
+        )
+    )
+    assert first.outcome == "handled"
+    assert replay.outcome == "replayed"
+    async with pool.acquire() as conn:
+        account = await conn.fetchrow(
+            "select credits_balance,grant_epoch,entitlement_revoked "
+            "from billing_accounts where id=$1::uuid",
+            account_id,
+        )
+        debts = await conn.fetch(
+            """select grant_epoch,target_units,collected_units
+                 from billing_clawback_debts
+                where account_id=$1::uuid
+                  and stripe_invoice_id='in_annual_closed_replay'
+                order by grant_epoch""",
+            account_id,
+        )
+        closure_applied = await conn.fetchval(
+            "select closure_applied from stripe_invoice_state "
+            "where invoice_id='in_annual_closed_replay'"
+        )
+    assert account is not None and tuple(account) == (0, 2, True)
+    assert [tuple(row) for row in debts] == [(1, 300, 300)]
+    assert closure_applied is True
 
 
 @pytest.mark.parametrize("refund_percent", [25, 50, 75])
@@ -230,7 +281,7 @@ async def test_near_full_annual_refund_converges_before_or_after_paid(
         amount=13_700,
         amount_refunded=13_563,
     )
-    for payload in ([refund, paid] if refund_first else [paid, refund]):
+    for payload in [refund, paid] if refund_first else [paid, refund]:
         await processor.process(payload)
     async with pool.acquire() as conn:
         account = await conn.fetchrow(

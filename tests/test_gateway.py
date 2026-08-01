@@ -117,6 +117,54 @@ async def test_prepare_invoice_resolves_dahlia_price_reference(monkeypatch) -> N
     assert line["_resolved_lookup_key"] == "ent_starter_month"
 
 
+async def test_prepare_invoice_materializes_every_paginated_line(monkeypatch) -> None:
+    gateway = StripeGateway("sk_test_dummy", "whsec_test")
+    calls: list[str | None] = []
+
+    def list_lines(invoice_id, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(kwargs.get("starting_after"))
+        if len(calls) == 1:
+            return SimpleNamespace(
+                data=[
+                    StripeObject(
+                        id="il_source",
+                        amount=-950,
+                        quantity=1,
+                        proration=True,
+                        price={"id": "price_source", "lookup_key": "ent_starter_month"},
+                    )
+                ],
+                has_more=True,
+            )
+        return SimpleNamespace(
+            data=[
+                StripeObject(
+                    id="il_target",
+                    amount=2450,
+                    quantity=1,
+                    proration=True,
+                    price={"id": "price_target", "lookup_key": "ent_pro_month"},
+                )
+            ],
+            has_more=False,
+        )
+
+    monkeypatch.setattr("stripe_entitlements.stripe_gateway.stripe.Invoice.list_lines", list_lines)
+    payload = event(
+        "invoice.paid",
+        {
+            "id": "in_paginated",
+            "lines": {"data": [{"id": "il_embedded"}], "has_more": True},
+        },
+    )
+    prepared = await gateway.prepare_event(payload)
+    lines = prepared["data"]["object"]["lines"]
+    assert [line["id"] for line in lines["data"]] == ["il_source", "il_target"]
+    assert lines["has_more"] is False
+    assert lines["_all_lines_loaded"] is True
+    assert calls == [None, "il_source"]
+
+
 async def test_checkout_uses_pinned_version_and_server_built_success_query(
     monkeypatch,
 ) -> None:
@@ -139,9 +187,7 @@ async def test_checkout_uses_pinned_version_and_server_built_success_query(
         captured.update(kwargs)
         return SimpleNamespace(id="cs_test", url="https://checkout.test/session")
 
-    monkeypatch.setattr(
-        "stripe_entitlements.stripe_gateway.stripe.checkout.Session.create", create
-    )
+    monkeypatch.setattr("stripe_entitlements.stripe_gateway.stripe.checkout.Session.create", create)
     gateway = StripeGateway("sk_test_dummy", "whsec_test")
     await gateway.create_checkout_session(
         account_id="00000000-0000-0000-0000-000000000001",
@@ -198,9 +244,7 @@ async def test_checkout_rejects_catalog_price_drift_before_session_creation(
 
 
 async def test_runtime_portal_rejects_dashboard_policy_drift(monkeypatch) -> None:
-    gateway = StripeGateway(
-        "sk_test_dummy", "whsec_test", portal_configuration_id="bpc_test"
-    )
+    gateway = StripeGateway("sk_test_dummy", "whsec_test", portal_configuration_id="bpc_test")
     unsafe = StripeObject(
         active=True,
         livemode=False,
@@ -264,17 +308,28 @@ async def test_dahlia_item_period_and_immediate_preview_shape(monkeypatch) -> No
     assert context.current_period_end == datetime.fromtimestamp(1_802_592_000, tz=UTC)
     preview = StripeObject(
         amount_due=4900,
+        subtotal=4900,
+        total=4900,
         starting_balance=0,
         ending_balance=0,
+        pre_payment_credit_notes_amount=0,
+        post_payment_credit_notes_amount=0,
         currency="usd",
+        total_tax_amounts=[],
+        total_discount_amounts=[],
         lines={
+            "has_more": False,
             "data": [
                 {
+                    "id": "il_target",
                     "amount": 4900,
+                    "quantity": 1,
+                    "currency": "usd",
                     "proration": False,
                     "price": {"id": "price_pro_month"},
+                    "period": {"start": 1_801_000_000, "end": 1_803_592_000},
                 },
-            ]
+            ],
         },
     )
     captured_preview: dict[str, object] = {}
@@ -309,9 +364,7 @@ async def test_immediate_apply_resets_anchor_without_proration_date(monkeypatch)
             latest_invoice={"id": "in_full_target"},
         )
 
-    monkeypatch.setattr(
-        "stripe_entitlements.stripe_gateway.stripe.Subscription.modify", modify
-    )
+    monkeypatch.setattr("stripe_entitlements.stripe_gateway.stripe.Subscription.modify", modify)
     gateway = StripeGateway("sk_test_dummy", "whsec_test")
     context = PlanChangeContext(
         "sub_test",
@@ -329,13 +382,164 @@ async def test_immediate_apply_resets_anchor_without_proration_date(monkeypatch)
         context, idempotency_key="change:full-target"
     )
     assert result.pending_update is False
+    assert result.settlement_invoice_id == "in_full_target"
     assert captured["billing_cycle_anchor"] == "now"
     assert captured["proration_behavior"] == "none"
     assert "proration_date" not in captured
 
 
-async def test_schedule_is_two_step_preserves_phase_and_sets_target_duration(
+@pytest.mark.parametrize("drift", ["pagination", "line_tax", "credit_note"])
+async def test_full_period_preview_rejects_final_invoice_shape_drift(
+    monkeypatch, drift: str
+) -> None:
+    line = {
+        "id": "il_target",
+        "amount": 4900,
+        "quantity": 1,
+        "currency": "usd",
+        "proration": False,
+        "price": {"id": "price_pro_month"},
+        "period": {"start": 1_801_000_000, "end": 1_803_592_000},
+    }
+    preview = StripeObject(
+        amount_due=4900,
+        subtotal=4900,
+        total=4900,
+        starting_balance=0,
+        ending_balance=0,
+        pre_payment_credit_notes_amount=0,
+        post_payment_credit_notes_amount=0,
+        currency="usd",
+        total_tax_amounts=[],
+        total_discount_amounts=[],
+        lines={"has_more": False, "data": [line]},
+    )
+    if drift == "pagination":
+        preview.lines["has_more"] = True
+    elif drift == "line_tax":
+        line["tax_amounts"] = [{"amount": 1}]
+    else:
+        preview.pre_payment_credit_notes_amount = 1
+    monkeypatch.setattr(
+        "stripe_entitlements.stripe_gateway.stripe.Invoice.create_preview",
+        lambda **kwargs: preview,
+    )
+    context = PlanChangeContext(
+        "sub_test",
+        "si_test",
+        "price_starter_month",
+        "ent_starter_month",
+        "price_pro_month",
+        "month",
+        datetime.fromtimestamp(1_800_000_000, tz=UTC),
+        datetime.fromtimestamp(1_802_592_000, tz=UTC),
+        None,
+    )
+    estimate = await StripeGateway("sk_test_dummy", "whsec_test").preview_immediate_plan_change(
+        context
+    )
+    assert estimate.safe_invoice_shape is False
+
+
+async def test_prorated_delta_preview_and_apply_share_fixed_proration_date(
     monkeypatch,
+) -> None:
+    preview_capture: dict[str, object] = {}
+    apply_capture: dict[str, object] = {}
+    preview = StripeObject(
+        amount_due=1500,
+        subtotal=1500,
+        total=1500,
+        starting_balance=0,
+        ending_balance=0,
+        pre_payment_credit_notes_amount=0,
+        post_payment_credit_notes_amount=0,
+        currency="usd",
+        total_tax_amounts=[],
+        total_discount_amounts=[],
+        lines={
+            "has_more": False,
+            "data": [
+                {
+                    "id": "il_source",
+                    "amount": -950,
+                    "quantity": 1,
+                    "proration": True,
+                    "currency": "usd",
+                    "price": {"id": "price_starter_month"},
+                    "period": {"start": 1_801_000_000, "end": 1_802_592_000},
+                },
+                {
+                    "id": "il_target",
+                    "amount": 2450,
+                    "quantity": 1,
+                    "proration": True,
+                    "currency": "usd",
+                    "price": {"id": "price_pro_month"},
+                    "period": {"start": 1_801_000_000, "end": 1_802_592_000},
+                },
+            ],
+        },
+    )
+
+    def create_preview(**kwargs):  # type: ignore[no-untyped-def]
+        preview_capture.update(kwargs)
+        return preview
+
+    def modify(subscription_id, **kwargs):  # type: ignore[no-untyped-def]
+        apply_capture.update({"subscription_id": subscription_id, **kwargs})
+        return StripeObject(
+            id=subscription_id,
+            pending_update=None,
+            latest_invoice={"id": "in_delta"},
+        )
+
+    monkeypatch.setattr(
+        "stripe_entitlements.stripe_gateway.stripe.Invoice.create_preview",
+        create_preview,
+    )
+    monkeypatch.setattr("stripe_entitlements.stripe_gateway.stripe.Subscription.modify", modify)
+    gateway = StripeGateway("sk_test_dummy", "whsec_test")
+    context = PlanChangeContext(
+        "sub_test",
+        "si_test",
+        "price_starter_month",
+        "ent_starter_month",
+        "price_pro_month",
+        "month",
+        datetime.fromtimestamp(1_800_000_000, tz=UTC),
+        datetime.fromtimestamp(1_802_592_000, tz=UTC),
+        None,
+    )
+    estimate = await gateway.preview_immediate_plan_change(
+        context, policy="prorated_delta", proration_date=1_801_000_000
+    )
+    result = await gateway.apply_immediate_plan_change(
+        context,
+        idempotency_key="change:delta",
+        policy="prorated_delta",
+        proration_date=1_801_000_000,
+    )
+    assert estimate.safe_invoice_shape
+    assert (
+        estimate.source_proration_amount,
+        estimate.target_proration_amount,
+        estimate.amount_due,
+    ) == (950, 2450, 1500)
+    assert result.pending_update is False
+    assert result.settlement_invoice_id == "in_delta"
+    preview_details = preview_capture["subscription_details"]
+    assert preview_details["proration_behavior"] == "always_invoice"  # type: ignore[index]
+    assert preview_details["proration_date"] == 1_801_000_000  # type: ignore[index]
+    assert "billing_cycle_anchor" not in preview_details  # type: ignore[operator]
+    assert apply_capture["proration_behavior"] == "always_invoice"
+    assert apply_capture["proration_date"] == 1_801_000_000
+    assert "billing_cycle_anchor" not in apply_capture
+
+
+@pytest.mark.parametrize("existing_schedule", [None, "sub_sched_test"])
+async def test_schedule_is_two_step_preserves_phase_and_recovers_create_only_state(
+    monkeypatch, existing_schedule: str | None
 ) -> None:
     captured: dict[str, dict[str, object]] = {}
     schedule = StripeObject(
@@ -359,11 +563,26 @@ async def test_schedule_is_two_step_preserves_phase_and_sets_target_duration(
         captured["modify"] = {"schedule_id": schedule_id, **kwargs}
         return SimpleNamespace(id=schedule_id)
 
+    def retrieve(schedule_id, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        configured = captured["modify"]
+        return StripeObject(
+            id=schedule_id,
+            subscription="sub_test",
+            end_behavior=configured["end_behavior"],
+            metadata=configured["metadata"],
+            phases=configured["phases"],
+        )
+
     monkeypatch.setattr(
         "stripe_entitlements.stripe_gateway.stripe.SubscriptionSchedule.create", create
     )
     monkeypatch.setattr(
         "stripe_entitlements.stripe_gateway.stripe.SubscriptionSchedule.modify", modify
+    )
+    monkeypatch.setattr(
+        "stripe_entitlements.stripe_gateway.stripe.SubscriptionSchedule.retrieve",
+        retrieve,
     )
     gateway = StripeGateway("sk_test_dummy", "whsec_test")
     context = PlanChangeContext(
@@ -375,7 +594,7 @@ async def test_schedule_is_two_step_preserves_phase_and_sets_target_duration(
         "month",
         datetime.fromtimestamp(1_800_000_000, tz=UTC),
         datetime.fromtimestamp(1_802_592_000, tz=UTC),
-        None,
+        existing_schedule,
     )
     result = await gateway.schedule_plan_change(context, idempotency_key="change:1")
     assert result.remote_id == "sub_sched_test"

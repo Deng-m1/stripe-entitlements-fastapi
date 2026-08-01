@@ -132,7 +132,10 @@ def create_app(
         )
         app.state.checkout = CheckoutCoordinator(database.require_pool())
         app.state.plan_changes = PlanChangeCoordinator(
-            database.require_pool(), catalog, gateway
+            database.require_pool(),
+            catalog,
+            gateway,
+            transition_policy=settings.billing_transition_policy,
         )
         yield
         await database.close()
@@ -195,9 +198,7 @@ def create_app(
         values.extend(
             {
                 "key": key,
-                "label": _LIMIT_PRESENTATION.get(
-                    key, (key.replace("_", " ").title(), None)
-                )[0],
+                "label": _LIMIT_PRESENTATION.get(key, (key.replace("_", " ").title(), None))[0],
                 "value": value,
                 "unit": _LIMIT_PRESENTATION.get(key, ("", None))[1],
             }
@@ -219,8 +220,11 @@ def create_app(
                 "effective_at": effective.isoformat(),
                 "status": pending["status"],
                 "payment_url": pending["recovery_url"],
+                "transition_policy": pending["transition_policy"],
             }
         return {
+            "account_id": str(account["id"]),
+            "transition_policy": settings.billing_transition_policy,
             "plan_key": account["plan_key"],
             "plan_interval": account["plan_interval"],
             "subscription_status": account["subscription_status"],
@@ -230,9 +234,7 @@ def create_app(
                 else None
             ),
             "observed_period_end": (
-                account["current_period_end"].isoformat()
-                if account["current_period_end"]
-                else None
+                account["current_period_end"].isoformat() if account["current_period_end"] else None
             ),
             "credits": {
                 "balance": int(account["credits_balance"]),
@@ -273,16 +275,14 @@ def create_app(
         if value.rstrip("/") != expected.rstrip("/"):
             raise HTTPException(400, f"{field} must match the server allowlisted URL")
 
-    def require_checkout_success_url(
-        value: str, *, plan_key: str, interval: str
-    ) -> None:
+    def require_checkout_success_url(value: str, *, plan_key: str, interval: str) -> None:
         supplied = urlsplit(value)
         expected = urlsplit(settings.checkout_success_url)
-        if (
-            (supplied.scheme, supplied.netloc, supplied.path)
-            != (expected.scheme, expected.netloc, expected.path)
-            or supplied.fragment
-        ):
+        if (supplied.scheme, supplied.netloc, supplied.path) != (
+            expected.scheme,
+            expected.netloc,
+            expected.path,
+        ) or supplied.fragment:
             raise HTTPException(400, "success_url must match the server allowlisted URL")
         query = dict(parse_qsl(supplied.query, keep_blank_values=True))
         if query not in (
@@ -309,6 +309,7 @@ def create_app(
             "ok": True,
             "database": True,
             "stripe_mode": ("test" if gateway_test_mode else "live"),
+            "transition_policy": settings.billing_transition_policy,
         }
 
     @app.get("/api/catalog")
@@ -316,6 +317,7 @@ def create_app(
     async def billing_catalog(identity: Identity) -> dict[str, object]:
         del identity
         return {
+            "transition_policy": settings.billing_transition_policy,
             "plans": [
                 {
                     "key": plan.key,
@@ -337,7 +339,7 @@ def create_app(
                     "entitlements": entitlement_rows(plan.key),
                 }
                 for plan in catalog.ordered()
-            ]
+            ],
         }
 
     @app.get("/api/account")
@@ -356,9 +358,7 @@ def create_app(
         ),
     ) -> dict[str, str]:
         if stripe_mode_requirement == "test" and not gateway_test_mode:
-            raise HTTPException(
-                409, "billing backend is not in the required Stripe test mode"
-            )
+            raise HTTPException(409, "billing backend is not in the required Stripe test mode")
         account = await database.account_for_external_ref(identity.external_ref)
         request_key = require_idempotency(idempotency_key)
         require_checkout_success_url(
@@ -376,9 +376,7 @@ def create_app(
                 interval=body.interval,
                 lookup_key=catalog.lookup_key(plan.key, body.interval),
                 expected_currency=plan.currency,
-                expected_unit_amount=(
-                    plan.month_usd if body.interval == "month" else plan.year_usd
-                )
+                expected_unit_amount=(plan.month_usd if body.interval == "month" else plan.year_usd)
                 * 100,
                 expected_interval=body.interval,
                 request_key=request_key,
@@ -440,17 +438,30 @@ def create_app(
             "target_plan_key": result.decision.target_plan,
             "target_interval": result.decision.target_interval,
             "timing": result.decision.timing,
+            "transition_policy": result.transition_policy,
+            "settlement_mode": (
+                "current_period_prorated_delta"
+                if result.decision.timing == "immediate"
+                and result.transition_policy == "prorated_delta"
+                else (
+                    "new_period_full_price"
+                    if result.decision.timing == "immediate"
+                    else "period_end"
+                )
+            ),
             "effective_at": effective.isoformat(),
             "currency": result.estimate_currency or target.currency,
             "amount_due_now": (
-                result.estimated_amount_due or 0
-                if result.decision.timing == "immediate"
-                else 0
+                result.estimated_amount_due or 0 if result.decision.timing == "immediate" else 0
             ),
             "credit_applied": (
-                result.estimated_credit_applied or 0
+                result.estimated_credit_applied or 0 if result.decision.timing == "immediate" else 0
+            ),
+            "entitlement_credit_delta": (
+                result.entitlement_credit_delta
                 if result.decision.timing == "immediate"
-                else 0
+                and result.transition_policy == "prorated_delta"
+                else None
             ),
             "next_invoice_amount": (
                 target.month_usd if result.decision.target_interval == "month" else target.year_usd
@@ -470,7 +481,7 @@ def create_app(
             )
         except Exception as exc:
             raise plan_change_error(exc) from exc
-        if result.status == "previewed":
+        if result.status in {"previewed", "applying"}:
             raise HTTPException(409, "this preview is currently being confirmed")
         response_status = "confirmed"
         if result.status == "requires_action":
@@ -478,6 +489,7 @@ def create_app(
         payload: dict[str, Any] = {
             "status": response_status,
             "timing": result.decision.timing,
+            "transition_policy": result.transition_policy,
             "target_plan_key": result.decision.target_plan,
             "target_interval": result.decision.target_interval,
         }

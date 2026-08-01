@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import HomePage from "@/app/page";
+import HomePage, { metadata as homeMetadata } from "@/app/page";
 import manifest from "@/app/manifest";
 import robots from "@/app/robots";
 import sitemap from "@/app/sitemap";
@@ -8,6 +8,13 @@ import sitemap from "@/app/sitemap";
 describe("public SEO surface", () => {
   it("renders searchable project, plan, savings, and scope content", () => {
     const { container } = render(<HomePage />);
+
+    expect(homeMetadata.title).toBe(
+      "Stripe Billing & Entitlements Template for FastAPI",
+    );
+    expect(homeMetadata.description).toMatch(
+      /FastAPI, PostgreSQL entitlements, Next\.js.*full-period or prorated/i,
+    );
 
     expect(
       screen.getByRole("heading", {
@@ -23,6 +30,16 @@ describe("public SEO surface", () => {
     expect(screen.getByRole("rowheader", { name: "Pro" })).toBeInTheDocument();
     expect(screen.getByRole("rowheader", { name: "Ultra" })).toBeInTheDocument();
     expect(screen.getByText(/does not claim coupons/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /Full-price or prorated upgrades/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Both define a complete 6 × 6 monthly\/yearly transition matrix/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/full_period_reset and prorated_delta/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Does it support Stripe prorated subscription upgrades/i),
+    ).toBeInTheDocument();
 
     const script = container.querySelector('script[type="application/ld+json"]');
     expect(script).not.toBeNull();
