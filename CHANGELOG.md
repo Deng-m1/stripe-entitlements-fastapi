@@ -2,12 +2,24 @@
 
 ## Unreleased
 
+- Add complete `full_period_reset` and `prorated_delta` templates, each with an explicit
+  6 × 6 monthly/yearly transition matrix, reference API/UI behavior, and strict paid-
+  Invoice funding validation.
+- Add migration 003 funding allocations, clawback debt, terminal-closure idempotency,
+  exact settlement-Invoice binding, crash-safe applying/Schedule recovery, and bounded
+  reconciliation rotation.
+- Harden real-browser Checkout navigation, action-target scrolling, upgrade SCA,
+  process-secret isolation, payment-failure incident convergence, exact Event identity
+  verification, and strict run-owned cleanup.
 - Add a server-rendered open-source project landing page, searchable reference plan
   table, visible FAQ, and matching SoftwareApplication/FAQPage JSON-LD.
 - Add fail-closed canonical URL and indexing configuration, route-specific noindex,
   robots, sitemap, manifest, generated Open Graph/Twitter cards, and an SEO runbook.
 - Centralize the frontend reference catalog so initial pricing HTML is indexable before
-  authenticated account hydration; verify 168 local/backend and 59 frontend tests.
+  authenticated account hydration.
+- Verify the 2026-08-02 hardened tree with 270 local PostgreSQL tests, 9 real Stripe
+  test-mode cases, 62 frontend tests, both real-browser policy gates, production build,
+  production-dependency audit, strict cleanup, and zero run-owned Stripe inventory.
 
 ## 0.1.0 - 2026-07-31
 

@@ -49,13 +49,13 @@ See [BROWSER_E2E.md](BROWSER_E2E.md) for prerequisites, failure artifacts and th
 browser assertions. A collected, skipped or partially completed Playwright test is not
 evidence.
 
-Current evidence boundary: the two policy runs have not been repeated after the latest
-identity-binding, upgrade-SCA, and secret-isolation hardening. Earlier pre-hardening
-runs on 2026-08-01 passed their decline barriers, 3DS Checkout, UI upgrades, and strict
-cleanup; each happened to cross-check five account-related Events, observed Dahlia
-endpoint payloads and a separate Clover Event API view, and reached the expected
-projection. That is historical evidence, not a current-tree pass, and no live-
-production Event is included.
+Current evidence: both policy runs passed after the latest identity-binding,
+upgrade-SCA, incident-resolution, navigation-stability, and secret-isolation hardening
+on 2026-08-02. Each passed its decline barrier, Checkout 3DS, UI upgrade SCA, signed
+Dahlia delivery, independent Clover Event API comparison, Pro/Monthly/1,000 projection,
+three-essential-Event binding, zero-unrelated-Event check, unresolved-incident check,
+and strict cleanup. Each happened to cross-check seven account-related Events, but that
+incidental count is not an invariant. No live-production Event is included.
 
 ## Existing staging endpoint
 

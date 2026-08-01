@@ -152,8 +152,8 @@ to send only this set.
 the endpoint's snapshot `api_version`; `STRIPE_WEBHOOK_API_VERSION` validates that value.
 Pinning one does not pin the other.
 
-In pre-hardening test evidence, Event API retrieval used `2025-12-15.clover` while
-outbound request code targeted `2026-06-24.dahlia`; an isolated signed endpoint separately
-delivered Dahlia. The current network gates have not repeated that observation. A
+In the current 2026-08-02 browser evidence, Event API retrieval used
+`2025-12-15.clover` while outbound request code targeted `2026-06-24.dahlia`; both
+isolated signed endpoints separately delivered Dahlia. A
 version/livemode mismatch creates a durable incident and does not mutate entitlement
 state.

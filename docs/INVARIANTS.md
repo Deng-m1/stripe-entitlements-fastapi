@@ -123,7 +123,10 @@ has already failed the intent, confirm returns conflict rather than reporting a
 synchronous success. A subsequent `invoice.paid` or `invoice.payment_failed` may
 complete or move that intent only when the exact Invoice ID matches. An unbound or older
 failure creates an incident but cannot mark the new intent `requires_action` or freeze
-the source entitlement.
+the source entitlement. Exact coordinator binding resolves only the matching unbound-
+failure incident. A matching paid Invoice resolves its bound/unbound payment-failure
+incidents in the same transaction as entitlement completion; incidents for another
+Invoice or account remain open.
 
 ## 12. Optional upgrade failure preserves paid entitlement
 

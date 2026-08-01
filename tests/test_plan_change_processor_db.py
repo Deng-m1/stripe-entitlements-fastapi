@@ -1070,6 +1070,48 @@ async def test_optional_upgrade_payment_failure_keeps_old_paid_entitlement(
     assert status == "requires_action"
 
 
+async def test_paid_settlement_resolves_its_payment_failure_incident(
+    processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account()
+    await _initial_paid(processor, account_id)
+    await _insert_change(pool, account_id)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "update billing_plan_changes set settlement_invoice_id='in_recovered_upgrade'"
+        )
+    failed = payment_failed(account_id, event_id="evt_recovered_upgrade_failed")
+    failed["data"]["object"].update(
+        {"id": "in_recovered_upgrade", "billing_reason": "subscription_update"}
+    )
+    assert (await processor.process(failed)).outcome == "ignored"
+
+    paid = paid_invoice(
+        account_id,
+        invoice_id="in_recovered_upgrade",
+        plan="pro",
+        interval="month",
+        billing_reason="subscription_update",
+        period_start=1_801_000_000,
+        period_end=1_803_592_000,
+        created=301,
+        event_id="evt_recovered_upgrade_paid",
+    )
+    assert (await processor.process(paid)).outcome == "handled"
+    async with pool.acquire() as conn:
+        account = await conn.fetchrow(
+            "select plan_key,credits_balance from billing_accounts where id=$1::uuid",
+            account_id,
+        )
+        incident = await conn.fetchrow(
+            """select resolved_at from billing_incidents
+                 where kind='plan_change_payment_failed'
+                   and invoice_id='in_recovered_upgrade'"""
+        )
+    assert account is not None and tuple(account) == ("pro", 1000)
+    assert incident is not None and incident["resolved_at"] is not None
+
+
 async def test_delayed_old_payment_failure_cannot_mutate_new_plan_change(
     processor: EventProcessor, pool: asyncpg.Pool, make_account
 ) -> None:

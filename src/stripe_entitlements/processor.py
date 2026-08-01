@@ -836,6 +836,14 @@ class EventProcessor:
             )
             if bound is None:
                 raise RuntimeError("plan-change settlement Invoice binding changed")
+            await conn.execute(
+                """update billing_incidents set resolved_at=now(),last_seen_at=now()
+                     where account_id=$1 and invoice_id=$2 and resolved_at is null
+                       and kind in ('plan_change_payment_failed',
+                                    'unbound_plan_change_payment_failed')""",
+                account["id"],
+                invoice_id,
+            )
         return ProcessResult("handled", account_id=account_id)
 
     async def _invoice_paid_prorated_delta(
@@ -1117,6 +1125,14 @@ class EventProcessor:
                    settlement_invoice_id=$2,completed_at=now(),lease_token=null,
                    lease_expires_at=null,updated_at=now() where id=$1""",
             transition["id"],
+            invoice_id,
+        )
+        await conn.execute(
+            """update billing_incidents set resolved_at=now(),last_seen_at=now()
+                 where account_id=$1 and invoice_id=$2 and resolved_at is null
+                   and kind in ('plan_change_payment_failed',
+                                'unbound_plan_change_payment_failed')""",
+            account["id"],
             invoice_id,
         )
         return ProcessResult("handled", account_id=account_id)

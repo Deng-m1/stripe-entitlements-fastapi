@@ -57,6 +57,12 @@ reconciliation failures. Inspect `detail` and the
 correlated Stripe Event only in a restricted environment. After a verified repair or
 replay, set `resolved_at=now()`. Never delete unresolved rows to silence an alert.
 
+`unbound_plan_change_payment_failed` is resolved automatically only when the coordinator
+later binds that exact Invoice to the same account intent. `plan_change_payment_failed`
+and its unbound counterpart are resolved automatically when that exact Invoice becomes
+paid and completes the intent. A different or delayed old Invoice never clears them;
+investigate any row that remains after a successful browser projection.
+
 ## Plan-change operations
 
 Monitor pending rows and expired leases:
@@ -136,9 +142,9 @@ Track separately:
 - required `STRIPE_WEBHOOK_API_VERSION` for the signed endpoint payload's top-level
   Event `api_version`; there is intentionally no outbound-request-version default.
 
-The current request code targets `2026-06-24.dahlia`. Historical pre-hardening evidence
-observed a Clover Event API retrieval view and a separately pinned endpoint's real signed
-Dahlia payload; the current hardened browser gate has not repeated that observation.
+The current request code targets `2026-06-24.dahlia`. Both hardened browser gates on
+2026-08-02 observed a Clover Event API retrieval view and their separately pinned
+endpoints' real signed Dahlia payloads.
 Neither substitutes for inspecting the deployed endpoint contract and its signed
 delivery. A mismatch creates a durable incident and does not apply entitlements.
 

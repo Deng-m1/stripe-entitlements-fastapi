@@ -4,14 +4,14 @@ The project separates deterministic local/PostgreSQL tests, opt-in automated Str
 test-mode tests, real-browser signed-delivery tests, manual observations, and live
 production verification. Passing one layer must not be described as passing another.
 
-Current hardened-tree evidence recorded on 2026-08-01:
+Current hardened-tree evidence recorded on 2026-08-02:
 
 | Layer | Current result | Boundary |
 | --- | --- | --- |
-| Local/backend | 269 passed from 278 collected; 9 `real_stripe` cases deselected | Real PostgreSQL, mocked Stripe responses |
+| Local/backend | 270 passed from 279 collected; 9 `real_stripe` cases deselected | Real PostgreSQL, mocked Stripe responses |
 | Frontend | 62 passed; lint, typecheck, production build, and production-dependency audit passed | No Stripe network |
-| Real Stripe suite | 9 cases collected; **not executed** because test credentials were unavailable | Collection is not execution evidence |
-| Browser policy gates | **not rerun** after the current hardening | Both policies remain release gates |
+| Real Stripe suite | 9/9 passed with strict cleanup and zero run-owned inventory | Direct test-mode API/Event polling; not signed delivery |
+| Browser policy gates | 2/2 passed: `full_period_reset` and `prorated_delta` | Real Checkout/3DS/SCA/signed delivery in test mode |
 | Live production payload | **not run** | Test mode never substitutes for live mode |
 
 The earlier 2026-08-01 pre-hardening baseline—239 local/backend, 7 real Stripe,
@@ -50,6 +50,8 @@ Coverage includes:
 - paid-Invoice authorization of plan changes and rejection without durable intent;
 - exact settlement-Invoice binding for paid/payment-failed Events, including delayed
   old failures that create an incident without changing the new intent or source access;
+- exact-ID incident resolution on coordinator binding and later paid settlement, without
+  clearing delayed failures for another Invoice or account;
 - paid-webhook-before-coordinator-finish races, including atomic same-ID binding,
   blocked-paid failure, and confirm conflict instead of false synchronous success;
 - full-period reset and prorated-delta preview/apply parameter contracts;
@@ -131,12 +133,16 @@ artifact handling, and evidence boundaries.
 Endpoint metadata, signed transport, database projection and live-production evidence
 requirements are separated in [the webhook verification runbook](WEBHOOK_VERIFICATION.md).
 
-Historical note: the pre-hardening 2026-08-01 full-period and prorated-delta runs each
-completed in about 1.2 minutes and happened to store five account-related signed Events.
-They projected Starter/Monthly/300 and Pro/Monthly/1,000, observed Dahlia endpoint
-payloads versus the independent Clover Event API view, and cleaned up their endpoints.
-Those two runs predate the current account/Invoice/Event binding, SCA, and secret-
-isolation hardening and therefore are not current-tree browser evidence.
+Current evidence: the 2026-08-02 full-period and prorated-delta runs completed in about
+1.6 and 1.7 minutes. Each projected Starter/Monthly/300 and Pro/Monthly/1,000, bound
+exactly three essential signed Events, found zero unrelated Events, verified a Dahlia
+endpoint payload versus the independent Clover Event API view, had no unresolved
+identity-related incident, and completed strict cleanup. Each happened to observe seven
+account-related Events; seven is incidental and is not a fixed assertion.
+
+Historical note: the pre-hardening 2026-08-01 policy runs each completed in about 1.2
+minutes and happened to store five account-related signed Events. Those older runs are
+retained only as regression history.
 
 ## Automated real Stripe suite
 
@@ -144,7 +150,7 @@ Tests marked `real_stripe` make network calls only when `STRIPE_SECRET_KEY` star
 `sk_test_`. Live keys fail before a network call. Objects are uniquely marked and cleanup
 targets only objects created by that run.
 
-The current nine-case automated suite is designed to assert:
+The current nine-case automated suite passed on 2026-08-02 and asserts:
 
 - creation of isolated real test-mode Products, monthly/yearly Prices, Customers and
   Subscriptions;
@@ -177,8 +183,9 @@ The current nine-case automated suite is designed to assert:
   active Prices/Products, Test Clocks, and unfinished Subscription Schedules;
 - a test failure if cleanup, inventory, or zero-inventory verification fails.
 
-These assertions have not been executed against Stripe after the current hardening.
-The earlier seven-case run is historical evidence only.
+All nine assertions passed against Stripe test mode after the current hardening. The
+earlier seven-case run is historical evidence only; future releases must rerun the
+current suite rather than inheriting either result.
 
 The plan-change and Test Clock tests use direct Stripe test-mode requests plus Event
 polling, followed by the real PostgreSQL processor. They do **not** prove signed webhook

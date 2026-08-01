@@ -176,10 +176,10 @@ directory; failure, interruption, skip, inventory uncertainty, or residual objec
 them and print the recovery path. The file contains no Stripe key, signing secret,
 database URL, client secret, hosted recovery URL, or card data.
 
-All active API requests are pinned to Dahlia. Historical Event API retrievals retained
-an independently observed Clover snapshot; the current hardened network gate has not
-repeated that observation. The processor is always configured from the actual Event
-contract rather than pretending the request pin rewrites it.
+All active API requests are pinned to Dahlia. The 2026-08-02 hardened browser gates
+observed independently retrieved Clover Event API views while their pinned endpoints
+delivered signed Dahlia payloads. The processor is always configured from the actual
+Event contract rather than pretending the request pin rewrites it.
 
 A successful complete run proves Stripe Test Clock advancement, annual worker behavior,
 renewal Event shape and PostgreSQL projection. It does not prove signed webhook delivery, arbitrary delivery
@@ -192,9 +192,9 @@ The current nine-case real suite contains assertions for both a full-price/no-pr
 monthly upgrade and a prorated-delta monthly upgrade through paid Event projection. The
 delta case performs a real full refund and checks cross-Invoice allocation/reversion;
 other cases cover an annual-origin two-phase Schedule and repeatable authentication-
-required/customer-charge-failure pending updates. Those cases were collected but not
-executed after the current hardening because test credentials were unavailable. The
-earlier seven-case network run is historical evidence only. The remaining 2026-07-31
+required/customer-charge-failure pending updates. All nine cases passed after the
+current hardening on 2026-08-02, including strict cleanup and zero run-owned inventory.
+The earlier seven-case network run is historical evidence only. The remaining 2026-07-31
 manual evidence set contains:
 
 - `PY → UM` invoice preview at negative $204, which remains period-end;

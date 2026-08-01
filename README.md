@@ -201,10 +201,10 @@ are documented in [web/README.md](web/README.md).
   equal that actual Event value and is a required startup setting; it deliberately
   has no fallback to `STRIPE_API_VERSION`.
 
-The request version does not rewrite webhook payloads. In the historical pre-hardening
-test run, Event API retrievals reported `2025-12-15.clover`; an isolated endpoint
+The request version does not rewrite webhook payloads. In the current 2026-08-02
+browser gates, Event API retrievals reported `2025-12-15.clover`; each isolated endpoint
 pinned to Dahlia delivered signed `2026-06-24.dahlia` payloads for the same browser
-lifecycle. The current browser gates have not repeated that observation. A mismatch is
+lifecycle. A mismatch is
 recorded as `webhook_contract_mismatch` and ignored fail-closed. This repository does
 not infer request, Event API view, or endpoint payload versions from one another. See
 [Testing](docs/TESTING.md),
@@ -265,15 +265,17 @@ entitlement lifecycle test.
 Evidence is split by execution layer; collecting a test or retaining an older run does
 not prove the current tree against Stripe's network.
 
-Current hardened-tree evidence recorded on 2026-08-01:
+Current hardened-tree evidence recorded on 2026-08-02:
 
-- 269 local/backend tests passed against disposable PostgreSQL 17; the full collection
-  contained 278 cases and 9 `real_stripe` cases were deselected;
+- 270 local/backend tests passed against disposable PostgreSQL 17; the full collection
+  contained 279 cases and 9 `real_stripe` cases were deselected;
 - 62 frontend tests passed, and lint, typecheck, production build, and
   production-dependency audit passed;
-- the 9 real Stripe cases were collected successfully but were **not executed** because
-  test credentials were not available in this environment;
-- the two real-browser policy gates were **not rerun** after the current hardening;
+- all 9 real Stripe cases passed against test mode, including strict cleanup and
+  zero run-owned inventory checks;
+- both real-browser policy gates passed against isolated accounts, databases, and
+  temporary Webhook Endpoints, including decline, Checkout 3DS, upgrade SCA, signed
+  webhook projection, exact three-essential-Event binding, and strict cleanup;
 - no live-production webhook payload verification is claimed.
 
 Historical pre-hardening evidence from earlier on 2026-08-01 was 239 local/backend
@@ -331,8 +333,8 @@ designed to verify:
   run-marked inventory error;
 - direct Event polling and PostgreSQL projection for those networked API cases.
 
-That list describes executable assertions, not a current pass claim. Run all nine with
-an isolated test account and record the result before release.
+All nine assertions passed on the current tree on 2026-08-02. Future releases must rerun
+them with an isolated test account rather than treating this result as permanent proof.
 
 The Test Clock and plan-change cases do not prove signed endpoint delivery. The
 separate opt-in browser runner creates a temporary test endpoint and exercises a
@@ -346,8 +348,11 @@ The current browser verifier binds its final result to one account, Checkout Ses
 initial Invoice, settlement Invoice, and their three essential signed Events. It also
 requires no unresolved incident for that identity and verifies one 700-credit delta
 allocation or no allocation according to policy. The older five-Event observation is
-not a fixed assertion. This remains a test-mode gate; it has not been rerun on the
-current hardened tree and no live-production payload is claimed.
+not a fixed assertion. Both policies passed this gate on the current hardened tree on
+2026-08-02; each run happened to observe seven account-related Events, zero unrelated
+Events, a Dahlia signed endpoint payload, and an independent Clover Event API view.
+The incidental count of seven is not an invariant, and no live-production payload is
+claimed.
 
 Manual test-mode observations from 2026-07-31 additionally covered:
 

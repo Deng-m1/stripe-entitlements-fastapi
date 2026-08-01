@@ -73,6 +73,18 @@ function frontendUrl(baseURL: string, path: string): string {
   return new URL(path, baseURL).toString();
 }
 
+async function clickAfterUserScroll(
+  locator: Locator,
+  options: { noWaitAfter?: boolean } = {},
+): Promise<void> {
+  await expect(locator).toBeVisible();
+  await expect(locator).toBeEnabled();
+  await locator.evaluate((element) => {
+    element.scrollIntoView({ block: "center", inline: "center" });
+  });
+  await locator.click(options);
+}
+
 async function verifyTestBackend(
   request: APIRequestContext,
   backendURL: string,
@@ -201,15 +213,29 @@ async function openPricingThroughExpectedBackend(
 }
 
 async function openHostedCheckout(page: Page, checkoutUrl: string): Promise<void> {
+  const expectedSession = checkoutSessionId(checkoutUrl);
+  if (!expectedSession) {
+    throw new Error("The captured Checkout redirect has no test Session identity.");
+  }
   let lastError: unknown;
+  try {
+    await page.waitForURL(
+      (url) => checkoutSessionId(url.toString()) === expectedSession,
+      { timeout: 30_000, waitUntil: "commit" },
+    );
+    return;
+  } catch (error) {
+    lastError = error;
+  }
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      await page.goto(checkoutUrl, { waitUntil: "domcontentloaded" });
-      return;
+      await page.goto(checkoutUrl, { timeout: 30_000, waitUntil: "commit" });
+      if (checkoutSessionId(page.url()) === expectedSession) return;
     } catch (error) {
       lastError = error;
+      if (checkoutSessionId(page.url()) === expectedSession) return;
       if (!/ERR_NETWORK_CHANGED|ERR_INTERNET_DISCONNECTED/.test(String(error))) {
-        throw error;
+        if (attempt === 3) throw error;
       }
       await page.waitForTimeout(attempt * 500);
     }
@@ -243,16 +269,18 @@ async function prepareCheckoutCapture(page: Page, backendURL: string): Promise<{
         },
       });
       const body = await response.text();
+      let capturedRedirect: CheckoutRedirect | undefined;
       if (!response.ok()) {
         captureError = new Error(
           `POST /api/checkout returned HTTP ${response.status()}.`,
         );
       } else {
-        redirect = JSON.parse(body) as CheckoutRedirect;
+        capturedRedirect = JSON.parse(body) as CheckoutRedirect;
       }
       // Capture the body before the application calls location.assign(). Chromium
       // may otherwise release Network.getResponseBody during an external navigation.
       await route.fulfill({ response, body });
+      redirect = capturedRedirect;
     } catch (error) {
       captureError = error;
       await route.abort("failed").catch(() => undefined);
@@ -595,13 +623,21 @@ function assertTestModeCheckout(urlValue: string): void {
     checkout.hostname === "stripe.com" || checkout.hostname.endsWith(".stripe.com");
   expect(checkout.protocol).toBe("https:");
   expect(stripeHost).toBe(true);
-  const sessionPathSegment = checkout.pathname
-    .split("/")
-    .find((segment) => segment.startsWith("cs_"));
+  const sessionPathSegment = checkoutSessionId(urlValue);
   if (!sessionPathSegment?.startsWith("cs_test_")) {
     throw new Error(
       "Refusing to enter card data: the hosted Checkout URL is not a cs_test_ Session.",
     );
+  }
+}
+
+function checkoutSessionId(urlValue: string): string | undefined {
+  try {
+    return new URL(urlValue).pathname
+      .split("/")
+      .find((segment) => segment.startsWith("cs_"));
+  } catch {
+    return undefined;
   }
 }
 
@@ -636,9 +672,10 @@ test.describe("real Stripe hosted Checkout", () => {
     await test.step("open a verifiably test-mode hosted Checkout", async () => {
       await expect(page.getByRole("heading", { name: "Starter" })).toBeVisible();
       const capture = await prepareCheckoutCapture(page, backendURL);
-      await page
-        .getByRole("button", { name: "Choose Starter month" })
-        .click({ noWaitAfter: true });
+      await clickAfterUserScroll(
+        page.getByRole("button", { name: "Choose Starter month" }),
+        { noWaitAfter: true },
+      );
       const redirect = await capture.wait();
       await capture.release();
       assertTestModeCheckout(redirect.url);
@@ -707,7 +744,9 @@ test.describe("real Stripe hosted Checkout", () => {
     await test.step("browser previews and confirms the configured real upgrade template", async () => {
       await prepareUpgradePaymentMethod();
       await openPricingThroughExpectedBackend(accountPage, baseURL, backendURL);
-      await accountPage.getByRole("button", { name: "Choose Pro month" }).click();
+      await clickAfterUserScroll(
+        accountPage.getByRole("button", { name: "Choose Pro month" }),
+      );
       const policy = process.env.E2E_TRANSITION_POLICY;
       if (policy === "prorated_delta") {
         await expect(

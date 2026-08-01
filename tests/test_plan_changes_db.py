@@ -178,6 +178,14 @@ async def test_preview_confirm_is_full_price_and_request_idempotent(
 
     preview = await service.preview_remote(account_id, "pro", "month", "upgrade-1")
     duplicate_preview = await service.preview_remote(account_id, "pro", "month", "upgrade-1")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """insert into billing_incidents(
+                   kind,dedupe_key,account_id,invoice_id,detail)
+                 values('unbound_plan_change_payment_failed','in_fake_plan_change',
+                        $1::uuid,'in_fake_plan_change','{}'::jsonb)""",
+            account_id,
+        )
     assert preview.change_id == duplicate_preview.change_id
     assert preview.estimated_amount_due == 4900
     assert preview.estimated_credit_applied == 0
@@ -189,11 +197,17 @@ async def test_preview_confirm_is_full_price_and_request_idempotent(
     assert len(gateway.apply_calls) == 1
     assert gateway.preview_calls == 1
     async with pool.acquire() as conn:
-        settlement_invoice_id = await conn.fetchval(
-            "select settlement_invoice_id from billing_plan_changes where id=$1::uuid",
+        row = await conn.fetchrow(
+            """select p.settlement_invoice_id,
+                      (select resolved_at from billing_incidents
+                        where kind='unbound_plan_change_payment_failed'
+                          and invoice_id='in_fake_plan_change') as incident_resolved_at
+                 from billing_plan_changes p where p.id=$1::uuid""",
             preview.change_id,
         )
-    assert settlement_invoice_id == "in_fake_plan_change"
+    assert row is not None
+    assert row["settlement_invoice_id"] == "in_fake_plan_change"
+    assert row["incident_resolved_at"] is not None
 
 
 async def test_pending_update_returns_recovery_without_persisting_client_secret(

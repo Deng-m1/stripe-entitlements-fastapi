@@ -316,11 +316,12 @@ process environment. Remote existing-stack runs additionally require a private m
 the isolated full-stack runner and follow all prerequisites in
 [the browser E2E runbook](../docs/BROWSER_E2E.md).
 
-Current hardened-tree evidence recorded on 2026-08-01 is 62 passing RTL/Vitest tests,
+Current hardened-tree evidence recorded on 2026-08-02 is 62 passing RTL/Vitest tests,
 plus passing lint, typecheck, production build, and production-dependency audit. It
 covers annual pricing math, both transition policies and period-end copy, Checkout,
 Portal, client-secret-first SCA and hosted-Invoice fallback, webhook polling, browser
 secret isolation, SEO configuration, server-rendered plans, JSON-LD, and fail-closed
-indexing. The earlier 60-test result is historical. The real-browser policies were not
-rerun after the current hardening, so this frontend result is not Stripe network or
-signed-webhook evidence.
+indexing. The earlier 60-test result is historical. Both real-browser policies also
+passed on the current tree: each completed decline, Checkout 3DS, upgrade SCA, signed
+webhook projection, exact three-essential-Event binding, and strict cleanup. Those
+browser results remain test-mode evidence, not live-production proof.

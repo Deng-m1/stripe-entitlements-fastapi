@@ -37,13 +37,15 @@ A successful complete run proves one isolated Stripe test-mode Checkout and sele
 upgrade lifecycle. It does not prove live mode, every bank's 3DS UI, Stripe Tax,
 coupons, trials, or arbitrary Checkout settings.
 
-Current evidence boundary: neither policy was rerun after the latest identity binding,
-upgrade-SCA, and process-secret isolation hardening. Earlier pre-hardening runs on
-2026-08-01 each passed in about 1.2 minutes and happened to observe five signed
-account-related Events, Pro/Monthly/1,000, the expected allocation difference, Dahlia
-endpoint payloads, a separate Clover Event API view, and strict cleanup. That historical
-five-Event count is not a current invariant and those runs are not current-tree browser
-evidence.
+Current evidence: both policies passed after the latest identity binding, upgrade-SCA,
+incident-resolution, navigation-stability, and process-secret-isolation hardening on
+2026-08-02. `full_period_reset` completed in about 1.6 minutes and `prorated_delta` in
+about 1.7 minutes. Each reached Pro/Monthly/1,000, bound exactly three essential Events,
+found zero unrelated Events, verified a Dahlia endpoint payload and a separate Clover
+Event API view, had no unresolved run-related incident, and completed strict cleanup.
+Each happened to observe seven account-related Events; that incidental count is not an
+invariant. Earlier pre-hardening 2026-08-01 runs happened to observe five and are retained
+only as historical regression evidence.
 
 ## Recommended isolated runner
 

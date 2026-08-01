@@ -300,7 +300,7 @@ class PlanChangeCoordinator:
         account_id: str,
         preview_id: str,
     ) -> PlanChangeResult:
-        async with self.pool.acquire() as conn:
+        async with self.pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 """select * from billing_plan_changes
                      where id=$1::uuid and account_id=$2::uuid""",
@@ -741,6 +741,18 @@ class PlanChangeCoordinator:
                 recovery_url,
                 settlement_invoice_id,
             )
+            if (
+                row is not None
+                and settlement_invoice_id is not None
+                and row["settlement_invoice_id"] == settlement_invoice_id
+            ):
+                await conn.execute(
+                    """update billing_incidents set resolved_at=now(),last_seen_at=now()
+                         where account_id=$1 and invoice_id=$2 and resolved_at is null
+                           and kind='unbound_plan_change_payment_failed'""",
+                    row["account_id"],
+                    settlement_invoice_id,
+                )
         if row is None:
             row = await self._get(change_id)
             if (
