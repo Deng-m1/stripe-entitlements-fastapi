@@ -127,5 +127,15 @@
       enforced catalog; do not advertise unsupported coupons, trials, tax or currency.
 - [ ] Confirm CI `Backend` and `Web` jobs pass from a clean clone.
 - [ ] Review dependency/security alerts and license changes.
+- [ ] When publishing a demo video:
+  - [ ] record only isolated Stripe test mode and show an explicit test-mode label;
+  - [ ] keep raw Checkout videos/traces private and outside Git history;
+  - [ ] build the redacted cut with `scripts/build_promo_video.sh`;
+  - [ ] run `scripts/review_promo_video.sh`, require the 15-scene semantic gate to
+        pass, and inspect every transition, payment mask, 3DS screen, entitlement state,
+        and final repository URL;
+  - [ ] confirm the OCR privacy gate finds no test subject, email, card, expiry, or
+        cardholder data;
+  - [ ] describe CLI signed forwarding separately from endpoint-metadata evidence.
 - [ ] Tag with a signed/annotated version and publish release notes.
 - [ ] Include migrations, compatibility, evidence boundary, rollback and known limits.

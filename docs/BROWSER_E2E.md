@@ -12,7 +12,8 @@ The opt-in Playwright gate drives the real Next.js UI and a real Stripe-hosted
    or invoice effect while the owned Checkout Session remains `open/unpaid`;
 6. reuse that same Checkout Session with Stripe's `4000002500003155` card;
 7. truthfully acknowledge Stripe Sandbox's current AI-agent disclosure when shown;
-8. complete Stripe's test 3DS challenge and require its ACS completion response;
+8. complete Stripe's test 3DS challenge, require the challenge frame to detach, and
+   reject any observed ACS response with an HTTP error status;
 9. wait for the frontend account request to report
    `starter/month`, `active`, 300 credits, and enforceable entitlements;
 10. confirm the success and account screens render that webhook-projected state.
@@ -37,15 +38,21 @@ A successful complete run proves one isolated Stripe test-mode Checkout and sele
 upgrade lifecycle. It does not prove live mode, every bank's 3DS UI, Stripe Tax,
 coupons, trials, or arbitrary Checkout settings.
 
-Current evidence: both policies passed after the latest identity binding, upgrade-SCA,
-incident-resolution, navigation-stability, and process-secret-isolation hardening on
-2026-08-02. `full_period_reset` completed in about 1.6 minutes and `prorated_delta` in
-about 1.7 minutes. Each reached Pro/Monthly/1,000, bound exactly three essential Events,
-found zero unrelated Events, verified a Dahlia endpoint payload and a separate Clover
-Event API view, had no unresolved run-related incident, and completed strict cleanup.
-Each happened to observe seven account-related Events; that incidental count is not an
-invariant. Earlier pre-hardening 2026-08-01 runs happened to observe five and are retained
-only as historical regression evidence.
+Current local signed-forwarding evidence: both policies passed on the `0.2.0` release
+candidate on 2026-08-17 through explicit Stripe CLI forwarding. Each reached
+Pro/Monthly/1,000, bound exactly three essential Events, found zero unrelated Events,
+used a Clover signed payload/Event API view for that test account, had no unresolved
+run-related incident, and completed strict cleanup. This proves the raw-signature,
+application, browser, and PostgreSQL path, not Webhook Endpoint metadata.
+
+The latest stronger endpoint-mode evidence remains the 2026-08-02 dual-policy run.
+`full_period_reset` completed in about 1.6 minutes and `prorated_delta` in about
+1.7 minutes. Each used an isolated version-pinned Dahlia endpoint, reached
+Pro/Monthly/1,000, bound exactly three essential Events, found zero unrelated Events,
+recorded a separate Clover Event API view, and completed strict cleanup. Each run happened
+to observe seven account-related Events; that incidental count is not an invariant.
+Earlier pre-hardening 2026-08-01 runs happened to observe five and are retained only as
+historical regression evidence.
 
 ## Recommended isolated runner
 
@@ -53,7 +60,8 @@ Requirements:
 
 - Docker with the `postgres:17-alpine` image available;
 - Python 3.12+, `uv`, Node.js 22+, and npm;
-- `cloudflared` for a temporary HTTPS webhook URL;
+- `cloudflared` for the default temporary-endpoint transport, or Stripe CLI for the
+  explicit local signed-forwarding transport;
 - Chromium for Playwright (`cd web && npx playwright install chromium` once);
 - an isolated Stripe test-mode account with this repository's catalog already
   bootstrapped and verified;
@@ -91,15 +99,43 @@ E2E_POSTGRES_IMAGE=registry.example.test/library/postgres:17-alpine \
 `E2E_STRIPE_EVENT_API_VERSION` is the Event snapshot version requested for the
 temporary test Webhook Endpoint. It is not inferred from `STRIPE_API_VERSION`.
 
+### Webhook transport modes
+
+`E2E_WEBHOOK_TRANSPORT=endpoint` is the default and the stronger release-evidence mode.
+It starts a Quick Tunnel, creates a temporary version-pinned test Webhook Endpoint,
+preflights the public `/health` path before any Checkout state is created, and verifies
+endpoint URL, enabled Event set, mode, status, and Event API version. A failed tunnel
+therefore stops before the stateful lifecycle rather than timing out after a payment.
+
+For local recording or diagnosis when a Quick Tunnel is unavailable, opt into Stripe
+CLI signed forwarding and provide the actual CLI-delivered Event version explicitly:
+
+```bash
+E2E_WEBHOOK_TRANSPORT=stripe_cli \
+E2E_STRIPE_EVENT_API_VERSION=2025-12-15.clover \
+E2E_TRANSITION_POLICY=prorated_delta \
+scripts/run_browser_e2e.sh
+```
+
+The value above is an example from one test account; inspect the listener/account
+contract rather than copying it blindly. CLI mode still supplies the temporary signing
+secret to the backend, forwards only the eight supported raw Events, executes the same
+browser and PostgreSQL assertions, matches stored Event identities back to Stripe, and
+performs strict run-owned account cleanup. It does **not** create or verify a Webhook
+Endpoint and must not be reported as endpoint-metadata or endpoint-version-pin evidence.
+
 The runner:
 
 - starts a disposable, memory-backed PostgreSQL 17 container on a loopback-only random
   port;
 - checks PostgreSQL from the host, then applies the real migrations;
 - gives the account a unique demo-auth subject;
-- starts a Quick Tunnel and creates a temporary **test-mode** Webhook Endpoint;
-- verifies its URL, enabled Event set, mode, status, and Event API version;
-- keeps its returned signing secret in a mode-`0600` temporary file;
+- in default endpoint mode, starts a Quick Tunnel, creates a temporary **test-mode**
+  Webhook Endpoint, preflights public reachability, and verifies URL, enabled Event set,
+  mode, status, and Event API version;
+- in explicit CLI mode, starts a locally authenticated listener for only the supported
+  Event set and redacts its signing secret from the retained private log;
+- keeps any endpoint-returned signing secret in a mode-`0600` temporary file;
 - starts the FastAPI and Next.js development servers on random loopback ports;
 - runs `npm --prefix web run test:e2e:stripe`;
 - switches only the run-owned Subscription to an allowlisted test Payment Method before
@@ -199,6 +235,10 @@ Optional variables:
 | `E2E_TRANSITION_POLICY` | `full_period_reset` in the full runner | Upgrade template; run both values for release evidence |
 | `E2E_UPGRADE_PAYMENT_METHOD` | `pm_card_authenticationRequired` | Allowlisted upgrade fixture; default exercises Stripe.js SCA |
 | `E2E_STORAGE_STATE` | unset locally; required remotely | Private mode-`0600` Playwright auth state for the exact isolated subject |
+| `E2E_WEBHOOK_TRANSPORT` | `endpoint` | `endpoint` for release evidence or explicit `stripe_cli` signed forwarding for local diagnosis/recording |
+| `E2E_RECORD_VIDEO` | `0` | Set to `1` to retain one Playwright video per page |
+| `E2E_DEMO_PAUSE_MS` | `0` | Recording-only scene hold, 0–5,000 ms; assertions do not depend on it |
+| `E2E_OUTPUT_DIR` | policy-specific ignored directory | Explicit Playwright artifact destination |
 
 The Playwright Node harness requires a test secret and database DSN for server-side
 Checkout ownership, decline stability, and upgrade-payment preparation checks; it
@@ -212,6 +252,25 @@ actual catalog/write origin to it, and injects an in-request `test` mode precond
 the backend rejects that precondition before account or Stripe state changes if its
 actual gateway is live. It then rechecks the hosted URL and refuses card entry unless
 its Session ID begins with `cs_test_`.
+
+## Recording and public editing
+
+Set `E2E_RECORD_VIDEO=1` only on an isolated test-mode run. Successful raw recordings can
+contain a test email, test card numbers, hosted Session context, and transient Stripe UI.
+Keep them under ignored `web/test-results/`, do not attach them to public issues, and do
+not publish them directly.
+
+The repository's public editor masks the Checkout form, adds test-mode labels, trims
+network waits, and joins the initial and upgrade browser pages. Its reviewer decodes
+every frame and performs OCR checks at payment/3DS checkpoints:
+
+```bash
+scripts/build_promo_video.sh
+scripts/review_promo_video.sh
+```
+
+See [Demo recording and promotional video](DEMO_VIDEO.md) for the full workflow and
+privacy/evidence boundary.
 
 ## Existing-stack environment contract
 
@@ -263,7 +322,10 @@ The demo token is browser-visible by design and is allowed only in development w
 - **No 3DS challenge:** confirm the Session is `cs_test_` and the card is Stripe's
   documented `4000002500003155` test card.
 - **3DS remains open:** confirm the Sandbox AI-agent disclosure was checked, then
-  inspect whether the test ACS completion POST returned 2xx and its iframe detached.
+  inspect whether the test button listener attached, whether an observed ACS POST
+  returned an error, and whether the challenge iframe detached. The harness narrowly
+  retries an enabled test `Complete` button because Stripe can render it before its
+  challenge listener is ready.
 - **Webhook timeout:** verify endpoint delivery status, the exact signing secret, Event
   snapshot version, backend 5xx logs, and unresolved `billing_incidents`. A successful
   browser redirect does not waive this failure.

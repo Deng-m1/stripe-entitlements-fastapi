@@ -192,8 +192,8 @@ The current nine-case real suite contains assertions for both a full-price/no-pr
 monthly upgrade and a prorated-delta monthly upgrade through paid Event projection. The
 delta case performs a real full refund and checks cross-Invoice allocation/reversion;
 other cases cover an annual-origin two-phase Schedule and repeatable authentication-
-required/customer-charge-failure pending updates. All nine cases passed after the
-current hardening on 2026-08-02, including strict cleanup and zero run-owned inventory.
+required/customer-charge-failure pending updates. All nine cases passed on the `0.2.0`
+release candidate on 2026-08-17, including strict cleanup and zero run-owned inventory.
 The earlier seven-case network run is historical evidence only. The remaining 2026-07-31
 manual evidence set contains:
 

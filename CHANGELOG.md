@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-08-17
+
 - Add complete `full_period_reset` and `prorated_delta` templates, each with an explicit
   6 × 6 monthly/yearly transition matrix, reference API/UI behavior, and strict paid-
   Invoice funding validation.
@@ -11,15 +13,28 @@
 - Harden real-browser Checkout navigation, action-target scrolling, upgrade SCA,
   process-secret isolation, payment-failure incident convergence, exact Event identity
   verification, and strict run-owned cleanup.
+- Make 3DS completion resilient to the Stripe sandbox rendering the test `Complete`
+  button before its challenge listener is attached, while still requiring the challenge
+  frame to detach and rejecting any observed ACS HTTP error.
+- Add explicit browser webhook transports: the default temporary version-pinned endpoint
+  remains the release-evidence mode, while Stripe CLI signed forwarding is available for
+  local diagnosis and recording without being mislabeled as endpoint evidence.
+- Add a reproducible Playwright/FFmpeg/Tesseract promotional workflow with a mock UI tour,
+  real test-mode recording, payment-data masks, original generated music, every-frame
+  decode/hash review, privacy OCR checks, poster, and contact sheet.
 - Add a server-rendered open-source project landing page, searchable reference plan
   table, visible FAQ, and matching SoftwareApplication/FAQPage JSON-LD.
 - Add fail-closed canonical URL and indexing configuration, route-specific noindex,
   robots, sitemap, manifest, generated Open Graph/Twitter cards, and an SEO runbook.
 - Centralize the frontend reference catalog so initial pricing HTML is indexable before
   authenticated account hydration.
-- Verify the 2026-08-02 hardened tree with 270 local PostgreSQL tests, 9 real Stripe
-  test-mode cases, 62 frontend tests, both real-browser policy gates, production build,
-  production-dependency audit, strict cleanup, and zero run-owned Stripe inventory.
+- Update locked frontend overrides to clear current `nanoid` and `js-yaml` advisories;
+  both production-only and complete npm audits report zero known vulnerabilities.
+- Verify the 2026-08-17 release candidate with 270 local PostgreSQL tests, all 9 real
+  Stripe test-mode cases, 62 frontend tests, both browser policies through Stripe CLI
+  signed forwarding, production build, Python/npm audits, strict cleanup, and exact
+  three-essential-Event binding. The stronger temporary-endpoint transport retains its
+  separate 2026-08-02 evidence and was not recharacterized as a CLI-mode result.
 
 ## 0.1.0 - 2026-07-31
 

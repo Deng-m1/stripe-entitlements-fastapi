@@ -21,6 +21,7 @@ delayed, concurrent, and out-of-order Events.
 - [Two plan-change templates](#safe-stripe-plan-transitions-full-price-or-prorated-difference)
 - [Correctness and distributed deployment](#correctness-model)
 - [Quick start](#quick-start)
+- [Demo recording](#demo-recording-and-promotional-video)
 - [Test evidence](#verification-and-evidence-boundary)
 - [SQL and production cutover](#sql-migrations-and-production-cutover)
 - [Repository map](#repository-map)
@@ -260,23 +261,77 @@ Copy the temporary signing secret into the ignored local `.env`. A canned
 unknown-account incident is expected; it is a transport/signature smoke, not an
 entitlement lifecycle test.
 
+## Demo recording and promotional video
+
+Record a deterministic public-site/pricing/account walkthrough without Stripe:
+
+```bash
+PROMO_STEP_PAUSE_MS=1400 scripts/run_promo_ui.sh
+```
+
+The real browser runner can also retain Playwright video while exercising a real
+Stripe **test-mode** decline, Checkout 3DS, signed webhook projection, plan preview,
+upgrade SCA, and final account state:
+
+```bash
+E2E_TRANSITION_POLICY=prorated_delta \
+E2E_RECORD_VIDEO=1 \
+E2E_DEMO_PAUSE_MS=1200 \
+scripts/run_browser_e2e.sh
+```
+
+The default transport creates a temporary version-pinned Webhook Endpoint and remains
+the release-evidence mode. `E2E_WEBHOOK_TRANSPORT=stripe_cli` is available for local
+signed-forwarding diagnosis and recording when a Quick Tunnel is unavailable, but it
+does not prove endpoint metadata or endpoint-specific version pinning.
+
+Build and review the redacted public cut with FFmpeg and Tesseract:
+
+```bash
+scripts/build_promo_video.sh
+scripts/review_promo_video.sh
+```
+
+The builder generates its own deterministic music, identifies the two Playwright page
+videos from safe screenshots, locates the Checkout/3DS/account milestones, masks payment
+fields, and writes the H.264/AAC output below ignored `web/test-results/promo-final/`.
+Raw browser artifacts remain ignored and private. The review gate decodes every frame
+before checking A/V alignment, black segments, codecs, loudness, forbidden OCR terms,
+and all 15 intentional scene captions. See
+[Demo recording and promotional video](docs/DEMO_VIDEO.md) for the evidence boundary,
+privacy rules, and reproducible workflow.
+
 ## Verification and evidence boundary
 
 Evidence is split by execution layer; collecting a test or retaining an older run does
 not prove the current tree against Stripe's network.
 
-Current hardened-tree evidence recorded on 2026-08-02:
+Current `0.2.0` release-candidate evidence recorded on 2026-08-17:
 
 - 270 local/backend tests passed against disposable PostgreSQL 17; the full collection
   contained 279 cases and 9 `real_stripe` cases were deselected;
-- 62 frontend tests passed, and lint, typecheck, production build, and
-  production-dependency audit passed;
-- all 9 real Stripe cases passed against test mode, including strict cleanup and
-  zero run-owned inventory checks;
-- both real-browser policy gates passed against isolated accounts, databases, and
-  temporary Webhook Endpoints, including decline, Checkout 3DS, upgrade SCA, signed
-  webhook projection, exact three-essential-Event binding, and strict cleanup;
+- 62 frontend tests passed with lint, typecheck, production build, production-only npm
+  audit, complete npm audit, and Python dependency audit all passing with zero known
+  vulnerabilities;
+- all 9 real Stripe cases executed and passed against test mode, including strict
+  run-owned cleanup and the complete annual Test Clock renewal lifecycle;
+- `full_period_reset` and `prorated_delta` each passed the real-browser lifecycle through
+  explicit Stripe CLI signed forwarding: decline, Checkout 3DS, Starter/300 projection,
+  upgrade SCA, Pro/1,000 projection, seven related Events, zero unrelated Events, and
+  exact three-essential-Event binding;
+- the final 48.800-second public demo cut decoded all 1,464 frames, contained no black
+  segment longer than 0.35 seconds, passed six payment/3DS privacy checkpoints plus 98
+  full-frame OCR samples at 2 fps with zero forbidden-term matches, passed 15/15
+  semantic scene checks, and produced 1080p/30 fps H.264 with 48 kHz stereo AAC at
+  -20.0 LUFS;
 - no live-production webhook payload verification is claimed.
+
+CLI signed forwarding proves the raw-signature/application/database path but does not
+prove temporary Webhook Endpoint metadata or endpoint-specific version pinning. The
+latest separate endpoint-mode evidence remains the 2026-08-02 dual-policy run: both
+policies used isolated temporary Dahlia endpoints, reached Pro/1,000, bound the same
+three essential Events, found zero unrelated Events, and completed strict cleanup while
+the independent Event API view reported Clover.
 
 Historical pre-hardening evidence from earlier on 2026-08-01 was 239 local/backend
 tests, 7 real Stripe test-mode tests, 60 frontend tests, and 2 browser policy runs. It is
@@ -333,8 +388,9 @@ designed to verify:
   run-marked inventory error;
 - direct Event polling and PostgreSQL projection for those networked API cases.
 
-All nine assertions passed on the current tree on 2026-08-02. Future releases must rerun
-them with an isolated test account rather than treating this result as permanent proof.
+All nine assertions passed on the `0.2.0` release candidate on 2026-08-17. Future
+releases must rerun them with an isolated test account rather than treating this result
+as permanent proof.
 
 The Test Clock and plan-change cases do not prove signed endpoint delivery. The
 separate opt-in browser runner creates a temporary test endpoint and exercises a

@@ -291,6 +291,18 @@ npm test
 npm run build
 ```
 
+The mock-data public UI can be recorded without Stripe or PostgreSQL from the repository
+root:
+
+```bash
+PROMO_STEP_PAUSE_MS=1400 scripts/run_promo_ui.sh
+```
+
+The Playwright promo config is excluded from Vitest and writes only to ignored
+`test-results/`. Use the repository-level FFmpeg/Tesseract workflow in
+[`docs/DEMO_VIDEO.md`](../docs/DEMO_VIDEO.md) to combine it with a redacted real
+Stripe test-mode lifecycle; do not publish the raw page videos.
+
 The real hosted-Checkout browser gate is deliberately separate from default tests. It
 requires a fresh account, real Stripe test mode, signed webhook delivery, and explicit
 opt-in:
@@ -316,12 +328,14 @@ process environment. Remote existing-stack runs additionally require a private m
 the isolated full-stack runner and follow all prerequisites in
 [the browser E2E runbook](../docs/BROWSER_E2E.md).
 
-Current hardened-tree evidence recorded on 2026-08-02 is 62 passing RTL/Vitest tests,
-plus passing lint, typecheck, production build, and production-dependency audit. It
-covers annual pricing math, both transition policies and period-end copy, Checkout,
-Portal, client-secret-first SCA and hosted-Invoice fallback, webhook polling, browser
-secret isolation, SEO configuration, server-rendered plans, JSON-LD, and fail-closed
-indexing. The earlier 60-test result is historical. Both real-browser policies also
-passed on the current tree: each completed decline, Checkout 3DS, upgrade SCA, signed
-webhook projection, exact three-essential-Event binding, and strict cleanup. Those
-browser results remain test-mode evidence, not live-production proof.
+Current `0.2.0` release-candidate evidence recorded on 2026-08-17 is 62 passing
+RTL/Vitest tests, plus passing lint, typecheck, production build, production npm audit,
+and complete npm audit. It covers annual pricing math, both transition policies and
+period-end copy, Checkout, Portal, client-secret-first SCA and hosted-Invoice fallback,
+webhook polling, browser secret isolation, SEO configuration, server-rendered plans,
+JSON-LD, and fail-closed indexing. The earlier 60-test result is historical. Both
+real-browser policies also passed through explicit Stripe CLI signed forwarding on the
+current tree: each completed decline, Checkout 3DS, upgrade SCA, signed webhook
+projection, exact three-essential-Event binding, and strict cleanup. The latest separate
+temporary-endpoint evidence remains the 2026-08-02 dual-policy run. All browser results
+remain test-mode evidence, not live-production proof.

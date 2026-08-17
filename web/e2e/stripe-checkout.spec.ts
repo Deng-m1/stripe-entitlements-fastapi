@@ -5,8 +5,10 @@ import {
   type Frame,
   type Locator,
   type Page,
+  type Response,
 } from "@playwright/test";
 import { execFile } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const DECLINED_TEST_CARD = "4000000000000002";
@@ -67,6 +69,45 @@ interface BackendHealth {
 
 function timeoutFromEnvironment(): number {
   return Number(process.env.E2E_WEBHOOK_TIMEOUT_MS ?? "180000");
+}
+
+function recordingEnabled(): boolean {
+  return process.env.E2E_RECORD_VIDEO === "1";
+}
+
+async function demoPause(page: Page, multiplier = 1): Promise<void> {
+  const milliseconds = Number(process.env.E2E_DEMO_PAUSE_MS ?? "0");
+  if (milliseconds > 0) {
+    await page.waitForTimeout(milliseconds * multiplier);
+  }
+}
+
+function safeTimelineUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    if (url.hostname === "stripe.com" || url.hostname.endsWith(".stripe.com")) {
+      return `${url.origin}/[stripe-hosted-page]`;
+    }
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return "about:blank";
+  }
+}
+
+async function installRecordingCaptureStyles(page: Page): Promise<void> {
+  if (!recordingEnabled()) return;
+  await page.addInitScript(() => {
+    document.addEventListener("DOMContentLoaded", () => {
+      const style = document.createElement("style");
+      style.dataset.promoCapture = "true";
+      style.textContent = `
+        .demo-notice { display: none !important; }
+        html { scroll-behavior: smooth !important; }
+        * { caret-color: transparent !important; }
+      `;
+      document.head.append(style);
+    });
+  });
 }
 
 function frontendUrl(baseURL: string, path: string): string {
@@ -541,7 +582,10 @@ async function hasVisibleTextAcrossFrames(page: Page, pattern: RegExp): Promise<
   return false;
 }
 
-async function completeScaChallenge(page: Page): Promise<void> {
+async function completeScaChallenge(
+  page: Page,
+  onChallengeReady?: () => Promise<void>,
+): Promise<void> {
   const deadline = Date.now() + 60_000;
   let button: Locator | null = null;
   let challengeFrame: Frame | null = null;
@@ -571,33 +615,58 @@ async function completeScaChallenge(page: Page): Promise<void> {
   if (!challengeFrame) throw new Error("Stripe's 3DS challenge frame is missing.");
   await challengeFrame.waitForLoadState("load");
   await expect(button).toBeEnabled();
-  // The sandbox button can render just before challenge.js attaches its listener.
-  await page.waitForTimeout(500);
-  const acsResponsePromise = page.waitForResponse(
-    (response) => {
-      try {
-        const url = new URL(response.url());
-        return (
-          response.request().method() === "POST" &&
-          url.hostname === "testmode-acs.stripe.com"
-        );
-      } catch {
-        return false;
-      }
-    },
-    { timeout: 30_000 },
-  );
-  await button.click();
-  const acsResponse = await acsResponsePromise;
-  if (!acsResponse.ok()) {
-    throw new Error(`Stripe test ACS completion returned HTTP ${acsResponse.status()}.`);
+  if (onChallengeReady) {
+    await onChallengeReady();
+  } else {
+    await demoPause(page);
   }
-  await expect
-    .poll(() => page.frames().includes(challengeFrame), {
-      timeout: 30_000,
-      message: "waiting for the completed Stripe 3DS frame to detach",
-    })
-    .toBe(false);
+  // The sandbox button can render before challenge.js attaches its listener. Observe
+  // the ACS response when Chromium exposes it, but use challenge-frame detachment as
+  // the cross-version completion invariant and retry the enabled test button narrowly.
+  let acsResponseStatus: number | null = null;
+  const observeAcsResponse = (response: Response) => {
+    try {
+      const url = new URL(response.url());
+      const stripeAcsHost =
+        url.hostname === "testmode-acs.stripe.com" ||
+        (url.hostname.endsWith(".stripe.com") &&
+          /3d[_-]?secure|3ds|authenticate|challenge|acs/i.test(
+            `${url.pathname}${url.search}`,
+          ));
+      if (response.request().method() === "POST" && stripeAcsHost) {
+        acsResponseStatus = response.status();
+      }
+    } catch {
+      // Ignore unrelated malformed URLs; the frame-detachment invariant remains.
+    }
+  };
+  page.on("response", observeAcsResponse);
+  try {
+    const completionDeadline = Date.now() + 30_000;
+    let clickAttempts = 0;
+    while (page.frames().includes(challengeFrame) && Date.now() < completionDeadline) {
+      const enabled = await button.isEnabled().catch(() => false);
+      const visible = await button.isVisible().catch(() => false);
+      if (enabled && visible && clickAttempts < 3) {
+        await button.click();
+        clickAttempts += 1;
+      }
+      if (page.frames().includes(challengeFrame)) {
+        await page.waitForTimeout(750);
+      }
+    }
+    await expect
+      .poll(() => page.frames().includes(challengeFrame), {
+        timeout: 1_000,
+        message: "waiting for the completed Stripe 3DS frame to detach",
+      })
+      .toBe(false);
+  } finally {
+    page.off("response", observeAcsResponse);
+  }
+  if (acsResponseStatus !== null && acsResponseStatus >= 400) {
+    throw new Error(`Stripe test ACS completion returned HTTP ${acsResponseStatus}.`);
+  }
 }
 
 function isStripeChallengeFrame(frame: Frame, page: Page): boolean {
@@ -649,10 +718,51 @@ test.describe("real Stripe hosted Checkout", () => {
     page,
     request,
     baseURL,
-  }) => {
+  }, testInfo) => {
     if (!baseURL) throw new Error("Playwright baseURL is missing.");
     const backendURL = process.env.E2E_BACKEND_URL?.trim();
     if (!backendURL) throw new Error("E2E_BACKEND_URL is missing.");
+
+    const recordingStartedAt = Date.now();
+    const timeline: Array<{ label: string; milliseconds: number; url: string }> = [];
+    let screenshotSequence = 0;
+    const mark = async (
+      targetPage: Page,
+      label: string,
+      multiplier = 1,
+      screenshotName?: string,
+    ) => {
+      timeline.push({
+        label,
+        milliseconds: Date.now() - recordingStartedAt,
+        url: safeTimelineUrl(targetPage.url()),
+      });
+      if (recordingEnabled() && screenshotName) {
+        screenshotSequence += 1;
+        const screenshotPath = testInfo.outputPath(
+          `${String(screenshotSequence).padStart(2, "0")}-${screenshotName}.png`,
+        );
+        let captured = false;
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          try {
+            await targetPage.screenshot({
+              animations: "disabled",
+              path: screenshotPath,
+            });
+            captured = true;
+            break;
+          } catch (error) {
+            if (targetPage.isClosed()) throw error;
+            await targetPage.waitForTimeout(250 * attempt);
+          }
+        }
+        if (!captured) {
+          console.warn(`promo milestone screenshot was not captured: ${screenshotName}`);
+        }
+      }
+      await demoPause(targetPage, multiplier);
+    };
+    await installRecordingCaptureStyles(page);
 
     await test.step("backend attests Stripe test mode before any state write", async () => {
       await verifyTestBackend(request, backendURL);
@@ -661,13 +771,16 @@ test.describe("real Stripe hosted Checkout", () => {
     await test.step("frontend read traffic is bound to the attested backend", async () => {
       await openPricingThroughExpectedBackend(page, baseURL, backendURL);
     });
+    await mark(page, "Pricing page · Free account", 0.75, "pricing-free");
 
     const accountPage = await context.newPage();
+    await installRecordingCaptureStyles(accountPage);
     const initial = await loadAccountProjection(accountPage, baseURL);
     expect(initial.account_id).toBe(await expectedAccountId());
     expect(initial.plan_key).toBe("free");
     expect(initial.credits.balance).toBe(0);
     expect(initial.entitlements_enforceable).toBe(false);
+    await mark(accountPage, "Free account · zero credits", 1.25, "free-account");
 
     await test.step("open a verifiably test-mode hosted Checkout", async () => {
       await expect(page.getByRole("heading", { name: "Starter" })).toBeVisible();
@@ -686,6 +799,7 @@ test.describe("real Stripe hosted Checkout", () => {
       await openHostedCheckout(page, redirect.url);
       assertTestModeCheckout(page.url());
       await fillCheckoutIdentity(page);
+      await mark(page, "Real Stripe test Checkout", 1.5);
     });
 
     await test.step("a real declined payment never grants entitlement", async () => {
@@ -704,6 +818,7 @@ test.describe("real Stripe hosted Checkout", () => {
       expect(afterDecline.plan_key).toBe("free");
       expect(afterDecline.credits.balance).toBe(0);
       expect(afterDecline.entitlements_enforceable).toBe(false);
+      await mark(page, "Declined payment · access unchanged", 1.5);
     });
 
     await test.step("decline remains effect-free across the DB stability barrier", async () => {
@@ -713,7 +828,9 @@ test.describe("real Stripe hosted Checkout", () => {
     await test.step("the same Checkout completes a real test 3DS challenge", async () => {
       await fillCheckoutCard(page, SCA_TEST_CARD);
       await submitCheckout(page);
-      await completeScaChallenge(page);
+      await completeScaChallenge(page, () =>
+        mark(page, "Checkout 3DS challenge", 1.25),
+      );
       const frontendOrigin = new URL(baseURL).origin;
       await page.waitForURL(
         (url) =>
@@ -739,6 +856,18 @@ test.describe("real Stripe hosted Checkout", () => {
         has: accountPage.getByText("Credits", { exact: true }),
       });
       await expect(credits.getByText("300", { exact: true }).first()).toBeVisible();
+      await mark(
+        page,
+        "Webhook-backed Checkout success",
+        1.25,
+        "checkout-success",
+      );
+      await mark(
+        accountPage,
+        "Starter Monthly · 300 credits",
+        1.5,
+        "starter-300-credits",
+      );
     });
 
     await test.step("browser previews and confirms the configured real upgrade template", async () => {
@@ -764,6 +893,16 @@ test.describe("real Stripe hosted Checkout", () => {
           }),
         ).toBeVisible();
       }
+      await mark(
+        accountPage,
+        policy === "prorated_delta"
+          ? "Prorated delta · +700 entitlement credits"
+          : "Full-period reset · new funded period",
+        1.75,
+        policy === "prorated_delta"
+          ? "prorated-delta-preview"
+          : "full-period-preview",
+      );
       await accountPage.getByRole("checkbox").check();
       await accountPage
         .getByRole("button", { name: "Confirm billing change" })
@@ -772,7 +911,9 @@ test.describe("real Stripe hosted Checkout", () => {
         (process.env.E2E_UPGRADE_PAYMENT_METHOD ??
           "pm_card_authenticationRequired") === "pm_card_authenticationRequired"
       ) {
-        await completeScaChallenge(accountPage);
+        await completeScaChallenge(accountPage, () =>
+          mark(accountPage, "Upgrade 3DS challenge", 1.25),
+        );
       }
       await accountPage.waitForURL(
         (url) => url.pathname === "/billing/success",
@@ -795,6 +936,31 @@ test.describe("real Stripe hosted Checkout", () => {
         has: page.getByText("Credits", { exact: true }),
       });
       await expect(credits.getByText("1,000", { exact: true }).first()).toBeVisible();
+      await mark(
+        accountPage,
+        "Webhook-backed upgrade success",
+        1.25,
+        "upgrade-success",
+      );
+      await mark(
+        page,
+        "Pro Monthly · 1,000 credits",
+        1.75,
+        "pro-1000-credits",
+      );
     });
+
+    writeFileSync(
+      testInfo.outputPath("timeline.json"),
+      `${JSON.stringify(
+        {
+          duration_ms: Date.now() - recordingStartedAt,
+          transition_policy: process.env.E2E_TRANSITION_POLICY,
+          timeline,
+        },
+        null,
+        2,
+      )}\n`,
+    );
   });
 });

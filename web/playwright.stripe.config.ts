@@ -99,7 +99,13 @@ function validatedStorageState(): string | undefined {
 
 const lifecycleTimeout = positiveDuration("E2E_WEBHOOK_TIMEOUT_MS", 180_000);
 integerInRange("E2E_DECLINE_STABILITY_SECONDS", 10, 10, 60);
+const demoPauseMs = integerInRange("E2E_DEMO_PAUSE_MS", 0, 0, 5_000);
 const storageState = validatedStorageState();
+const recordVideo = process.env.E2E_RECORD_VIDEO === "1";
+const outputDir = resolve(
+  process.env.E2E_OUTPUT_DIR?.trim() ||
+    `test-results/playwright-stripe-${transitionPolicy}`,
+);
 
 export default defineConfig({
   testDir: "./e2e",
@@ -108,9 +114,10 @@ export default defineConfig({
   workers: 1,
   retries: 0,
   forbidOnly: true,
+  preserveOutput: "always",
   timeout: 2 * lifecycleTimeout + 180_000,
   expect: { timeout: 20_000 },
-  outputDir: "test-results/playwright-stripe",
+  outputDir,
   reporter: [
     ["list"],
     ["html", { outputFolder: "playwright-report/stripe", open: "never" }],
@@ -121,13 +128,19 @@ export default defineConfig({
     browserName: "chromium",
     headless: process.env.E2E_HEADLESS !== "0",
     locale: "en-US",
+    viewport: recordVideo
+      ? { width: 1440, height: 810 }
+      : { width: 1280, height: 720 },
     actionTimeout: 30_000,
     navigationTimeout: 60_000,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
-    video: "off",
+    video: recordVideo
+      ? { mode: "on", size: { width: 1440, height: 810 } }
+      : "off",
     launchOptions: {
       env: browserProcessEnvironment(process.env),
     },
   },
+  metadata: { demoPauseMs, recordVideo },
 });

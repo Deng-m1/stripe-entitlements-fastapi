@@ -14,13 +14,28 @@ case "${STRIPE_PUBLISHABLE_KEY:-}" in
 esac
 
 e2e_request_version="${STRIPE_API_VERSION:-2026-06-24.dahlia}"
+e2e_webhook_transport="${E2E_WEBHOOK_TRANSPORT:-endpoint}"
+case "$e2e_webhook_transport" in
+  endpoint|stripe_cli) ;;
+  *) echo "E2E_WEBHOOK_TRANSPORT must be endpoint or stripe_cli" >&2; exit 2 ;;
+esac
+if [[ "$e2e_webhook_transport" == "stripe_cli" && -z "${E2E_STRIPE_EVENT_API_VERSION:-}" ]]; then
+  echo "stripe_cli transport requires explicit E2E_STRIPE_EVENT_API_VERSION" >&2
+  exit 2
+fi
 e2e_event_version="${E2E_STRIPE_EVENT_API_VERSION:-2026-06-24.dahlia}"
+e2e_supported_events="checkout.session.completed,checkout.session.expired,invoice.paid,invoice.payment_failed,customer.subscription.updated,customer.subscription.deleted,charge.refunded,charge.dispute.created"
 e2e_transition_policy="${E2E_TRANSITION_POLICY:-full_period_reset}"
 case "$e2e_transition_policy" in
   full_period_reset|prorated_delta) ;;
   *) echo "E2E_TRANSITION_POLICY must be full_period_reset or prorated_delta" >&2; exit 2 ;;
 esac
 e2e_upgrade_payment_method="${E2E_UPGRADE_PAYMENT_METHOD:-pm_card_authenticationRequired}"
+e2e_record_video="${E2E_RECORD_VIDEO:-0}"
+case "$e2e_record_video" in
+  0|1) ;;
+  *) echo "E2E_RECORD_VIDEO must be 0 or 1" >&2; exit 2 ;;
+esac
 case "$e2e_upgrade_payment_method" in
   pm_card_authenticationRequired|pm_card_visa) ;;
   *) echo "E2E_UPGRADE_PAYMENT_METHOD is not an allowlisted Stripe test fixture" >&2; exit 2 ;;
@@ -41,10 +56,14 @@ e2e_cleanup_manifest="$e2e_tmp_dir/cleanup-manifest.json"
 e2e_endpoint_id=""
 e2e_webhook_url=""
 e2e_webhook_create_started=0
+e2e_stateful_run_started=0
 e2e_tunnel_pid=""
+e2e_listener_pid=""
+e2e_listener_log=""
 e2e_backend_pid=""
 e2e_frontend_pid=""
 e2e_tunnel_start=""
+e2e_listener_start=""
 e2e_backend_start=""
 e2e_frontend_start=""
 e2e_child_path="${PATH:-/usr/local/bin:/usr/bin:/bin}"
@@ -70,11 +89,30 @@ e2e_database_url="postgresql://postgres:local-only@127.0.0.1:${e2e_pg_port}/stri
 e2e_backend_url="http://127.0.0.1:${e2e_backend_port}"
 e2e_frontend_url="http://127.0.0.1:${e2e_frontend_port}"
 e2e_demo_token="$(uv run python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+e2e_output_dir="${E2E_OUTPUT_DIR:-$e2e_repo_root/web/test-results/playwright-stripe-${e2e_transition_policy}}"
 
 e2e_pid_start() {
   local e2e_pid="${1:-}"
   [[ "$e2e_pid" =~ ^[0-9]+$ && -r "/proc/$e2e_pid/stat" ]] || return 1
   awk '{print $22}' "/proc/$e2e_pid/stat"
+}
+
+e2e_redact_listener_log() {
+  local e2e_log_path="${1:-}"
+  [[ -f "$e2e_log_path" ]] || return 0
+  E2E_LISTENER_LOG="$e2e_log_path" uv run python -c '
+import os
+import re
+from pathlib import Path
+
+path = Path(os.environ["E2E_LISTENER_LOG"])
+data = path.read_bytes().replace(b"\\x00", b"")
+data = re.sub(rb"whsec_[A-Za-z0-9]+", b"whsec_[redacted]", data)
+temporary = path.with_name(f".{path.name}.redacted")
+temporary.write_bytes(data)
+temporary.chmod(0o600)
+temporary.replace(path)
+'
 }
 
 e2e_stop_pid() {
@@ -106,12 +144,26 @@ e2e_cleanup() {
   local e2e_cleanup_failed=0
   trap - EXIT
   set +e
+  if [[ ! -d "$e2e_tmp_dir" ]]; then
+    case "$e2e_tmp_dir" in
+      /tmp/stripe-entitlements-browser-e2e.*)
+        if ! mkdir -p "$e2e_tmp_dir" || ! chmod 700 "$e2e_tmp_dir"; then
+          echo "browser E2E could not recreate its private cleanup directory" >&2
+          e2e_cleanup_failed=1
+        fi
+        ;;
+      *)
+        echo "browser E2E cleanup directory has an unsafe path" >&2
+        e2e_cleanup_failed=1
+        ;;
+    esac
+  fi
   if [[ -z "$e2e_endpoint_id" && -s "$e2e_endpoint_state" ]]; then
     e2e_endpoint_id="$(uv run python -c \
       'import json,sys; print(json.load(open(sys.argv[1]))["endpoint_id"])' \
       "$e2e_endpoint_state" 2>/dev/null || true)"
   fi
-  if [[ "$e2e_webhook_create_started" -eq 1 ]]; then
+  if [[ "$e2e_stateful_run_started" -eq 1 ]]; then
     if ! STRIPE_API_VERSION="$e2e_request_version" \
         uv run python scripts/e2e_stripe.py write-cleanup-manifest \
         --database-url "$e2e_database_url" \
@@ -130,7 +182,7 @@ e2e_cleanup() {
       e2e_cleanup_failed=1
     fi
   fi
-  if [[ -n "$e2e_endpoint_id" ]]; then
+  if [[ "$e2e_stateful_run_started" -eq 1 ]]; then
     if ! STRIPE_API_VERSION="$e2e_request_version" \
         uv run python scripts/e2e_stripe.py cleanup-account \
         --database-url "$e2e_database_url" \
@@ -138,6 +190,8 @@ e2e_cleanup() {
       echo "browser E2E account cleanup failed" >&2
       e2e_cleanup_failed=1
     fi
+  fi
+  if [[ -n "$e2e_endpoint_id" ]]; then
     if ! STRIPE_API_VERSION="$e2e_request_version" \
         uv run python scripts/e2e_stripe.py delete-webhook \
         --endpoint-id "$e2e_endpoint_id" \
@@ -155,6 +209,13 @@ e2e_cleanup() {
     fi
   fi
   if ! e2e_stop_pid "$e2e_frontend_pid" "$e2e_frontend_start"; then
+    e2e_cleanup_failed=1
+  fi
+  if ! e2e_stop_pid "$e2e_listener_pid" "$e2e_listener_start"; then
+    e2e_cleanup_failed=1
+  fi
+  if ! e2e_redact_listener_log "$e2e_listener_log"; then
+    echo "browser E2E Stripe CLI log redaction failed" >&2
     e2e_cleanup_failed=1
   fi
   if ! e2e_stop_pid "$e2e_backend_pid" "$e2e_backend_start"; then
@@ -192,8 +253,13 @@ for e2e_command in docker curl uv npm; do
     exit 2
   }
 done
-if [[ ! -x "$e2e_cloudflared" ]] && ! command -v "$e2e_cloudflared" >/dev/null; then
-  echo "cloudflared is required; set CLOUDFLARED_BIN to its executable" >&2
+if [[ "$e2e_webhook_transport" == "endpoint" ]]; then
+  if [[ ! -x "$e2e_cloudflared" ]] && ! command -v "$e2e_cloudflared" >/dev/null; then
+    echo "cloudflared is required; set CLOUDFLARED_BIN to its executable" >&2
+    exit 2
+  fi
+elif ! command -v stripe >/dev/null; then
+  echo "Stripe CLI is required for E2E_WEBHOOK_TRANSPORT=stripe_cli" >&2
   exit 2
 fi
 
@@ -234,38 +300,69 @@ if ! env \
   exit 1
 fi
 
-"$e2e_cloudflared" tunnel --no-autoupdate \
-  --url "$e2e_backend_url" >"$e2e_tmp_dir/cloudflared.log" 2>&1 &
-e2e_tunnel_pid="$!"
-e2e_tunnel_start="$(e2e_pid_start "$e2e_tunnel_pid")"
-e2e_tunnel_url=""
-for _ in $(seq 1 60); do
-  e2e_tunnel_url="$(rg -o 'https://[-a-z0-9]+\.trycloudflare\.com' \
-    "$e2e_tmp_dir/cloudflared.log" | tail -n 1 || true)"
-  [[ -n "$e2e_tunnel_url" ]] && break
-  sleep 1
-done
-if [[ -z "$e2e_tunnel_url" ]]; then
-  echo "cloudflared did not publish a quick-tunnel URL" >&2
-  exit 1
+e2e_stateful_run_started=1
+if [[ "$e2e_webhook_transport" == "endpoint" ]]; then
+  "$e2e_cloudflared" tunnel --no-autoupdate \
+    --url "$e2e_backend_url" >"$e2e_tmp_dir/cloudflared.log" 2>&1 &
+  e2e_tunnel_pid="$!"
+  e2e_tunnel_start="$(e2e_pid_start "$e2e_tunnel_pid")"
+  e2e_tunnel_url=""
+  for _ in $(seq 1 60); do
+    e2e_tunnel_url="$(rg -o 'https://[-a-z0-9]+\.trycloudflare\.com' \
+      "$e2e_tmp_dir/cloudflared.log" | tail -n 1 || true)"
+    [[ -n "$e2e_tunnel_url" ]] && break
+    sleep 1
+  done
+  if [[ -z "$e2e_tunnel_url" ]]; then
+    echo "cloudflared did not publish a quick-tunnel URL" >&2
+    exit 1
+  fi
+  e2e_webhook_url="${e2e_tunnel_url}/webhooks/stripe"
+
+  e2e_webhook_create_started=1
+  STRIPE_API_VERSION="$e2e_request_version" uv run python scripts/e2e_stripe.py \
+    create-webhook --url "$e2e_webhook_url" \
+    --event-api-version "$e2e_event_version" \
+    --description "$e2e_description" --output "$e2e_endpoint_state"
+  e2e_endpoint_id="$(uv run python -c \
+    'import json,sys; print(json.load(open(sys.argv[1]))["endpoint_id"])' \
+    "$e2e_endpoint_state")"
+  e2e_webhook_secret="$(uv run python -c \
+    'import json,sys; print(json.load(open(sys.argv[1]))["webhook_secret"])' \
+    "$e2e_endpoint_state")"
+
+  STRIPE_API_VERSION="$e2e_request_version" uv run python scripts/e2e_stripe.py \
+    verify-webhook --endpoint-id "$e2e_endpoint_id" --url "$e2e_webhook_url" \
+    --event-api-version "$e2e_event_version"
+else
+  e2e_webhook_url="${e2e_backend_url}/webhooks/stripe"
+  e2e_listener_log="$e2e_tmp_dir/stripe-listen.log"
+  STRIPE_API_KEY="$STRIPE_SECRET_KEY" stripe listen --skip-update \
+    --events "$e2e_supported_events" \
+    --forward-to "$e2e_webhook_url" >"$e2e_listener_log" 2>&1 &
+  e2e_listener_pid="$!"
+  e2e_listener_start="$(e2e_pid_start "$e2e_listener_pid")"
+  chmod 600 "$e2e_listener_log"
+  e2e_webhook_secret=""
+  for _ in $(seq 1 60); do
+    e2e_webhook_secret="$(rg -o 'whsec_[A-Za-z0-9]+' "$e2e_listener_log" | head -n 1 || true)"
+    [[ -n "$e2e_webhook_secret" ]] && break
+    kill -0 "$e2e_listener_pid" 2>/dev/null || break
+    sleep 1
+  done
+  if [[ -z "$e2e_webhook_secret" ]]; then
+    echo "Stripe CLI did not expose a signing secret" >&2
+    exit 1
+  fi
+  observed_listener_version="$(rg -o '[0-9]{4}-[0-9]{2}-[0-9]{2}\.[A-Za-z0-9_-]+' \
+    "$e2e_listener_log" | head -n 1 || true)"
+  if [[ -n "$observed_listener_version" && \
+        "$observed_listener_version" != "$e2e_event_version" ]]; then
+    echo "Stripe CLI Event version differs from E2E_STRIPE_EVENT_API_VERSION" >&2
+    exit 1
+  fi
+  echo "verified Stripe CLI signed forwarding: api_version=$e2e_event_version events=8"
 fi
-e2e_webhook_url="${e2e_tunnel_url}/webhooks/stripe"
-
-e2e_webhook_create_started=1
-STRIPE_API_VERSION="$e2e_request_version" uv run python scripts/e2e_stripe.py \
-  create-webhook --url "$e2e_webhook_url" \
-  --event-api-version "$e2e_event_version" \
-  --description "$e2e_description" --output "$e2e_endpoint_state"
-e2e_endpoint_id="$(uv run python -c \
-  'import json,sys; print(json.load(open(sys.argv[1]))["endpoint_id"])' \
-  "$e2e_endpoint_state")"
-e2e_webhook_secret="$(uv run python -c \
-  'import json,sys; print(json.load(open(sys.argv[1]))["webhook_secret"])' \
-  "$e2e_endpoint_state")"
-
-STRIPE_API_VERSION="$e2e_request_version" uv run python scripts/e2e_stripe.py \
-  verify-webhook --endpoint-id "$e2e_endpoint_id" --url "$e2e_webhook_url" \
-  --event-api-version "$e2e_event_version"
 
 env \
   DATABASE_URL="$e2e_database_url" \
@@ -296,6 +393,23 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 curl -fsS "${e2e_backend_url}/health" >/dev/null
+if [[ "$e2e_webhook_transport" == "endpoint" ]]; then
+  e2e_public_health_ready=0
+  for _ in $(seq 1 60); do
+    if curl -fsS "${e2e_tunnel_url}/health" >/dev/null 2>&1; then
+      e2e_public_health_ready=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$e2e_public_health_ready" -ne 1 ]]; then
+    echo "public webhook tunnel did not reach the backend health endpoint" >&2
+    exit 1
+  fi
+elif ! kill -0 "$e2e_listener_pid" 2>/dev/null; then
+  echo "Stripe CLI listener exited before browser execution" >&2
+  exit 1
+fi
 
 (
   cd web
@@ -321,6 +435,9 @@ for _ in $(seq 1 90); do
 done
 curl -fsS "${e2e_frontend_url}/pricing" >/dev/null
 
+rm -rf "$e2e_output_dir"
+mkdir -p "$e2e_output_dir"
+
 env \
   E2E_RUN_REAL_STRIPE=1 \
   E2E_STRIPE_MODE=test \
@@ -331,13 +448,22 @@ env \
   E2E_DECLINE_STABILITY_SECONDS="${E2E_DECLINE_STABILITY_SECONDS:-10}" \
   E2E_TRANSITION_POLICY="$e2e_transition_policy" \
   E2E_UPGRADE_PAYMENT_METHOD="$e2e_upgrade_payment_method" \
+  E2E_RECORD_VIDEO="$e2e_record_video" \
+  E2E_DEMO_PAUSE_MS="${E2E_DEMO_PAUSE_MS:-0}" \
+  E2E_OUTPUT_DIR="$e2e_output_dir" \
   npm --prefix web run test:e2e:stripe
 
 STRIPE_API_VERSION="$e2e_request_version" uv run python scripts/e2e_stripe.py \
   verify-database --database-url "$e2e_database_url" \
   --external-ref "$e2e_external_ref" \
   --event-api-version "$e2e_event_version" \
+  --delivery-transport "$e2e_webhook_transport" \
   --expected-plan pro --expected-credits 1000 \
   --transition-policy "$e2e_transition_policy"
 
 echo "browser Stripe Checkout, $e2e_transition_policy upgrade, and signed webhook E2E passed"
+if [[ "$e2e_record_video" == "1" ]]; then
+  find "$e2e_output_dir" -type f -name '*.webm' -print | while read -r video_path; do
+    echo "recorded video: $video_path"
+  done
+fi

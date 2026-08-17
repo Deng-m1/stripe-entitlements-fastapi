@@ -4,22 +4,22 @@ The project separates deterministic local/PostgreSQL tests, opt-in automated Str
 test-mode tests, real-browser signed-delivery tests, manual observations, and live
 production verification. Passing one layer must not be described as passing another.
 
-Current hardened-tree evidence recorded on 2026-08-02:
+Current `0.2.0` release-candidate evidence recorded on 2026-08-17:
 
 | Layer | Current result | Boundary |
 | --- | --- | --- |
 | Local/backend | 270 passed from 279 collected; 9 `real_stripe` cases deselected | Real PostgreSQL, mocked Stripe responses |
-| Frontend | 62 passed; lint, typecheck, production build, and production-dependency audit passed | No Stripe network |
+| Frontend | 62 passed; lint, typecheck, production build, production npm audit, and complete npm audit passed | No Stripe network |
 | Real Stripe suite | 9/9 passed with strict cleanup and zero run-owned inventory | Direct test-mode API/Event polling; not signed delivery |
-| Browser policy gates | 2/2 passed: `full_period_reset` and `prorated_delta` | Real Checkout/3DS/SCA/signed delivery in test mode |
+| Browser policy gates, CLI transport | 2/2 passed: `full_period_reset` and `prorated_delta` | Real Checkout/3DS/SCA and signed Stripe CLI forwarding; not endpoint metadata |
+| Temporary endpoint gates | Latest dual-policy pass remains 2026-08-02 | Version-pinned endpoint metadata and signed Dahlia delivery |
 | Live production payload | **not run** | Test mode never substitutes for live mode |
 
 The earlier 2026-08-01 pre-hardening baseline—239 local/backend, 7 real Stripe,
 60 frontend, and 2 browser policy runs—is retained only as historical regression
-evidence. It must not be cited as proof of the current tree. The earlier full npm audit
-also reported nine high-severity development-only ESLint/minimatch/brace-expansion
-advisories whose available npm fix was the breaking ESLint 10 upgrade; the current
-record above claims only the production-dependency audit that was actually rerun.
+evidence. It must not be cited as proof of the current tree. The current Python,
+production npm, and complete npm audits all report zero known vulnerabilities; future
+advisories still require a fresh release run.
 
 ## Default backend suite
 
@@ -117,9 +117,10 @@ for Pro Monthly with 1,000 credits.
 
 The browser refuses card entry unless the actual hosted URL contains a `cs_test_`
 Session. A remote base URL requires a second explicit acknowledgement. The full-stack
-runner also creates and verifies a temporary test Webhook Endpoint and inspects
-PostgreSQL for handled signed Events at the configured snapshot version. Its final
-verifier binds exactly one Checkout Event, one initial `invoice.paid`, and one
+runner defaults to creating and verifying a temporary test Webhook Endpoint; an explicit
+Stripe CLI mode is available for local signed forwarding when a Quick Tunnel is
+unavailable. Both inspect PostgreSQL for handled signed Events at the configured snapshot
+version. The final verifier binds exactly one Checkout Event, one initial `invoice.paid`, and one
 settlement `invoice.paid` to this run's account, Session, two funding Invoices, grants,
 and allocation policy; it also requires no unresolved incident for those identities.
 Every additional account-matched Event is checked against Stripe's identity, type, mode,
@@ -133,12 +134,17 @@ artifact handling, and evidence boundaries.
 Endpoint metadata, signed transport, database projection and live-production evidence
 requirements are separated in [the webhook verification runbook](WEBHOOK_VERIFICATION.md).
 
-Current evidence: the 2026-08-02 full-period and prorated-delta runs completed in about
-1.6 and 1.7 minutes. Each projected Starter/Monthly/300 and Pro/Monthly/1,000, bound
-exactly three essential signed Events, found zero unrelated Events, verified a Dahlia
-endpoint payload versus the independent Clover Event API view, had no unresolved
-identity-related incident, and completed strict cleanup. Each happened to observe seven
-account-related Events; seven is incidental and is not a fixed assertion.
+Current CLI-transport evidence: both policies passed on 2026-08-17. Each projected
+Starter/Monthly/300 and Pro/Monthly/1,000, bound exactly three essential signed Events,
+found zero unrelated Events, used signed Clover payloads for that test account, had no
+unresolved identity-related incident, and completed strict cleanup. This does not prove
+Webhook Endpoint metadata or endpoint-specific version pinning.
+
+The latest endpoint-mode evidence remains the 2026-08-02 full-period and prorated-delta
+runs, which completed in about 1.6 and 1.7 minutes. Each verified a Dahlia endpoint
+payload versus the independent Clover Event API view and met the same projection,
+identity, incident, and cleanup checks. Each happened to observe seven account-related
+Events; seven is incidental and is not a fixed assertion.
 
 Historical note: the pre-hardening 2026-08-01 policy runs each completed in about 1.2
 minutes and happened to store five account-related signed Events. Those older runs are
@@ -150,7 +156,8 @@ Tests marked `real_stripe` make network calls only when `STRIPE_SECRET_KEY` star
 `sk_test_`. Live keys fail before a network call. Objects are uniquely marked and cleanup
 targets only objects created by that run.
 
-The current nine-case automated suite passed on 2026-08-02 and asserts:
+The current nine-case automated suite passed on the `0.2.0` release candidate on
+2026-08-17 and asserts:
 
 - creation of isolated real test-mode Products, monthly/yearly Prices, Customers and
   Subscriptions;
@@ -183,9 +190,9 @@ The current nine-case automated suite passed on 2026-08-02 and asserts:
   active Prices/Products, Test Clocks, and unfinished Subscription Schedules;
 - a test failure if cleanup, inventory, or zero-inventory verification fails.
 
-All nine assertions passed against Stripe test mode after the current hardening. The
-earlier seven-case run is historical evidence only; future releases must rerun the
-current suite rather than inheriting either result.
+All nine assertions passed against Stripe test mode on 2026-08-17 after the current
+hardening. The earlier seven-case run is historical evidence only; future releases must
+rerun the current suite rather than inheriting either result.
 
 The plan-change and Test Clock tests use direct Stripe test-mode requests plus Event
 polling, followed by the real PostgreSQL processor. They do **not** prove signed webhook

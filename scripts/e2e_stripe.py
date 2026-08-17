@@ -404,7 +404,8 @@ async def verify_database(args: argparse.Namespace) -> None:
             f"plan={args.expected_plan}/month credits={args.expected_credits} "
             f"policy={args.transition_policy} account_events={len(events)} "
             f"unrelated_events={total_events - len(events)} essential_events=3 "
-            f"endpoint_payload_api_version={args.event_api_version} "
+            f"signed_delivery_transport={args.delivery_transport} "
+            f"signed_payload_api_version={args.event_api_version} "
             "stripe_event_api_view_versions="
             f"{','.join(sorted(stripe_event_api_versions))}"
         )
@@ -688,6 +689,145 @@ async def cleanup_account(args: argparse.Namespace) -> None:
             pass
 
 
+def recover_cleanup_manifest(args: argparse.Namespace) -> None:
+    manifest_path = Path(args.manifest).resolve()
+    state = manifest_path.stat()
+    if state.st_mode & 0o077:
+        raise RuntimeError("cleanup manifest must not be readable by group or other users")
+    manifest_raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(manifest_raw, dict):
+        raise RuntimeError("cleanup manifest must contain a JSON object")
+
+    manifest: dict[str, Any] = manifest_raw
+    account_id = str(manifest.get("account_id") or "")
+    session_id = str(manifest.get("checkout_session_id") or "")
+    customer_id = str(manifest.get("stripe_customer_id") or "")
+    subscription_id = str(manifest.get("stripe_subscription_id") or "")
+    endpoint_id = str(manifest.get("endpoint_id") or "")
+    endpoint_description = str(manifest.get("endpoint_description") or "")
+    endpoint_url = str(manifest.get("endpoint_url") or "")
+
+    if any((session_id, customer_id, subscription_id)) and not account_id:
+        raise RuntimeError("cleanup manifest has Stripe account objects without account identity")
+
+    owned_customer_id: str | None = None
+    matching_sessions: list[Any] = []
+    if account_id:
+        if session_id:
+            try:
+                matching_sessions.append(stripe.checkout.Session.retrieve(session_id, **_options()))
+            except stripe.InvalidRequestError:
+                pass
+        else:
+            sessions = _all_list_items(
+                stripe.checkout.Session.list,
+                limit=100,
+                **_options(),
+            )
+            for candidate in sessions:
+                raw = _dict(candidate)
+                metadata = raw.get("metadata") or {}
+                if (
+                    not bool(raw.get("livemode"))
+                    and str(raw.get("client_reference_id")) == account_id
+                    and str(metadata.get("account_id")) == account_id
+                ):
+                    matching_sessions.append(candidate)
+        if len(matching_sessions) > 1:
+            raise RuntimeError("multiple Checkout Sessions matched one recovery manifest")
+        if matching_sessions:
+            session = matching_sessions[0]
+            raw = _dict(session)
+            metadata = raw.get("metadata") or {}
+            session_customer_id = _object_id(raw.get("customer"))
+            owned = (
+                not bool(raw.get("livemode"))
+                and str(raw.get("client_reference_id")) == account_id
+                and str(metadata.get("account_id")) == account_id
+                and (not customer_id or session_customer_id == customer_id)
+            )
+            if not owned:
+                raise RuntimeError("refusing to recover a Checkout Session outside this run")
+            owned_customer_id = session_customer_id
+            if raw.get("status") == "open":
+                expired = _dict(session.expire(**_options()))
+                if expired.get("status") != "expired":
+                    raise RuntimeError("recovered Checkout Session did not expire")
+
+    if subscription_id:
+        try:
+            subscription = stripe.Subscription.retrieve(subscription_id, **_options())
+            subscription_raw = _dict(subscription)
+        except stripe.InvalidRequestError:
+            subscription = None
+            subscription_raw = {}
+        if subscription is not None:
+            metadata = subscription_raw.get("metadata") or {}
+            subscription_customer_id = _object_id(subscription_raw.get("customer"))
+            owned = (
+                not bool(subscription_raw.get("livemode"))
+                and account_id
+                and str(metadata.get("account_id")) == account_id
+                and metadata.get("product_line") == E2E_PRODUCT_LINE
+                and subscription_customer_id is not None
+                and (not customer_id or subscription_customer_id == customer_id)
+                and (owned_customer_id is None or subscription_customer_id == owned_customer_id)
+            )
+            if not owned:
+                raise RuntimeError("refusing to recover a Subscription outside this run")
+            owned_customer_id = subscription_customer_id
+            if subscription_raw.get("status") != "canceled":
+                canceled = _dict(subscription.cancel(**_options()))
+                if canceled.get("status") != "canceled":
+                    raise RuntimeError("recovered Subscription did not cancel")
+
+    if customer_id:
+        if owned_customer_id is not None and owned_customer_id != customer_id:
+            raise RuntimeError("cleanup manifest Customer conflicts with verified ownership")
+        if owned_customer_id is None:
+            try:
+                customer_probe = stripe.Customer.retrieve(customer_id, **_options())
+                customer_probe_raw = _dict(customer_probe)
+            except stripe.InvalidRequestError:
+                customer_probe = None
+                customer_probe_raw = {"deleted": True}
+            if customer_probe is not None and not bool(customer_probe_raw.get("deleted")):
+                raise RuntimeError(
+                    "refusing to delete a Customer without a verified "
+                    "run-owned Session or Subscription"
+                )
+        else:
+            try:
+                customer = stripe.Customer.retrieve(customer_id, **_options())
+                customer_raw = _dict(customer)
+            except stripe.InvalidRequestError:
+                customer = None
+                customer_raw = {"deleted": True}
+            if customer is not None and not bool(customer_raw.get("deleted")):
+                if bool(customer_raw.get("livemode")):
+                    raise RuntimeError("refusing to delete a live Customer")
+                deleted = _dict(customer.delete(**_options()))
+                if not bool(deleted.get("deleted")):
+                    raise RuntimeError("recovered Customer did not delete")
+
+    if endpoint_id:
+        delete_webhook(
+            argparse.Namespace(
+                endpoint_id=endpoint_id,
+                description=endpoint_description,
+            )
+        )
+    elif endpoint_description and endpoint_url.startswith("https://"):
+        delete_webhook_by_description(
+            argparse.Namespace(
+                description=endpoint_description,
+                url=endpoint_url,
+            )
+        )
+
+    print("verified cleanup manifest: run-owned Stripe test objects are closed")
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description="Manage isolated Stripe browser E2E state")
     commands = root.add_subparsers(dest="command", required=True)
@@ -728,6 +868,11 @@ def parser() -> argparse.ArgumentParser:
     database.add_argument("--database-url", required=True)
     database.add_argument("--external-ref", required=True)
     database.add_argument("--event-api-version", required=True)
+    database.add_argument(
+        "--delivery-transport",
+        choices=("endpoint", "stripe_cli"),
+        default="endpoint",
+    )
     database.add_argument("--expected-plan", default="starter")
     database.add_argument("--expected-credits", type=int, default=300)
     database.add_argument(
@@ -766,6 +911,10 @@ def parser() -> argparse.ArgumentParser:
     cleanup.add_argument("--database-url", required=True)
     cleanup.add_argument("--external-ref", required=True)
     cleanup.set_defaults(run=cleanup_account)
+
+    recover = commands.add_parser("recover-cleanup")
+    recover.add_argument("--manifest", required=True)
+    recover.set_defaults(run=recover_cleanup_manifest)
     return root
 
 
