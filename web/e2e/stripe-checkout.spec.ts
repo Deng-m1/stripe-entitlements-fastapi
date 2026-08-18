@@ -258,27 +258,24 @@ async function openHostedCheckout(page: Page, checkoutUrl: string): Promise<void
   if (!expectedSession) {
     throw new Error("The captured Checkout redirect has no test Session identity.");
   }
-  let lastError: unknown;
-  try {
-    await page.waitForURL(
-      (url) => checkoutSessionId(url.toString()) === expectedSession,
-      { timeout: 30_000, waitUntil: "commit" },
-    );
-    return;
-  } catch (error) {
-    lastError = error;
-  }
+
+  // Checkout capture deliberately aborts the application's automatic navigation.
+  // Chromium still updates page.url() before showing an empty aborted document, so
+  // URL matching is not proof that hosted Checkout loaded. Always issue a fresh
+  // navigation after the temporary route is removed.
+  let lastError: unknown = new Error("Stripe Checkout navigation did not start.");
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      await page.goto(checkoutUrl, { timeout: 30_000, waitUntil: "commit" });
-      if (checkoutSessionId(page.url()) === expectedSession) return;
+      await page.goto(checkoutUrl, { timeout: 45_000, waitUntil: "commit" });
+      if (checkoutSessionId(page.url()) !== expectedSession) {
+        throw new Error("Hosted Checkout opened a different Session identity.");
+      }
+      return;
     } catch (error) {
       lastError = error;
-      if (checkoutSessionId(page.url()) === expectedSession) return;
-      if (!/ERR_NETWORK_CHANGED|ERR_INTERNET_DISCONNECTED/.test(String(error))) {
-        if (attempt === 3) throw error;
+      if (attempt < 3) {
+        await page.waitForTimeout(attempt * 500);
       }
-      await page.waitForTimeout(attempt * 500);
     }
   }
   throw lastError;
@@ -291,6 +288,22 @@ async function prepareCheckoutCapture(page: Page, backendURL: string): Promise<{
   let redirect: CheckoutRedirect | undefined;
   let captureError: unknown;
   const routePattern = /\/api\/checkout(?:\?.*)?$/;
+  const automaticCheckoutNavigation = /^https:\/\/checkout\.stripe\.com\//;
+
+  // The application redirects immediately after receiving the Session URL. During
+  // capture, abort only that automatic top-level navigation so Locator.click() does
+  // not wait for a slow external page load. The trusted URL is opened explicitly
+  // after both routes are removed.
+  await page.route(automaticCheckoutNavigation, async (route) => {
+    if (
+      route.request().isNavigationRequest() &&
+      route.request().frame() === page.mainFrame()
+    ) {
+      await route.abort("blockedbyclient");
+      return;
+    }
+    await route.continue();
+  });
 
   await page.route(routePattern, async (route) => {
     if (route.request().method() !== "POST") {
@@ -347,7 +360,10 @@ async function prepareCheckoutCapture(page: Page, backendURL: string): Promise<{
       }
       return redirect;
     },
-    release: () => page.unroute(routePattern),
+    release: async () => {
+      await page.unroute(routePattern);
+      await page.unroute(automaticCheckoutNavigation);
+    },
   };
 }
 

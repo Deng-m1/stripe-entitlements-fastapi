@@ -4,6 +4,11 @@ import { describe, expect, it, vi } from "vitest";
 import { AccountScreen } from "@/components/AccountScreen";
 import { PricingScreen } from "@/components/PricingScreen";
 import { SuccessScreen } from "@/components/SuccessScreen";
+import { BillingApiError } from "@/lib/http-api";
+import {
+  completeIdempotentIntent,
+  idempotencyKeyForIntent,
+} from "@/lib/idempotency";
 import {
   createMockBillingApi,
   demoAccount,
@@ -308,6 +313,41 @@ describe("billing screens", () => {
     );
   });
 
+  it("retains the Checkout idempotency key after redirect so cancel-return can reopen the same Session", async () => {
+    const user = userEvent.setup();
+    const api = testApi({
+      account: {
+        ...demoAccount(),
+        plan_key: "free",
+        plan_interval: null,
+        subscription_status: "none",
+        current_period_end: null,
+        entitlements: [],
+      },
+    });
+    const redirect = vi.fn();
+    render(
+      <PricingScreen
+        api={api}
+        billingRedirect={redirect}
+        internalRedirect={vi.fn()}
+      />,
+    );
+
+    await screen.findByRole("heading", { name: "Starter" });
+    const choose = screen.getByRole("button", { name: "Choose Starter month" });
+    await user.click(choose);
+    await waitFor(() => expect(api.createCheckout).toHaveBeenCalledTimes(1));
+    await user.click(choose);
+    await waitFor(() => expect(api.createCheckout).toHaveBeenCalledTimes(2));
+
+    const calls = vi.mocked(api.createCheckout).mock.calls;
+    const first = calls[0]?.[1] as { idempotencyKey: string };
+    const second = calls[1]?.[1] as { idempotencyKey: string };
+    expect(second.idempotencyKey).toBe(first.idempotencyKey);
+    expect(redirect).toHaveBeenCalledTimes(2);
+  });
+
   it("reuses the Checkout idempotency key when the same user intent is retried", async () => {
     const user = userEvent.setup();
     const api = testApi({
@@ -390,6 +430,67 @@ describe("billing screens", () => {
       idempotencyKey: string;
     };
     expect(secondOptions.idempotencyKey).toBe(firstOptions.idempotencyKey);
+  });
+
+  it("rotates a terminally expired preview key but retains retryable preview failures", async () => {
+    const user = userEvent.setup();
+    const api = testApi({});
+    const previewPlanChange = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new BillingApiError(
+          "this plan-change intent is no longer reusable; start a new intent",
+          409,
+        ),
+      )
+      .mockResolvedValueOnce(preview());
+    api.previewPlanChange = previewPlanChange;
+    render(
+      <PricingScreen
+        api={api}
+        billingRedirect={vi.fn()}
+        internalRedirect={vi.fn()}
+      />,
+    );
+
+    await screen.findByRole("heading", { name: "Starter" });
+    await user.click(screen.getByRole("button", { name: "Yearly" }));
+    const choose = screen.getByRole("button", { name: "Choose Pro year" });
+    await user.click(choose);
+    expect(await screen.findByText(/no longer reusable/)).toBeInTheDocument();
+    await user.click(choose);
+    await screen.findByRole("dialog");
+
+    const calls = previewPlanChange.mock.calls;
+    const first = calls[0]?.[1] as { idempotencyKey: string };
+    const second = calls[1]?.[1] as { idempotencyKey: string };
+    expect(second.idempotencyKey).not.toBe(first.idempotencyKey);
+  });
+
+  it("retains a successful preview idempotency key when the dialog is closed and reopened", async () => {
+    const user = userEvent.setup();
+    const api = testApi({});
+    render(
+      <PricingScreen
+        api={api}
+        billingRedirect={vi.fn()}
+        internalRedirect={vi.fn()}
+      />,
+    );
+
+    await screen.findByRole("heading", { name: "Starter" });
+    await user.click(screen.getByRole("button", { name: "Yearly" }));
+    const choose = screen.getByRole("button", { name: "Choose Pro year" });
+    await user.click(choose);
+    await screen.findByRole("dialog");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.click(choose);
+    await waitFor(() => expect(api.previewPlanChange).toHaveBeenCalledTimes(2));
+
+    const calls = vi.mocked(api.previewPlanChange).mock.calls;
+    const first = calls[0]?.[1] as { idempotencyKey: string };
+    const second = calls[1]?.[1] as { idempotencyKey: string };
+    expect(second.idempotencyKey).toBe(first.idempotencyKey);
   });
 
   it("opens the Portal and renders a structured pending change", async () => {
@@ -644,6 +745,12 @@ describe("billing screens", () => {
   });
 
   it("polls account state until the target webhook projection appears", async () => {
+    const checkoutIntent = "checkout:pro:year";
+    const previewIntent = "preview:pro:year";
+    completeIdempotentIntent(checkoutIntent);
+    completeIdempotentIntent(previewIntent);
+    const checkoutKey = idempotencyKeyForIntent(checkoutIntent);
+    const previewKey = idempotencyKeyForIntent(previewIntent);
     let polls = 0;
     const api = testApi({});
     api.getAccount = vi.fn(async () => {
@@ -666,6 +773,10 @@ describe("billing screens", () => {
       }),
     ).toBeInTheDocument();
     expect(screen.getByText(/pro\/year as active/)).toBeInTheDocument();
+    expect(idempotencyKeyForIntent(checkoutIntent)).not.toBe(checkoutKey);
+    expect(idempotencyKeyForIntent(previewIntent)).not.toBe(previewKey);
+    completeIdempotentIntent(checkoutIntent);
+    completeIdempotentIntent(previewIntent);
   });
 
   it("does not poll or confirm when the billing return target is missing", async () => {
@@ -681,6 +792,9 @@ describe("billing screens", () => {
   });
 
   it("does not confirm active state when entitlements are not enforceable", async () => {
+    const previewIntent = "preview:pro:year:not-enforceable";
+    completeIdempotentIntent(previewIntent);
+    const retainedKey = idempotencyKeyForIntent(previewIntent);
     const api = testApi({});
     api.getAccount = vi.fn(async () => ({
       ...demoAccount("pro", "year"),
@@ -701,6 +815,8 @@ describe("billing screens", () => {
         name: "Payment may still be processing",
       }),
     ).toBeInTheDocument();
+    expect(idempotencyKeyForIntent(previewIntent)).toBe(retainedKey);
+    completeIdempotentIntent(previewIntent);
   });
 
   it.each(["pro", "ultra"])(

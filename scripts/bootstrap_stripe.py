@@ -11,6 +11,7 @@ import stripe
 
 from stripe_entitlements.catalog import Plan, PlanCatalog
 from stripe_entitlements.portal_policy import portal_configuration_is_safe
+from stripe_entitlements.stripe_gateway import StripeGateway
 
 STRIPE_API_VERSION = os.getenv("STRIPE_API_VERSION", "2026-06-24.dahlia")
 
@@ -58,8 +59,16 @@ def _portal_configs(key: str):
         starting_after = page.data[-1].id
 
 
-def _safe_portal(config: dict[str, Any], expected_livemode: bool = False) -> bool:
-    return portal_configuration_is_safe(config, expected_livemode=expected_livemode)
+def _safe_portal(
+    config: dict[str, Any],
+    expected_livemode: bool = False,
+    expected_product_line: str = "example-entitlements",
+) -> bool:
+    return portal_configuration_is_safe(
+        config,
+        expected_livemode=expected_livemode,
+        expected_product_line=expected_product_line,
+    )
 
 
 def _find_product(key: str, product_line: str, plan: str):
@@ -95,16 +104,25 @@ def ensure_price(
     lookup_key = catalog.lookup_key(plan.key, interval)
     expected = (plan.month_usd if interval == "month" else plan.year_usd) * 100
     existing = stripe.Price.list(
-        lookup_keys=[lookup_key], active=True, limit=1, **_options(key)
+        lookup_keys=[lookup_key],
+        active=True,
+        limit=1,
+        expand=["data.currency_options", "data.product"],
+        **_options(key),
     ).data
     if existing:
         price = existing[0]
-        recurring = _dict(price).get("recurring") or {}
-        if (
-            price.product == product.id
-            and price.currency == plan.currency
-            and price.unit_amount == expected
-            and recurring.get("interval") == interval
+        price_raw = _dict(price)
+        if StripeGateway._object_id(
+            price_raw.get("product")
+        ) == product.id and StripeGateway._catalog_price_matches(
+            price_raw,
+            expected_currency=plan.currency,
+            expected_unit_amount=expected,
+            expected_interval=interval,
+            expected_product_line=str(product.metadata["product_line"]),
+            expected_plan_key=plan.key,
+            expected_lookup_key=lookup_key,
         ):
             print(f"price ok: {lookup_key} -> {price.id}")
             return price
@@ -112,7 +130,11 @@ def ensure_price(
         product=product.id,
         currency=plan.currency,
         unit_amount=expected,
-        recurring={"interval": interval},
+        recurring={
+            "interval": interval,
+            "interval_count": 1,
+            "usage_type": "licensed",
+        },
         lookup_key=lookup_key,
         transfer_lookup_key=True,
         metadata={"product_line": product.metadata["product_line"], "plan": plan.key},
@@ -167,17 +189,27 @@ def verify(key: str, catalog: PlanCatalog, product_line: str) -> None:
         for interval, amount in (("month", plan.month_usd), ("year", plan.year_usd)):
             lookup_key = catalog.lookup_key(plan.key, interval)
             prices = stripe.Price.list(
-                lookup_keys=[lookup_key], active=True, limit=2, **_options(key)
+                lookup_keys=[lookup_key],
+                active=True,
+                limit=2,
+                expand=["data.currency_options", "data.product"],
+                **_options(key),
             ).data
             if len(prices) != 1:
                 raise RuntimeError(f"expected one active price for {lookup_key}")
             price = prices[0]
-            recurring = _dict(price).get("recurring") or {}
+            price_raw = _dict(price)
             if (
-                price.product != product.id
-                or price.currency != plan.currency
-                or price.unit_amount != amount * 100
-                or recurring.get("interval") != interval
+                StripeGateway._object_id(price_raw.get("product")) != product.id
+                or not StripeGateway._catalog_price_matches(
+                    price_raw,
+                    expected_currency=plan.currency,
+                    expected_unit_amount=amount * 100,
+                    expected_interval=interval,
+                    expected_product_line=product_line,
+                    expected_plan_key=plan.key,
+                    expected_lookup_key=lookup_key,
+                )
                 or bool(price.livemode) != expected_live
             ):
                 raise RuntimeError(f"price drift: {lookup_key}")
@@ -191,7 +223,7 @@ def verify(key: str, catalog: PlanCatalog, product_line: str) -> None:
         if (config.get("metadata") or {}).get("product_line") != product_line:
             continue
         update = (config.get("features") or {}).get("subscription_update") or {}
-        if _safe_portal(config, expected_live):
+        if _safe_portal(config, expected_live, product_line):
             matching.append(config)
         else:
             drifted.append(

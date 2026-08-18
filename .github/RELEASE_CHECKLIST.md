@@ -6,8 +6,9 @@
 - [ ] Link every billing behavior change to an invariant and migration.
 - [ ] Separate automated PostgreSQL, automated real Stripe, manual test-mode and
       production evidence.
-- [ ] Bind every pass claim to the exact commit; label older 239/7/60/2 results as
-      pre-hardening history rather than current evidence.
+- [ ] Bind every pass claim to the exact commit. Current `0.2.1` evidence is 701 local
+      PostgreSQL tests, 9 real Stripe cases, 102 frontend tests, and 2 browser policies;
+      label older 239/7/60/2 and 270/9/62/2 results as historical.
 - [ ] Cite Test Clock renewal/annual-slot evidence only when the full annual lifecycle
       test actually ran; a collected or skipped test is not evidence.
 - [ ] Record outbound request API version and webhook Event snapshot API version
@@ -92,11 +93,12 @@
 ## Database and deployment
 
 - [ ] Back up all ten correctness tables together.
-- [ ] Apply `001_schema.sql`, `002_plan_transitions.sql`, and
-      `003_transition_policies.sql` before new code.
+- [ ] Apply all four migrations through `004_event_audit_hardening.sql` before new code.
+- [ ] Verify every bundled migration checksum; tolerate later migration rows only when
+      the runtime/schema change remains backward-compatible during rolling deployment.
 - [ ] Verify restore/PITR and run reconciliation in staging.
-- [ ] Confirm all replicas use identical catalog, migrations, transition policy,
-      product-line, and version settings.
+- [ ] Confirm all replicas use the same catalog, transition policy, product-line, Stripe
+      version settings, and mutually compatible migration sets.
 - [ ] Verify annual/reconciliation scheduler configuration and alerts.
 - [ ] Verify unresolved incidents, stale leases, `applying` age/23-hour alerts,
       clawback debt, and webhook 5xx dashboards.
@@ -136,6 +138,8 @@
         and final repository URL;
   - [ ] confirm the OCR privacy gate finds no test subject, email, card, expiry, or
         cardholder data;
-  - [ ] describe CLI signed forwarding separately from endpoint-metadata evidence.
+  - [ ] describe CLI signed forwarding separately from endpoint-metadata evidence;
+  - [ ] unless a new cut is recorded and reviewed, label the 48.800-second video as the
+        `0.2.0` visual artifact rather than `0.2.1` code/network evidence.
 - [ ] Tag with a signed/annotated version and publish release notes.
 - [ ] Include migrations, compatibility, evidence boundary, rollback and known limits.

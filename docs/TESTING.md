@@ -4,14 +4,15 @@ The project separates deterministic local/PostgreSQL tests, opt-in automated Str
 test-mode tests, real-browser signed-delivery tests, manual observations, and live
 production verification. Passing one layer must not be described as passing another.
 
-Current `0.2.0` release-candidate evidence recorded on 2026-08-17:
+Current `0.2.1` release-candidate evidence recorded on 2026-08-18:
 
 | Layer | Current result | Boundary |
 | --- | --- | --- |
-| Local/backend | 270 passed from 279 collected; 9 `real_stripe` cases deselected | Real PostgreSQL, mocked Stripe responses |
-| Frontend | 62 passed; lint, typecheck, production build, production npm audit, and complete npm audit passed | No Stripe network |
-| Real Stripe suite | 9/9 passed with strict cleanup and zero run-owned inventory | Direct test-mode API/Event polling; not signed delivery |
-| Browser policy gates, CLI transport | 2/2 passed: `full_period_reset` and `prorated_delta` | Real Checkout/3DS/SCA and signed Stripe CLI forwarding; not endpoint metadata |
+| Local/backend | 701 passed from 710 collected; 9 `real_stripe` cases deselected | Real PostgreSQL, mocked Stripe responses |
+| Frontend | 102 passed; lint, typecheck, production build, production npm audit, and complete npm audit passed | No Stripe network |
+| Real Stripe suite | 9/9 passed with strict cleanup and zero run-owned active inventory | Direct test-mode API/Event polling; not signed delivery |
+| Browser policy gates, CLI transport | 2/2 passed: `full_period_reset` and `prorated_delta`; each reached Pro/1,000 with 7 related, 0 unrelated, and exactly 3 essential Events | Real Checkout/3DS/SCA and signed Stripe CLI forwarding; not endpoint metadata |
+| Wheel/container | Independent Wheel install plus four-migration PostgreSQL run passed; UID/GID 10001 read-only Docker health passed | Built artifacts, not Stripe network |
 | Temporary endpoint gates | Latest dual-policy pass remains 2026-08-02 | Version-pinned endpoint metadata and signed Dahlia delivery |
 | Live production payload | **not run** | Test mode never substitutes for live mode |
 
@@ -91,13 +92,15 @@ npm test
 npm run build
 ```
 
-The 62-test suite covers annual total/equivalent/savings display, full-period and
+The 102-test suite covers annual total/equivalent/savings display, full-period and
 prorated-delta immediate copy, explicit period-end copy, all annual-origin policy cases
-(including `SY → PY/UY`), Checkout and preview idempotency-key reuse, Portal, pending
-state, hosted-invoice recovery, missing Stripe.js configuration, client-secret-first
-SCA with hosted-Invoice fallback, and polling until webhook-projected target state. It
-also covers fail-closed public-site URL/indexing configuration, server-rendered reference
-plans before account hydration, visible landing/FAQ JSON-LD, and metadata-route defaults.
+(including `SY → PY/UY`), reusable Checkout/preview/Portal idempotency intents, pending
+state, hosted-invoice recovery, strict Stripe.js confirmation methods/statuses, and
+polling until webhook-projected target state. It also covers bounded HTTP timeouts,
+redirect and access-token validation, no-store fetch options, sanitized provider errors,
+build-time production demo rejection, security headers, fail-closed public-site URL and
+indexing configuration, server-rendered reference plans, visible landing/FAQ JSON-LD,
+and metadata-route defaults.
 The browser-process environment test proves that Chromium receives only a narrow
 runtime allowlist, not the Node helper's Stripe test key or database DSN.
 The backend additionally verifies that the public JSON catalog cannot drift from
@@ -134,11 +137,12 @@ artifact handling, and evidence boundaries.
 Endpoint metadata, signed transport, database projection and live-production evidence
 requirements are separated in [the webhook verification runbook](WEBHOOK_VERIFICATION.md).
 
-Current CLI-transport evidence: both policies passed on 2026-08-17. Each projected
-Starter/Monthly/300 and Pro/Monthly/1,000, bound exactly three essential signed Events,
-found zero unrelated Events, used signed Clover payloads for that test account, had no
-unresolved identity-related incident, and completed strict cleanup. This does not prove
-Webhook Endpoint metadata or endpoint-specific version pinning.
+Current `0.2.1` CLI-transport evidence: both policies passed on 2026-08-18. Each
+projected Starter/Monthly/300 and Pro/Monthly/1,000, observed seven account-related and
+zero unrelated Events, bound exactly three essential signed Events, used signed Clover
+payloads for that test account, had no unresolved identity-related incident, and
+completed strict cleanup. This does not prove Webhook Endpoint metadata or endpoint-
+specific version pinning.
 
 The latest endpoint-mode evidence remains the 2026-08-02 full-period and prorated-delta
 runs, which completed in about 1.6 and 1.7 minutes. Each verified a Dahlia endpoint
@@ -156,8 +160,8 @@ Tests marked `real_stripe` make network calls only when `STRIPE_SECRET_KEY` star
 `sk_test_`. Live keys fail before a network call. Objects are uniquely marked and cleanup
 targets only objects created by that run.
 
-The current nine-case automated suite passed on the `0.2.0` release candidate on
-2026-08-17 and asserts:
+The current nine-case automated suite passed on the `0.2.1` release candidate on
+2026-08-18 and asserts:
 
 - creation of isolated real test-mode Products, monthly/yearly Prices, Customers and
   Subscriptions;
@@ -190,9 +194,9 @@ The current nine-case automated suite passed on the `0.2.0` release candidate on
   active Prices/Products, Test Clocks, and unfinished Subscription Schedules;
 - a test failure if cleanup, inventory, or zero-inventory verification fails.
 
-All nine assertions passed against Stripe test mode on 2026-08-17 after the current
-hardening. The earlier seven-case run is historical evidence only; future releases must
-rerun the current suite rather than inheriting either result.
+All nine assertions passed against Stripe test mode on 2026-08-18 after the current
+hardening and guard simplification. The earlier seven-case run is historical evidence
+only; future releases must rerun the current suite rather than inheriting either result.
 
 The plan-change and Test Clock tests use direct Stripe test-mode requests plus Event
 polling, followed by the real PostgreSQL processor. They do **not** prove signed webhook
@@ -234,7 +238,7 @@ CI:
 | Scenario | Observed result | What it supports |
 | --- | --- | --- |
 | `PY → UM` preview | negative $204 | why every annual-origin transition must defer |
-| declined immediate change | old SKU and active Subscription remained; latest Invoice was open; hosted recovery URL and confirmation secret existed | originally manual and later repeated by the pre-hardening automation; current cases are not yet rerun |
+| declined immediate change | old SKU and active Subscription remained; latest Invoice was open; hosted recovery URL and confirmation secret existed | originally manual; the current 4-case automated failed-payment matrix passed again on 2026-08-18 |
 
 Amounts are observations for that test account/time, not universal expected values. These
 manual checks contain no committed customer, Event, Invoice or secret IDs and should be
@@ -245,16 +249,16 @@ rerun before a release that changes plan transitions or Stripe API version.
 There are three version records that must remain independent:
 
 - outbound SDK requests are configured with `STRIPE_API_VERSION=2026-06-24.dahlia`;
-- historical pre-hardening Events retrieved through the test account's Event API reported
-  `api_version=2025-12-15.clover`;
-- historical pre-hardening signed payloads delivered to an isolated endpoint explicitly
-  pinned to Dahlia reported `api_version=2026-06-24.dahlia`.
+- the 2026-08-18 Stripe CLI signed-forwarding runs observed
+  `api_version=2025-12-15.clover` for their signed payload/Event API view;
+- the separate 2026-08-02 temporary endpoints explicitly pinned to Dahlia delivered
+  signed payloads with `api_version=2026-06-24.dahlia`, while Event API retrieval still
+  reported Clover.
 
-`STRIPE_WEBHOOK_API_VERSION` must match the endpoint's actual Event snapshot. Request
-pinning does not rewrite Events, and an Event API retrieval view must not be used as a
-substitute for the endpoint's signed delivery serialization. The earlier browser run
-observed real test-mode Dahlia delivery. The hardened browser gate must be rerun before
-making that claim for the current tree, and neither result is live-production evidence.
+`STRIPE_WEBHOOK_API_VERSION` must match the actual signed transport's Event snapshot.
+Request pinning does not rewrite Events, and an Event API retrieval view or CLI forwarding
+must not be used as a substitute for endpoint metadata. Neither transport result is live-
+production evidence.
 
 Record all views separately in release evidence:
 

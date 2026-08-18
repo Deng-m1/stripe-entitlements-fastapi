@@ -60,22 +60,27 @@ commit a partial effect.
 
 ## Rolling deployment and migration safety
 
-Apply `001_schema.sql`, `002_plan_transitions.sql`, and
-`003_transition_policies.sql` before sending traffic to code that
-uses authenticated billing APIs. Avoid running a new process against an old schema.
-During a rolling deploy:
+Apply all four migrations through `004_event_audit_hardening.sql` before sending traffic
+to code that uses authenticated billing APIs. Avoid running a new process against an old
+schema. During a rolling deploy:
 
 1. back up all ten correctness tables;
 2. apply forward-compatible migrations once;
-3. deploy API/worker replicas with identical catalog, migration and version settings;
+3. deploy API/worker replicas with identical catalog and runtime policy settings;
 4. verify health, catalog and one authenticated account;
 5. start/re-enable schedulers;
 6. run reconciliation and inspect unresolved incidents.
 
+Each binary verifies the checksum of every migration it bundles, but tolerates later rows
+already present in `schema_migrations`. This allows a backward-compatible old replica to
+remain ready while the new schema rolls out or while a rollback drains newer replicas.
+Never remove, rename, or reinterpret an applied migration; add a new one and keep runtime
+changes backward-compatible until old replicas are gone.
+
 ## Horizontal scaling checklist
 
-- All replicas use the same migrations, `plans.toml`, transition policy, request API
-  version, webhook Event snapshot version, and product-line prefix.
+- All replicas use compatible migrations and the same `plans.toml`, transition policy,
+  request API version, webhook Event snapshot version, and product-line prefix.
 - Do not cache Portal configuration safety indefinitely; runtime Portal creation verifies
   that plan changes remain disabled and cancellation remains period-end.
 - Keep worker clocks synchronized; PostgreSQL timestamps remain authoritative.

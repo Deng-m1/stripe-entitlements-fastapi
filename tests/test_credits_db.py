@@ -5,6 +5,7 @@ import asyncio
 import asyncpg
 import pytest
 
+from stripe_entitlements.bounds import POSTGRES_BIGINT_MAX
 from stripe_entitlements.credits import (
     CreditService,
     CreditsUnavailableError,
@@ -12,6 +13,20 @@ from stripe_entitlements.credits import (
 )
 from stripe_entitlements.processor import EventProcessor
 from tests.builders import paid_invoice, payment_failed
+
+
+async def test_credit_charge_rejects_amount_outside_postgresql_bigint_range(
+    pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account()
+    with pytest.raises(ValueError, match="bigint maximum"):
+        await CreditService(pool).charge(
+            account_id,
+            POSTGRES_BIGINT_MAX + 1,
+            "oversized-credit-charge",
+        )
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("select count(*) from credit_debits") == 0
 
 
 async def test_atomic_charge_and_refund(
@@ -42,6 +57,55 @@ async def test_same_charge_idempotency_key_never_double_spends(
             )
             == 275
         )
+
+
+async def test_cross_account_concurrent_idempotency_conflict_is_deterministic(
+    processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    first_id = await make_account(customer="cus_credit_first", subscription="sub_credit_first")
+    second_id = await make_account(customer="cus_credit_second", subscription="sub_credit_second")
+    await processor.process(
+        paid_invoice(
+            first_id,
+            invoice_id="in_credit_first",
+            customer="cus_credit_first",
+            subscription="sub_credit_first",
+        )
+    )
+    await processor.process(
+        paid_invoice(
+            second_id,
+            invoice_id="in_credit_second",
+            customer="cus_credit_second",
+            subscription="sub_credit_second",
+        )
+    )
+    service = CreditService(pool)
+
+    async def charge(account_id: str) -> str:
+        try:
+            return (await service.charge(account_id, 25, "global-job-key")).outcome
+        except ValueError as exc:
+            assert "different parameters" in str(exc)
+            return "conflict"
+
+    results = await asyncio.gather(charge(first_id), charge(second_id))
+    async with pool.acquire() as conn:
+        balances = await conn.fetch(
+            """select credits_balance from billing_accounts
+                 where id=any($1::uuid[]) order by credits_balance""",
+            [first_id, second_id],
+        )
+        debit_count = await conn.fetchval(
+            "select count(*) from credit_debits where idempotency_key='global-job-key'"
+        )
+        ledger_count = await conn.fetchval(
+            "select count(*) from credit_ledger where reason='usage_charge'"
+        )
+    assert sorted(results) == ["charged", "conflict"]
+    assert [row["credits_balance"] for row in balances] == [275, 300]
+    assert debit_count == 1
+    assert ledger_count == 1
 
 
 async def test_concurrent_distinct_charges_cannot_overdraw(
@@ -128,6 +192,22 @@ async def test_non_active_status_blocks_even_with_a_future_credit_window(
 
     with pytest.raises(CreditsUnavailableError, match="not active"):
         await CreditService(pool).charge(account_id, 1, f"job-{status}")
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["", " padded ", "line\nbreak", "delete\x7f", "zero\u200bwidth", "x" * 201, "💳" * 51],
+)
+async def test_credit_idempotency_keys_have_bounded_visible_shape(
+    key: str, processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account()
+    await processor.process(paid_invoice(account_id))
+    service = CreditService(pool)
+    with pytest.raises(ValueError, match="1 to 200"):
+        await service.charge(account_id, 1, key)
+    with pytest.raises(ValueError, match="1 to 200"):
+        await service.refund(key)
 
 
 async def test_idempotency_key_parameter_mismatch_is_rejected(

@@ -26,11 +26,12 @@ Do not reuse one label for two Stripe contracts:
 - Webhook payloads contain Event `api_version` from the endpoint/account snapshot.
   `STRIPE_WEBHOOK_API_VERSION` must equal that actual value.
 
-In the pre-hardening browser evidence, the test account's Event API retrieval view
-reported `2025-12-15.clover`, while an isolated endpoint pinned to Dahlia delivered
-signed Dahlia payloads for the same lifecycle. The current browser gate has not yet
-repeated that observation. Neither value changes the outbound request version. You may inspect
-the Event API view privately, but do **not** use it to configure the webhook processor:
+The 2026-08-18 `0.2.1` Stripe CLI forwarding runs observed signed Clover payloads and
+a Clover Event API view. The separate 2026-08-02 endpoint runs used isolated endpoints
+pinned to Dahlia and observed signed Dahlia payloads while the Event API view remained
+Clover. Neither value changes the outbound request version, and CLI forwarding does not
+prove endpoint metadata. You may inspect the Event API view privately, but do **not** use
+it alone to configure an endpoint-backed webhook processor:
 
 ```bash
 stripe events list --limit 5
@@ -192,8 +193,9 @@ The current nine-case real suite contains assertions for both a full-price/no-pr
 monthly upgrade and a prorated-delta monthly upgrade through paid Event projection. The
 delta case performs a real full refund and checks cross-Invoice allocation/reversion;
 other cases cover an annual-origin two-phase Schedule and repeatable authentication-
-required/customer-charge-failure pending updates. All nine cases passed on the `0.2.0`
-release candidate on 2026-08-17, including strict cleanup and zero run-owned inventory.
+required/customer-charge-failure pending updates. All nine cases passed on the `0.2.1`
+release candidate on 2026-08-18, including strict cleanup and zero run-owned active
+inventory.
 The earlier seven-case network run is historical evidence only. The remaining 2026-07-31
 manual evidence set contains:
 

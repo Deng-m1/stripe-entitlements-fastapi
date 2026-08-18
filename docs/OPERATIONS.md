@@ -16,9 +16,14 @@ uv run stripe-entitlements migrate
   unique settlement Invoice binding, `billing_funding_allocations`, outstanding
   `billing_clawback_debts`, terminal-closure business idempotency, and reconciliation
   rotation state.
+- `004_event_audit_hardening.sql` adds redacted Event audit snapshots, exact signed-body
+  hashes when available, legacy payload scrubbing, and audit-shape constraints.
 
-Do not send authenticated billing traffic to a new process while its database is still on
-the old schema.
+The migration runner serializes changes with a PostgreSQL advisory lock and rejects a
+changed checksum for any bundled migration already applied. A database may contain later
+migration rows so a previous backward-compatible replica can remain healthy during a
+rolling deploy or rollback. Do not send authenticated billing traffic to a new process
+until every migration bundled with that version has been applied.
 
 ## Scheduled jobs
 
@@ -126,13 +131,15 @@ boundary from the mutable Subscription alone.
 The dedicated Portal configuration must be:
 
 - active and in the same test/live mode as the application;
+- tagged with the configured product line;
 - `subscription_update.enabled=false`;
 - cancellation enabled only with `mode=at_period_end`.
 
-The bootstrap script creates/verifies this policy, and runtime Portal Session creation
-retrieves it again so Dashboard drift fails closed. All price changes use the server
-preview/confirm API; Portal is for payment methods, invoice history, customer email and
-period-end cancellation.
+The runtime check intentionally ignores benign Portal features such as invoice-history,
+payment-method, or customer-profile presentation; those do not bypass the entitlement
+state machine. The bootstrap script creates the recommended complete configuration, and
+runtime Portal Session creation retrieves it again to enforce only the mutation-critical
+policy. All price changes use the server preview/confirm API.
 
 ## API version operations
 
@@ -142,10 +149,11 @@ Track separately:
 - required `STRIPE_WEBHOOK_API_VERSION` for the signed endpoint payload's top-level
   Event `api_version`; there is intentionally no outbound-request-version default.
 
-The current request code targets `2026-06-24.dahlia`. Both hardened browser gates on
-2026-08-02 observed a Clover Event API retrieval view and their separately pinned
-endpoints' real signed Dahlia payloads.
-Neither substitutes for inspecting the deployed endpoint contract and its signed
+The current request code targets `2026-06-24.dahlia`. Both `0.2.1` Stripe CLI browser
+gates on 2026-08-18 observed signed Clover payloads and a Clover Event API view. The
+separate 2026-08-02 temporary endpoints were pinned to Dahlia and delivered real signed
+Dahlia payloads while Event API retrieval remained Clover. Neither CLI forwarding nor an
+Event API view substitutes for inspecting a deployed endpoint contract and its signed
 delivery. A mismatch creates a durable incident and does not apply entitlements.
 
 Record request, signed endpoint payload, and Event API retrieval views separately in
@@ -168,7 +176,7 @@ Back up all ten correctness tables together:
 
 A restore that omits inbox, invoice, ledger, debit, Checkout or plan-change identity can
 reopen duplicate/unauthorized effects. Perform point-in-time recovery drills, verify all
-three migration versions, then run reconciliation and inspect incidents before reopening
+four migration versions, then run reconciliation and inspect incidents before reopening
 traffic.
 
 ## Production monitoring

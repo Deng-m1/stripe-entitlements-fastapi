@@ -125,12 +125,23 @@ Paths that touch account and invoice state lock account first, then invoice.
   after a refund or dispute; and
 - reconciliation rotation state/indexes so bounded runs do not starve later accounts.
 
+`004_event_audit_hardening.sql` adds:
+
+- a SHA-256 column for the exact signed request body when the Event arrived over HTTP;
+- redacted audit snapshots that remove secrets, PII, hosted URLs, and internal prefetch
+  fields from future Event rows; and
+- legacy-payload scrubbing plus audit-shape constraints for previously stored Events.
+
+The hash is forensic evidence only. Event ID and business uniqueness constraints remain
+the idempotency/authorization boundary.
+
 Together the migrations define ten correctness tables. Backup and restore them as one
 unit; restoring account balances without their inbox, Invoice, allocation, debt, or
 intent identity can reopen a business effect.
 
-All migrations are required. Apply them in filename order before deploying the matching
-application version.
+Apply every migration bundled with the deployed version in filename order. Known
+migration checksums are immutable, while a database may contain later rows during a
+backward-compatible rolling deployment or rollback.
 
 ## Supported webhook Event contract
 
@@ -152,8 +163,9 @@ to send only this set.
 the endpoint's snapshot `api_version`; `STRIPE_WEBHOOK_API_VERSION` validates that value.
 Pinning one does not pin the other.
 
-In the current 2026-08-02 browser evidence, Event API retrieval used
-`2025-12-15.clover` while outbound request code targeted `2026-06-24.dahlia`; both
-isolated signed endpoints separately delivered Dahlia. A
-version/livemode mismatch creates a durable incident and does not mutate entitlement
-state.
+In the 2026-08-18 `0.2.1` Stripe CLI forwarding evidence, the signed payload/Event API
+view used `2025-12-15.clover` while outbound request code targeted
+`2026-06-24.dahlia`. In the separate 2026-08-02 endpoint evidence, isolated endpoints
+pinned to Dahlia delivered signed Dahlia payloads while Event API retrieval remained
+Clover. A version/livemode mismatch creates a durable incident and does not mutate
+entitlement state.

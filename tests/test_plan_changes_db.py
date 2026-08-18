@@ -169,6 +169,26 @@ async def _seed_paid_account(
     return account_id
 
 
+@pytest.mark.parametrize("key", ["", " padded ", "line\nbreak", "x" * 201, "💳" * 51])
+async def test_plan_change_idempotency_keys_have_bounded_visible_shape(
+    key: str, pool: asyncpg.Pool, catalog: PlanCatalog, make_account
+) -> None:
+    account_id = await _seed_paid_account(pool, make_account)
+    service = PlanChangeCoordinator(pool, catalog, FakePlanGateway())
+    with pytest.raises(PlanChangeConflictError, match="1 to 200"):
+        await service.preview_remote(account_id, "pro", "month", key)
+
+
+def test_plan_change_lease_ttl_must_be_positive(pool: asyncpg.Pool, catalog: PlanCatalog) -> None:
+    with pytest.raises(ValueError, match="positive"):
+        PlanChangeCoordinator(
+            pool,
+            catalog,
+            FakePlanGateway(),
+            lease_ttl=timedelta(0),
+        )
+
+
 async def test_preview_confirm_is_full_price_and_request_idempotent(
     pool: asyncpg.Pool, catalog: PlanCatalog, make_account
 ) -> None:
@@ -208,6 +228,74 @@ async def test_preview_confirm_is_full_price_and_request_idempotent(
     assert row is not None
     assert row["settlement_invoice_id"] == "in_fake_plan_change"
     assert row["incident_resolved_at"] is not None
+
+
+async def test_finish_and_incident_resolution_commit_atomically(
+    pool: asyncpg.Pool, catalog: PlanCatalog, make_account
+) -> None:
+    account_id = await _seed_paid_account(pool, make_account)
+    gateway = FakePlanGateway()
+    service = PlanChangeCoordinator(pool, catalog, gateway)
+    preview = await service.preview_remote(account_id, "pro", "month", "atomic-finish")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """insert into billing_incidents(
+                   kind,dedupe_key,account_id,invoice_id,detail)
+                 values('unbound_plan_change_payment_failed','in_fake_plan_change',
+                        $1::uuid,'in_fake_plan_change','{}'::jsonb)""",
+            account_id,
+        )
+        await conn.execute(
+            """create or replace function fail_plan_change_incident_resolution()
+                 returns trigger language plpgsql as $$
+                 begin
+                   raise exception 'injected incident resolution failure';
+                 end
+                 $$"""
+        )
+        await conn.execute(
+            """create trigger fail_plan_change_incident_resolution_trigger
+                 before update on billing_incidents
+                 for each row when (old.kind='unbound_plan_change_payment_failed')
+                 execute function fail_plan_change_incident_resolution()"""
+        )
+    try:
+        with pytest.raises(asyncpg.PostgresError, match="injected incident resolution failure"):
+            await service.confirm(account_id, preview.change_id)
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "drop trigger if exists fail_plan_change_incident_resolution_trigger "
+                "on billing_incidents"
+            )
+            await conn.execute("drop function if exists fail_plan_change_incident_resolution()")
+
+    async with pool.acquire() as conn:
+        state = await conn.fetchrow(
+            """select status,settlement_invoice_id,lease_token,last_error
+                 from billing_plan_changes where id=$1::uuid""",
+            preview.change_id,
+        )
+        unresolved = await conn.fetchval(
+            """select count(*) from billing_incidents
+                 where kind='unbound_plan_change_payment_failed'
+                   and invoice_id='in_fake_plan_change' and resolved_at is null"""
+        )
+    assert state is not None
+    assert tuple(state)[:3] == ("applying", None, None)
+    assert state["last_error"] == "RaiseError"
+    assert unresolved == 1
+
+    recovered = await service.confirm(account_id, preview.change_id)
+    async with pool.acquire() as conn:
+        resolved = await conn.fetchval(
+            """select resolved_at is not null from billing_incidents
+                 where kind='unbound_plan_change_payment_failed'
+                   and invoice_id='in_fake_plan_change'"""
+        )
+    assert recovered.status == "applied"
+    assert gateway.remote_apply_mutations == 1
+    assert resolved is True
 
 
 async def test_pending_update_returns_recovery_without_persisting_client_secret(
@@ -357,6 +445,39 @@ async def test_account_entitlement_race_aborts_preview_and_records_incident(
             "select count(*) from billing_incidents where kind='plan_change_account_race'"
         )
     assert count == 1
+
+
+async def test_concurrent_same_preview_returns_busy_instead_of_incomplete_quote(
+    pool: asyncpg.Pool, catalog: PlanCatalog, make_account
+) -> None:
+    account_id = await _seed_paid_account(pool, make_account)
+    gateway = FakePlanGateway()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def block_preview() -> None:
+        started.set()
+        await release.wait()
+
+    gateway.before_preview_return = block_preview
+    service = PlanChangeCoordinator(pool, catalog, gateway)
+    first = asyncio.create_task(
+        service.preview_remote(account_id, "pro", "month", "concurrent-same-preview")
+    )
+    await asyncio.wait_for(started.wait(), timeout=2)
+    try:
+        with pytest.raises(PlanChangeBusyError, match="still being calculated"):
+            await service.preview_remote(
+                account_id,
+                "pro",
+                "month",
+                "concurrent-same-preview",
+            )
+    finally:
+        release.set()
+    completed = await first
+    assert completed.status == "previewed"
+    assert gateway.preview_calls == 1
 
 
 async def test_concurrent_different_previews_leave_one_durable_pending_change(
@@ -535,8 +656,12 @@ async def test_prorated_delta_preview_and_confirm_persist_one_settlement_contrac
     gateway.source_proration_amount = 950
     gateway.target_proration_amount = 2450
     service = PlanChangeCoordinator(pool, catalog, gateway, transition_policy="prorated_delta")
+    async with pool.acquire() as conn:
+        before = int(await conn.fetchval("select extract(epoch from now())::bigint"))
 
     preview = await service.preview_remote(account_id, "pro", "month", "delta-1")
+    async with pool.acquire() as conn:
+        after = int(await conn.fetchval("select extract(epoch from now())::bigint"))
     assert preview.decision.timing == "immediate"
     assert preview.transition_policy == "prorated_delta"
     assert preview.entitlement_credit_delta == 700
@@ -544,6 +669,7 @@ async def test_prorated_delta_preview_and_confirm_persist_one_settlement_contrac
     assert preview.estimated_credit_applied == 950
     assert gateway.preview_policy == "prorated_delta"
     assert isinstance(gateway.preview_proration_date, int)
+    assert before <= gateway.preview_proration_date <= after
 
     confirmed = await service.confirm(account_id, preview.change_id)
     assert confirmed.status == "applied"
@@ -589,6 +715,25 @@ async def test_prorated_delta_inconsistent_catalog_fraction_defers_before_apply(
     preview = await service.preview_remote(account_id, "pro", "month", "delta-bad-fraction")
     assert preview.decision.timing == "period_end"
     await service.confirm(account_id, preview.change_id)
+    assert gateway.apply_calls == []
+
+
+async def test_prorated_delta_overfull_period_fraction_defers_before_apply(
+    pool: asyncpg.Pool, catalog: PlanCatalog, make_account
+) -> None:
+    account_id = await _seed_paid_account(pool, make_account)
+    gateway = FakePlanGateway()
+    gateway.amount_due = 6000
+    gateway.proration_credit = 3800
+    gateway.source_proration_amount = 3800
+    gateway.target_proration_amount = 9800
+    service = PlanChangeCoordinator(pool, catalog, gateway, transition_policy="prorated_delta")
+
+    preview = await service.preview_remote(account_id, "pro", "month", "delta-overfull-period")
+    confirmed = await service.confirm(account_id, preview.change_id)
+
+    assert preview.decision.timing == "period_end"
+    assert confirmed.status == "scheduled"
     assert gateway.apply_calls == []
 
 

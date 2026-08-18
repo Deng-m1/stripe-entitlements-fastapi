@@ -1,6 +1,6 @@
 [project]
 name = "stripe-entitlements-fastapi"
-version = "0.2.0"
+version = "0.2.1"
 description = "Stripe billing and entitlements templates with race-safe full-price and prorated upgrades"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -50,6 +50,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/stripe_entitlements"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"migrations" = "stripe_entitlements/migrations"
+"plans.toml" = "stripe_entitlements/plans.toml"
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers --tb=short"

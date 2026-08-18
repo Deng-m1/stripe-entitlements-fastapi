@@ -35,13 +35,34 @@ class DemoBearerAuthAdapter:
     """Explicit test-mode local adapter; never enable it in production."""
 
     def __init__(self, token: str, subject: str, email: str | None = None) -> None:
-        if not token or not subject:
-            raise ValueError("demo token and subject are required")
-        self._token = token
+        for field, value, maximum in (
+            ("demo token", token, 512),
+            ("demo subject", subject, 512),
+        ):
+            if (
+                not isinstance(value, str)
+                or not value
+                or value != value.strip()
+                or len(value.encode("utf-8")) > maximum
+                or any(not character.isprintable() for character in value)
+                or (field == "demo token" and not value.isascii())
+            ):
+                raise ValueError(f"{field} must be a bounded visible string")
+        if email is not None and (
+            not isinstance(email, str)
+            or not email
+            or email != email.strip()
+            or len(email.encode("utf-8")) > 320
+            or any(not character.isprintable() for character in email)
+        ):
+            raise ValueError("demo email must be a bounded visible string")
+        self._token = token.encode("utf-8")
         self._identity = AuthenticatedIdentity(subject, email)
 
     async def authenticate(self, request: Request) -> AuthenticatedIdentity:
         scheme, _, credential = request.headers.get("Authorization", "").partition(" ")
-        if scheme.lower() != "bearer" or not hmac.compare_digest(credential, self._token):
+        if scheme.lower() != "bearer" or not hmac.compare_digest(
+            credential.encode("utf-8"), self._token
+        ):
             raise AuthenticationError("invalid bearer token")
         return self._identity

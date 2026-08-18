@@ -9,9 +9,16 @@ from typing import Any
 
 import asyncpg
 
+from .bounds import POSTGRES_BIGINT_MAX
 from .catalog import Plan, PlanCatalog
 from .clawbacks import collect_clawback_debts
+from .event_audit import event_payload_sha256, redacted_event_snapshot
+from .invoice_policy import (
+    has_unsupported_invoice_adjustments,
+    has_unsupported_invoice_payment_shape,
+)
 from .ordering import event_wins, rank_for
+from .price_policy import catalog_price_matches
 from .types import ProcessResult
 
 logger = logging.getLogger("stripe_entitlements.processor")
@@ -21,6 +28,26 @@ _CLAWBACK_REASONS = {
     "refund_clawback",
     "dispute_clawback",
     "clawback_debt_collection",
+}
+_SUBSCRIPTION_STATUSES = {
+    "active",
+    "canceled",
+    "incomplete",
+    "incomplete_expired",
+    "past_due",
+    "paused",
+    "trialing",
+    "unpaid",
+}
+_SUPPORTED_EVENT_TYPES = {
+    "checkout.session.completed",
+    "checkout.session.expired",
+    "invoice.paid",
+    "invoice.payment_failed",
+    "customer.subscription.updated",
+    "customer.subscription.deleted",
+    "charge.refunded",
+    "charge.dispute.created",
 }
 
 
@@ -39,12 +66,16 @@ class _ProratedDeltaShape:
 
 
 def _as_id(value: Any) -> str | None:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, Mapping):
-        candidate = value.get("id")
-        return str(candidate) if candidate else None
-    return None
+    candidate = value.get("id") if isinstance(value, Mapping) else value
+    if (
+        not isinstance(candidate, str)
+        or not candidate
+        or candidate != candidate.strip()
+        or len(candidate.encode("utf-8")) > 512
+        or any(not character.isprintable() for character in candidate)
+    ):
+        return None
+    return candidate
 
 
 def _uuid_or_none(value: Any) -> uuid.UUID | None:
@@ -55,20 +86,38 @@ def _uuid_or_none(value: Any) -> uuid.UUID | None:
 
 
 def _subscription_id(obj: Mapping[str, Any]) -> str | None:
-    return _as_id(obj.get("subscription")) or _as_id(
-        ((obj.get("parent") or {}).get("subscription_details") or {}).get("subscription")
-    )
+    direct = _as_id(obj.get("subscription"))
+    if direct:
+        return direct
+    parent = obj.get("parent")
+    if not isinstance(parent, Mapping):
+        return None
+    details = parent.get("subscription_details")
+    return _as_id(details.get("subscription")) if isinstance(details, Mapping) else None
 
 
 def _subscription_metadata(obj: Mapping[str, Any]) -> Mapping[str, Any]:
-    parent = ((obj.get("parent") or {}).get("subscription_details") or {}).get("metadata")
-    if isinstance(parent, Mapping) and parent:
-        return parent
-    legacy = obj.get("subscription_details", {}).get("metadata")
-    if isinstance(legacy, Mapping) and legacy:
-        return legacy
+    parent = obj.get("parent")
+    if isinstance(parent, Mapping):
+        details = parent.get("subscription_details")
+        if isinstance(details, Mapping):
+            metadata = details.get("metadata")
+            if isinstance(metadata, Mapping) and metadata:
+                return metadata
+    legacy = obj.get("subscription_details")
+    if isinstance(legacy, Mapping):
+        metadata = legacy.get("metadata")
+        if isinstance(metadata, Mapping) and metadata:
+            return metadata
     metadata = obj.get("metadata")
     return metadata if isinstance(metadata, Mapping) else {}
+
+
+def _product_line_matches(
+    metadata: Mapping[str, Any], expected: str, *, allow_missing: bool
+) -> bool:
+    observed = metadata.get("product_line")
+    return observed == expected or (allow_missing and observed is None)
 
 
 def _line_lookup(line: Mapping[str, Any]) -> str | None:
@@ -77,21 +126,79 @@ def _line_lookup(line: Mapping[str, Any]) -> str | None:
     price = line.get("price")
     if isinstance(price, Mapping) and price.get("lookup_key"):
         return str(price["lookup_key"])
-    details = (line.get("pricing") or {}).get("price_details") or {}
-    return str(details["lookup_key"]) if details.get("lookup_key") else None
+    pricing = line.get("pricing")
+    details = pricing.get("price_details") if isinstance(pricing, Mapping) else None
+    if isinstance(details, Mapping) and details.get("lookup_key"):
+        return str(details["lookup_key"])
+    return None
+
+
+def _line_price_id(line: Mapping[str, Any]) -> str | None:
+    price_id = _as_id(line.get("price"))
+    if price_id:
+        return price_id
+    pricing = line.get("pricing")
+    details = pricing.get("price_details") if isinstance(pricing, Mapping) else None
+    return _as_id(details.get("price")) if isinstance(details, Mapping) else None
 
 
 def _line_proration(line: Mapping[str, Any]) -> bool:
-    return bool(
-        line.get("proration")
-        or ((line.get("parent") or {}).get("subscription_item_details") or {}).get("proration")
-    )
+    if line.get("proration"):
+        return True
+    parent = line.get("parent")
+    if not isinstance(parent, Mapping):
+        return False
+    details = parent.get("subscription_item_details")
+    return bool(details.get("proration")) if isinstance(details, Mapping) else False
+
+
+def _stripe_integer(value: Any) -> int | None:
+    return value if type(value) is int else None
 
 
 def _timestamp(value: Any) -> datetime | None:
-    if value is None:
+    if type(value) is not int:
         return None
-    return datetime.fromtimestamp(int(value), tz=UTC)
+    try:
+        return datetime.fromtimestamp(value, tz=UTC)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _valid_event_identifier(value: Any, *, max_bytes: int) -> bool:
+    return bool(
+        isinstance(value, str)
+        and value
+        and value == value.strip()
+        and len(value.encode("utf-8")) <= max_bytes
+        and all(character.isprintable() for character in value)
+    )
+
+
+def _event_shape_error(event: Mapping[str, Any]) -> str | None:
+    event_id = event.get("id")
+    if not _valid_event_identifier(event_id, max_bytes=512):
+        return "Stripe Event requires a stable visible string id"
+    event_type = event.get("type")
+    if not _valid_event_identifier(event_type, max_bytes=255):
+        return "Stripe Event requires a stable visible string type"
+    if event_type not in _SUPPORTED_EVENT_TYPES:
+        return None
+    created = event.get("created")
+    if type(created) is not int or created < 0 or created > POSTGRES_BIGINT_MAX:
+        return "supported Stripe Event requires a PostgreSQL-bigint created timestamp"
+    if not isinstance(event.get("livemode"), bool):
+        return "supported Stripe Event requires a boolean livemode value"
+    data = event.get("data")
+    if not isinstance(data, Mapping):
+        return "supported Stripe Event requires a data object"
+    obj = data.get("object")
+    if not isinstance(obj, Mapping):
+        return "supported Stripe Event requires data.object to be an object"
+    object_id = obj.get("id")
+    if not isinstance(object_id, str) or not object_id:
+        return "supported Stripe Event object requires a stable string id"
+    return None
 
 
 def _project_status(status: str | None) -> str:
@@ -102,6 +209,21 @@ def _project_status(status: str | None) -> str:
     if status in {"canceled", "incomplete_expired"}:
         return "canceled"
     return "none"
+
+
+def _projection_order(account: Mapping[str, Any], event: Mapping[str, Any]) -> tuple[int, int]:
+    """Advance, but never rewind, the account-global Event ordering cursor."""
+    current = (int(account["event_created"]), int(account["event_rank"]))
+    incoming = (int(event.get("created") or 0), rank_for(str(event["type"])))
+    return max(current, incoming)
+
+
+def _ordering_tie(account: Mapping[str, Any], event: Mapping[str, Any]) -> bool:
+    if event.get("_remote_verified") is True:
+        return False
+    current = (int(account["event_created"]), int(account["event_rank"]))
+    incoming = (int(event.get("created") or 0), rank_for(str(event["type"])))
+    return current == incoming
 
 
 def _ceil_ratio(units: int, numerator: int, denominator: int) -> int:
@@ -119,35 +241,6 @@ def _annual_slots_allowed(amount: int, refunded: int, minimum: int) -> int:
     # round half up: floor(12 * remaining / amount + 0.5)
     rounded = (24 * remaining + amount) // (2 * amount)
     return max(min(int(rounded), 12), minimum)
-
-
-def _has_unsupported_invoice_adjustments(
-    invoice: Mapping[str, Any], lines: list[Mapping[str, Any]]
-) -> bool:
-    balance_fields = (
-        "starting_balance",
-        "ending_balance",
-        "pre_payment_credit_notes_amount",
-        "post_payment_credit_notes_amount",
-    )
-    if any(int(invoice.get(field) or 0) != 0 for field in balance_fields):
-        return True
-    adjustments = (
-        list(invoice.get("total_tax_amounts") or [])
-        + list(invoice.get("total_taxes") or [])
-        + list(invoice.get("total_discount_amounts") or [])
-    )
-    for line in lines:
-        adjustments.extend(line.get("tax_amounts") or [])
-        adjustments.extend(line.get("taxes") or [])
-        adjustments.extend(line.get("discount_amounts") or [])
-        adjustments.extend(line.get("pretax_credit_amounts") or [])
-    return bool(
-        invoice.get("discounts")
-        or any(
-            int(item.get("amount") or 0) != 0 for item in adjustments if isinstance(item, Mapping)
-        )
-    )
 
 
 class EventProcessor:
@@ -173,22 +266,85 @@ class EventProcessor:
         self.expected_livemode = expected_livemode
         self.expected_api_version = expected_api_version
 
+    async def has_committed_event(self, event_id: object) -> bool:
+        if not _valid_event_identifier(event_id, max_bytes=512):
+            return False
+        assert isinstance(event_id, str)
+        async with self.pool.acquire() as conn:
+            return bool(
+                await conn.fetchval(
+                    "select exists(select 1 from stripe_webhook_events where id=$1)",
+                    event_id,
+                )
+            )
+
+    def _catalog_line_matches(self, line: Mapping[str, Any], plan: Plan, interval: str) -> bool:
+        resolved_price = line.get("_resolved_price")
+        price_id = _line_price_id(line)
+        if not isinstance(resolved_price, Mapping) or not price_id:
+            return False
+        expected_amount = (plan.month_usd if interval == "month" else plan.year_usd) * 100
+        return catalog_price_matches(
+            resolved_price,
+            expected_currency=plan.currency,
+            expected_unit_amount=expected_amount,
+            expected_interval=interval,
+            expected_product_line=self.product_line,
+            expected_plan_key=plan.key,
+            expected_lookup_key=self.catalog.lookup_key(plan.key, interval),
+            expected_price_id=price_id,
+            require_active=False,
+        )
+
     async def process(self, event: dict[str, Any]) -> ProcessResult:
-        event_id = str(event.get("id") or "")
-        event_type = str(event.get("type") or "")
-        if not event_id or not event_type:
-            raise ValueError("Stripe event requires id and type")
+        payload_sha256 = event_payload_sha256(event)
+        raw_event_id = event.get("id")
+        if _valid_event_identifier(raw_event_id, max_bytes=512):
+            assert isinstance(raw_event_id, str)
+            event_id = raw_event_id
+        else:
+            event_id = f"invalid-event:{payload_sha256}"
+        raw_event_type = event.get("type")
+        if _valid_event_identifier(raw_event_type, max_bytes=255):
+            assert isinstance(raw_event_type, str)
+            event_type = raw_event_type
+        else:
+            event_type = "invalid"
+        event["_audit_event_id"] = event_id
+        audit_payload = redacted_event_snapshot(event)
         async with self.pool.acquire() as conn, conn.transaction():
             claimed = await conn.fetchval(
-                """insert into stripe_webhook_events(id,event_type,livemode,payload)
-                   values($1,$2,$3,$4::jsonb) on conflict do nothing returning id""",
+                """insert into stripe_webhook_events(
+                       id,event_type,livemode,payload,payload_sha256)
+                     values($1,$2,$3,$4::jsonb,$5)
+                     on conflict do nothing returning id""",
                 event_id,
                 event_type,
-                bool(event.get("livemode")),
-                event,
+                event.get("livemode") if isinstance(event.get("livemode"), bool) else False,
+                audit_payload,
+                payload_sha256,
             )
             if claimed is None:
+                # Stripe Event IDs are the delivery-idempotency key. The payload hash
+                # remains forensic evidence, but it must not turn a duplicate delivery
+                # into a second runtime gate or a new incident path.
                 return ProcessResult("duplicate", "event id already committed")
+            shape_error = _event_shape_error(event)
+            if shape_error:
+                await self._incident(
+                    conn,
+                    "invalid_event_shape",
+                    event=event,
+                    dedupe_key=event_id,
+                    detail={"event_type": event_type, "reason": shape_error},
+                )
+                await conn.execute(
+                    """update stripe_webhook_events set outcome='ignored',reason=$2,
+                           processed_at=now() where id=$1""",
+                    event_id,
+                    shape_error,
+                )
+                return ProcessResult("ignored", shape_error)
             if event.get("_remote_verified") is not True:
                 mismatch = None
                 if bool(event.get("livemode")) != self.expected_livemode:
@@ -280,7 +436,7 @@ class EventProcessor:
                      last_seen_at=now()""",
             kind,
             dedupe_key,
-            event.get("id"),
+            event.get("_audit_event_id") or event.get("id"),
             invoice_id,
             str(account_id) if account_id else None,
             dict(detail or {}),
@@ -293,13 +449,14 @@ class EventProcessor:
         *,
         metadata: Mapping[str, Any] | None = None,
     ) -> asyncpg.Record | None:
-        metadata = metadata or obj.get("metadata") or {}
-        account_uuid = _uuid_or_none(metadata.get("account_id"))
+        candidate_metadata = metadata if metadata is not None else obj.get("metadata")
+        safe_metadata = candidate_metadata if isinstance(candidate_metadata, Mapping) else {}
+        account_uuid = _uuid_or_none(safe_metadata.get("account_id"))
         if account_uuid:
             return await conn.fetchrow(
                 "select * from billing_accounts where id=$1 for update", account_uuid
             )
-        external_ref = metadata.get("external_ref") or obj.get("client_reference_id")
+        external_ref = safe_metadata.get("external_ref") or obj.get("client_reference_id")
         if external_ref:
             row = await conn.fetchrow(
                 "select * from billing_accounts where external_ref=$1 for update",
@@ -357,8 +514,39 @@ class EventProcessor:
             )
             return ProcessResult("ignored", "account not found")
         account_id = str(account["id"])
-        if metadata.get("product_line") not in {None, self.product_line}:
-            return ProcessResult("ignored", "different product line", account_id)
+        customer_id = _as_id(invoice.get("customer"))
+        if customer_id is None or (
+            account["stripe_customer_id"] is not None
+            and str(account["stripe_customer_id"]) != customer_id
+        ):
+            await self._incident(
+                conn,
+                "paid_customer_identity_conflict",
+                event=event,
+                dedupe_key=f"{account_id}:{invoice_id}",
+                invoice_id=invoice_id,
+                account_id=account["id"],
+                detail={
+                    "bound": account["stripe_customer_id"],
+                    "incoming": customer_id,
+                },
+            )
+            return ProcessResult(
+                "ignored", "invoice customer identity is missing or conflicting", account_id
+            )
+        if not _product_line_matches(metadata, self.product_line, allow_missing=True):
+            await self._incident(
+                conn,
+                "product_line_identity_conflict",
+                event=event,
+                dedupe_key=f"invoice:{invoice_id}",
+                invoice_id=invoice_id,
+                account_id=account["id"],
+                detail={"observed": metadata.get("product_line")},
+            )
+            return ProcessResult(
+                "ignored", "Invoice is outside the configured product line", account_id
+            )
         if invoice.get("billing_reason") not in _PAID_REASONS:
             await self._incident(
                 conn,
@@ -370,9 +558,94 @@ class EventProcessor:
                 detail={"billing_reason": invoice.get("billing_reason")},
             )
             return ProcessResult("ignored", "unexpected billing reason", account_id)
-        lines = list((invoice.get("lines") or {}).get("data") or [])
+        if invoice.get(
+            "_unsupported_invoice_payment_shape"
+        ) is True or has_unsupported_invoice_payment_shape(invoice):
+            await self._incident(
+                conn,
+                "unsupported_invoice_payment_shape",
+                event=event,
+                dedupe_key=invoice_id,
+                invoice_id=invoice_id,
+                account_id=account["id"],
+            )
+            return ProcessResult(
+                "ignored",
+                "Invoice payment collection is outside the single-payment model",
+                account_id,
+            )
+        preparation_error = invoice.get("_preparation_error")
+        if preparation_error is not None:
+            detail = (
+                preparation_error[:500]
+                if isinstance(preparation_error, str)
+                else "invalid preparation error marker"
+            )
+            await self._incident(
+                conn,
+                "invoice_preparation_failed",
+                event=event,
+                dedupe_key=invoice_id,
+                invoice_id=invoice_id,
+                account_id=account["id"],
+                detail={"reason": detail},
+            )
+            return ProcessResult("ignored", "Invoice could not be materialized safely", account_id)
+        lines_container = invoice.get("lines") or {}
+        if not isinstance(lines_container, Mapping) or lines_container.get("has_more"):
+            await self._incident(
+                conn,
+                "incomplete_invoice_lines",
+                event=event,
+                dedupe_key=invoice_id,
+                invoice_id=invoice_id,
+                account_id=account["id"],
+            )
+            return ProcessResult("ignored", "Invoice line pagination is incomplete", account_id)
+        raw_lines = lines_container.get("data")
+        if not isinstance(raw_lines, list) or any(
+            not isinstance(line, Mapping) for line in raw_lines
+        ):
+            await self._incident(
+                conn,
+                "invalid_invoice_line_shape",
+                event=event,
+                dedupe_key=invoice_id,
+                invoice_id=invoice_id,
+                account_id=account["id"],
+            )
+            return ProcessResult("ignored", "Invoice lines must be an array of objects", account_id)
+        lines = list(raw_lines)
+        line_ids = [_as_id(line.get("id")) for line in lines]
+        if any(line_id is None for line_id in line_ids) or len(set(line_ids)) != len(line_ids):
+            await self._incident(
+                conn,
+                "invalid_invoice_line_shape",
+                event=event,
+                dedupe_key=invoice_id,
+                invoice_id=invoice_id,
+                account_id=account["id"],
+                detail={"reason": "line ids must be stable and unique"},
+            )
+            return ProcessResult(
+                "ignored", "Invoice lines require stable unique identities", account_id
+            )
+        line_amounts = [_stripe_integer(line.get("amount")) for line in lines]
+        if any(amount is None for amount in line_amounts):
+            await self._incident(
+                conn,
+                "invalid_invoice_line_shape",
+                event=event,
+                dedupe_key=invoice_id,
+                invoice_id=invoice_id,
+                account_id=account["id"],
+                detail={"reason": "line amount must be an integer"},
+            )
+            return ProcessResult("ignored", "Invoice line amounts must be integers", account_id)
         nonzero_prorations = [
-            line for line in lines if _line_proration(line) and int(line.get("amount") or 0) != 0
+            line
+            for line, amount in zip(lines, line_amounts, strict=True)
+            if _line_proration(line) and amount != 0
         ]
         subscription_id = _subscription_id(invoice)
         billing_reason = invoice.get("billing_reason")
@@ -431,20 +704,49 @@ class EventProcessor:
             return ProcessResult("ignored", "price lookup key is not in the catalog", account_id)
         plan, interval = parsed
         line = grant_lines[0]
+        if not self._catalog_line_matches(line, plan, interval):
+            await self._incident(
+                conn,
+                "invoice_price_identity_mismatch",
+                event=event,
+                dedupe_key=invoice_id,
+                invoice_id=invoice_id,
+                account_id=account["id"],
+                detail={
+                    "lookup_key": _line_lookup(line),
+                    "price_id": _line_price_id(line),
+                    "plan": plan.key,
+                    "interval": interval,
+                },
+            )
+            return ProcessResult(
+                "ignored",
+                "Invoice Price or Product identity does not match the catalog",
+                account_id,
+            )
         expected_amount = (plan.month_usd if interval == "month" else plan.year_usd) * 100
         invoice_currency = str(invoice.get("currency") or "").lower()
         line_currency = str(line.get("currency") or invoice_currency).lower()
-        amount_paid = max(int(invoice.get("amount_paid") or 0), 0)
-        invoice_total = int(invoice.get("total") or 0)
-        quantity = int(line.get("quantity") or 0)
-        unsupported_adjustments = _has_unsupported_invoice_adjustments(invoice, lines)
+        amount_paid = _stripe_integer(invoice.get("amount_paid"))
+        invoice_total = _stripe_integer(invoice.get("total"))
+        amount_due = (
+            invoice_total
+            if "amount_due" not in invoice
+            else _stripe_integer(invoice.get("amount_due"))
+        )
+        subtotal = (
+            invoice_total if "subtotal" not in invoice else _stripe_integer(invoice.get("subtotal"))
+        )
+        quantity = _stripe_integer(line.get("quantity"))
+        line_amount = _stripe_integer(line.get("amount"))
+        unsupported_adjustments = has_unsupported_invoice_adjustments(invoice, lines)
         if (
             quantity != 1
-            or int(line.get("amount") or 0) != expected_amount
+            or line_amount != expected_amount
             or amount_paid != expected_amount
             or invoice_total != expected_amount
-            or int(invoice.get("amount_due", invoice_total) or 0) != expected_amount
-            or int(invoice.get("subtotal", invoice_total) or 0) != expected_amount
+            or amount_due != expected_amount
+            or subtotal != expected_amount
             or invoice_currency != plan.currency
             or line_currency != plan.currency
             or unsupported_adjustments
@@ -467,9 +769,9 @@ class EventProcessor:
             return ProcessResult(
                 "ignored", "invoice amount or currency does not match the catalog", account_id
             )
-        period = line.get("period") or {}
-        period_start = _timestamp(period.get("start"))
-        period_end = _timestamp(period.get("end"))
+        period = line.get("period")
+        period_start = _timestamp(period.get("start")) if isinstance(period, Mapping) else None
+        period_end = _timestamp(period.get("end")) if isinstance(period, Mapping) else None
         if period_start is None or period_end is None or period_end <= period_start:
             await self._incident(
                 conn,
@@ -497,12 +799,13 @@ class EventProcessor:
                 )
                 return ProcessResult("ignored", "invoice grant belongs to another account")
             if self._wins(account, event):
+                projected_created, projected_rank = _projection_order(account, event)
                 await conn.execute(
                     """update billing_accounts set event_created=$2,event_rank=$3,
                              subscription_status='active',updated_at=now() where id=$1""",
                     account["id"],
-                    int(event.get("created") or 0),
-                    rank_for(event["type"]),
+                    projected_created,
+                    projected_rank,
                 )
             return ProcessResult("replayed", "invoice grant slot already exists", account_id)
         transition = None
@@ -675,7 +978,6 @@ class EventProcessor:
             "select * from stripe_invoice_state where invoice_id=$1 for update", invoice_id
         )
         assert state is not None
-        customer_id = _as_id(invoice.get("customer"))
         closed = bool(state["fully_refunded"] or state["disputed"])
         old_balance = int(account["credits_balance"])
         credits = plan.monthly_credits
@@ -744,10 +1046,11 @@ class EventProcessor:
         new_epoch = int(account["grant_epoch"]) + 1
         projection_wins = self._wins(account, event)
         projected_status = "active" if projection_wins else str(account["subscription_status"])
-        projected_created = (
-            int(event.get("created") or 0) if projection_wins else int(account["event_created"])
+        projected_created, projected_rank = (
+            _projection_order(account, event)
+            if projection_wins
+            else (int(account["event_created"]), int(account["event_rank"]))
         )
-        projected_rank = rank_for(event["type"]) if projection_wins else int(account["event_rank"])
         await conn.execute(
             """update billing_accounts set
                    stripe_customer_id=coalesce(stripe_customer_id,$2),
@@ -838,11 +1141,15 @@ class EventProcessor:
                 raise RuntimeError("plan-change settlement Invoice binding changed")
             await conn.execute(
                 """update billing_incidents set resolved_at=now(),last_seen_at=now()
-                     where account_id=$1 and invoice_id=$2 and resolved_at is null
-                       and kind in ('plan_change_payment_failed',
-                                    'unbound_plan_change_payment_failed')""",
+                     where account_id=$1 and resolved_at is null and (
+                       (invoice_id=$2 and kind in ('plan_change_payment_failed',
+                                                  'unbound_plan_change_payment_failed'))
+                       or (kind='plan_change_recovery_required'
+                           and detail->>'plan_change_id'=$3)
+                     )""",
                 account["id"],
                 invoice_id,
+                str(transition["id"]),
             )
         return ProcessResult("handled", account_id=account_id)
 
@@ -1065,6 +1372,11 @@ class EventProcessor:
             )
 
         projection_wins = self._wins(account, event)
+        projected_created, projected_rank = (
+            _projection_order(account, event)
+            if projection_wins
+            else (int(account["event_created"]), int(account["event_rank"]))
+        )
         new_balance = old_balance + expected_delta
         await conn.execute(
             """update billing_accounts set
@@ -1078,8 +1390,8 @@ class EventProcessor:
             shape.target_plan.key,
             "active" if projection_wins else account["subscription_status"],
             new_balance,
-            int(event.get("created") or 0) if projection_wins else int(account["event_created"]),
-            rank_for(event["type"]) if projection_wins else int(account["event_rank"]),
+            projected_created,
+            projected_rank,
         )
         grant = await conn.fetchrow(
             """insert into credit_ledger(
@@ -1129,11 +1441,15 @@ class EventProcessor:
         )
         await conn.execute(
             """update billing_incidents set resolved_at=now(),last_seen_at=now()
-                 where account_id=$1 and invoice_id=$2 and resolved_at is null
-                   and kind in ('plan_change_payment_failed',
-                                'unbound_plan_change_payment_failed')""",
+                 where account_id=$1 and resolved_at is null and (
+                   (invoice_id=$2 and kind in ('plan_change_payment_failed',
+                                              'unbound_plan_change_payment_failed'))
+                   or (kind='plan_change_recovery_required'
+                       and detail->>'plan_change_id'=$3)
+                 )""",
             account["id"],
             invoice_id,
+            str(transition["id"]),
         )
         return ProcessResult("handled", account_id=account_id)
 
@@ -1155,7 +1471,7 @@ class EventProcessor:
         for line in lines:
             if not _line_proration(line):
                 raise ValueError("both prorated delta lines must be prorations")
-            if int(line.get("quantity") or 0) != 1 or not line.get("id"):
+            if _stripe_integer(line.get("quantity")) != 1 or not isinstance(line.get("id"), str):
                 raise ValueError("prorated delta lines require identity and quantity one")
             parsed = self.catalog.parse_lookup_key(_line_lookup(line))
             if parsed is None:
@@ -1163,6 +1479,8 @@ class EventProcessor:
             plan, interval = parsed
             if interval != "month":
                 raise ValueError("prorated delta is supported only for monthly Prices")
+            if not self._catalog_line_matches(line, plan, interval):
+                raise ValueError("Invoice Price or Product identity differs from the catalog")
             if plan.key == transition["from_plan_key"]:
                 if source_line is not None:
                     raise ValueError("multiple source Price lines are ambiguous")
@@ -1181,12 +1499,16 @@ class EventProcessor:
             or target_plan.rank <= source_plan.rank
         ):
             raise ValueError("intent is not a supported monthly tier upgrade")
-        source_amount = int(source_line.get("amount") or 0)
-        target_amount = int(target_line.get("amount") or 0)
+        source_amount = _stripe_integer(source_line.get("amount"))
+        target_amount = _stripe_integer(target_line.get("amount"))
+        if source_amount is None or target_amount is None:
+            raise ValueError("prorated delta amounts must be integers")
         if source_amount >= 0 or target_amount <= 0 or target_amount <= -source_amount:
             raise ValueError("Invoice does not contain a positive net upgrade difference")
         source_catalog_amount = source_plan.month_usd * 100
         target_catalog_amount = target_plan.month_usd * 100
+        if -source_amount > source_catalog_amount or target_amount > target_catalog_amount:
+            raise ValueError("proration amounts cannot exceed one complete monthly Price")
         ratio_error = abs(
             (-source_amount * target_catalog_amount) - (target_amount * source_catalog_amount)
         )
@@ -1203,23 +1525,33 @@ class EventProcessor:
             or invoice_currency != target_plan.currency
         ):
             raise ValueError("Invoice and line currencies do not match the catalog")
-        total = int(invoice.get("total") or 0)
-        amount_paid = int(invoice.get("amount_paid") or 0)
-        amount_due = int(invoice.get("amount_due", total) or 0)
-        subtotal = int(invoice.get("subtotal", total) or 0)
+        total = _stripe_integer(invoice.get("total"))
+        amount_paid = _stripe_integer(invoice.get("amount_paid"))
+        amount_due = (
+            total if "amount_due" not in invoice else _stripe_integer(invoice.get("amount_due"))
+        )
+        subtotal = total if "subtotal" not in invoice else _stripe_integer(invoice.get("subtotal"))
         if (
-            amount_paid <= 0
+            total is None
+            or amount_paid is None
+            or amount_due is None
+            or subtotal is None
+            or amount_paid <= 0
             or total != amount_paid
             or amount_due != amount_paid
             or subtotal != total
             or source_amount + target_amount != total
         ):
             raise ValueError("Invoice net total must be fully paid by new cash")
-        if _has_unsupported_invoice_adjustments(invoice, lines):
+        if has_unsupported_invoice_adjustments(invoice, lines):
             raise ValueError("balance, credit notes, taxes and discounts are not supported")
-        source_period = source_line.get("period") or {}
-        target_period = target_line.get("period") or {}
-        if source_period != target_period:
+        source_period = source_line.get("period")
+        target_period = target_line.get("period")
+        if (
+            not isinstance(source_period, Mapping)
+            or not isinstance(target_period, Mapping)
+            or source_period != target_period
+        ):
             raise ValueError("source and target proration periods must match")
         period_start = _timestamp(target_period.get("start"))
         period_end = _timestamp(target_period.get("end"))
@@ -1369,6 +1701,18 @@ class EventProcessor:
             charge = raw
         invoice_id = _as_id(raw.get("_resolved_invoice_id")) or _as_id(charge.get("invoice"))
         charge_id = _as_id(charge.get("id")) or str(raw.get("id") or event["id"])
+        if raw.get("_unsupported_invoice_payment_shape"):
+            await self._incident(
+                conn,
+                "unsupported_invoice_payment_shape",
+                event=event,
+                dedupe_key=invoice_id or charge_id,
+                invoice_id=invoice_id,
+                detail={"charge": charge_id, "operation": "clawback"},
+            )
+            return ProcessResult(
+                "ignored", "Invoice payment collection is outside the single-payment model"
+            )
         if not invoice_id:
             await self._incident(
                 conn,
@@ -1379,6 +1723,32 @@ class EventProcessor:
             )
             return ProcessResult("ignored", "charge cannot be attributed to an invoice")
         customer_id = _as_id(charge.get("customer"))
+        amount = _stripe_integer(charge.get("amount"))
+        amount_refunded = amount if dispute else _stripe_integer(charge.get("amount_refunded"))
+        refunded_flag = charge.get("refunded")
+        invalid_shape = bool(
+            customer_id is None
+            or amount is None
+            or amount <= 0
+            or amount_refunded is None
+            or amount_refunded < 0
+            or amount_refunded > amount
+            or (refunded_flag is not None and not isinstance(refunded_flag, bool))
+        )
+        if invalid_shape:
+            await self._incident(
+                conn,
+                "invalid_clawback_shape",
+                event=event,
+                dedupe_key=charge_id,
+                invoice_id=invoice_id,
+                detail={
+                    "customer_present": customer_id is not None,
+                    "amount_is_integer": amount is not None,
+                    "amount_refunded_is_integer": amount_refunded is not None,
+                },
+            )
+            return ProcessResult("ignored", "clawback Charge shape is invalid")
         account = None
         if customer_id:
             account = await conn.fetchrow(
@@ -1393,9 +1763,8 @@ class EventProcessor:
                 account = await conn.fetchrow(
                     "select * from billing_accounts where id=$1 for update", known_id
                 )
-        amount = max(int(charge.get("amount") or 0), 0)
-        amount_refunded = amount if dispute else max(int(charge.get("amount_refunded") or 0), 0)
-        full = dispute or bool(charge.get("refunded")) or (amount > 0 and amount_refunded >= amount)
+        assert amount is not None and amount_refunded is not None and customer_id is not None
+        full = dispute or refunded_flag is True or amount_refunded == amount
         if account is None:
             await conn.execute(
                 """insert into stripe_invoice_state
@@ -1424,6 +1793,20 @@ class EventProcessor:
             )
             return ProcessResult("ignored", "account not found; invoice flag retained")
         account_id = str(account["id"])
+        if account["stripe_customer_id"] != customer_id:
+            await self._incident(
+                conn,
+                "clawback_customer_identity_conflict",
+                event=event,
+                dedupe_key=f"{account_id}:{invoice_id}",
+                invoice_id=invoice_id,
+                account_id=account["id"],
+                detail={
+                    "bound": account["stripe_customer_id"],
+                    "incoming": customer_id,
+                },
+            )
+            return ProcessResult("ignored", "clawback belongs to a different customer", account_id)
         known_state = await conn.fetchrow(
             "select account_id from stripe_invoice_state where invoice_id=$1 for update",
             invoice_id,
@@ -1788,12 +2171,79 @@ class EventProcessor:
         self, conn: asyncpg.Connection, event: dict[str, Any]
     ) -> ProcessResult:
         invoice = event["data"]["object"]
-        account = await self._lock_account(conn, invoice, metadata=_subscription_metadata(invoice))
+        metadata = _subscription_metadata(invoice)
+        account = await self._lock_account(conn, invoice, metadata=metadata)
         if account is None:
             return ProcessResult("ignored", "account not found")
         account_id = str(account["id"])
         subscription_id = _subscription_id(invoice)
-        if invoice.get("billing_reason") == "subscription_update" and subscription_id:
+        customer_id = _as_id(invoice.get("customer"))
+        if customer_id is None or (
+            account["stripe_customer_id"] is not None
+            and str(account["stripe_customer_id"]) != customer_id
+        ):
+            await self._incident(
+                conn,
+                "payment_failed_customer_identity_conflict",
+                event=event,
+                dedupe_key=f"{account_id}:{invoice.get('id') or event['id']}",
+                invoice_id=_as_id(invoice.get("id")),
+                account_id=account["id"],
+                detail={
+                    "bound": account["stripe_customer_id"],
+                    "incoming": customer_id,
+                },
+            )
+            return ProcessResult(
+                "ignored", "failed invoice customer identity is missing or conflicting", account_id
+            )
+        if not _product_line_matches(metadata, self.product_line, allow_missing=True):
+            await self._incident(
+                conn,
+                "product_line_identity_conflict",
+                event=event,
+                dedupe_key=f"payment-failed:{invoice.get('id') or event['id']}",
+                invoice_id=_as_id(invoice.get("id")),
+                account_id=account["id"],
+                detail={"observed": metadata.get("product_line")},
+            )
+            return ProcessResult(
+                "ignored", "failed Invoice is outside the configured product line", account_id
+            )
+        if not subscription_id or subscription_id != account["stripe_subscription_id"]:
+            await self._incident(
+                conn,
+                "payment_failed_subscription_identity_conflict",
+                event=event,
+                dedupe_key=f"{account_id}:{invoice.get('id') or event['id']}",
+                invoice_id=_as_id(invoice.get("id")),
+                account_id=account["id"],
+                detail={
+                    "bound": account["stripe_subscription_id"],
+                    "incoming": subscription_id,
+                },
+            )
+            return ProcessResult(
+                "ignored", "failed invoice belongs to a different subscription", account_id
+            )
+        billing_reason = invoice.get("billing_reason")
+        if billing_reason not in _PAID_REASONS:
+            invoice_id = _as_id(invoice.get("id"))
+            await self._incident(
+                conn,
+                "unexpected_payment_failed_reason",
+                event=event,
+                dedupe_key=str(invoice_id or event["id"]),
+                invoice_id=invoice_id,
+                account_id=account["id"],
+                detail={
+                    "billing_reason": billing_reason if isinstance(billing_reason, str) else None
+                },
+            )
+            return ProcessResult(
+                "ignored", "failed Invoice has an unsupported billing reason", account_id
+            )
+        if billing_reason == "subscription_update":
             invoice_id = _as_id(invoice.get("id"))
             pending = await conn.fetchrow(
                 """select * from billing_plan_changes
@@ -1854,26 +2304,50 @@ class EventProcessor:
             )
         if not self._wins(account, event):
             return ProcessResult("ignored", "older or weaker than the applied state", account_id)
+        projected_created, projected_rank = _projection_order(account, event)
         await conn.execute(
             """update billing_accounts set subscription_status='past_due',event_created=$2,
                  event_rank=$3,updated_at=now() where id=$1""",
             account["id"],
-            int(event.get("created") or 0),
-            rank_for(event["type"]),
+            projected_created,
+            projected_rank,
         )
         return ProcessResult("handled", account_id=account_id)
 
     def _subscription_plan(self, subscription: Mapping[str, Any]) -> tuple[Plan, str] | None:
-        items = list((subscription.get("items") or {}).get("data") or [])
-        if len(items) != 1:
+        container = subscription.get("items")
+        raw_items = container.get("data") if isinstance(container, Mapping) else None
+        if (
+            not isinstance(container, Mapping)
+            or container.get("has_more") not in {None, False}
+            or not isinstance(raw_items, list)
+            or len(raw_items) != 1
+        ):
             return None
-        return self.catalog.parse_lookup_key(_line_lookup(items[0]))
+        item = raw_items[0]
+        if not isinstance(item, Mapping) or _stripe_integer(item.get("quantity")) != 1:
+            return None
+        parsed = self.catalog.parse_lookup_key(_line_lookup(item))
+        if parsed is None or not self._catalog_line_matches(item, parsed[0], parsed[1]):
+            return None
+        return parsed
 
     @staticmethod
     def _subscription_period_end(subscription: Mapping[str, Any]) -> datetime | None:
-        items = list((subscription.get("items") or {}).get("data") or [])
-        item_end = items[0].get("current_period_end") if len(items) == 1 else None
-        return _timestamp(item_end or subscription.get("current_period_end"))
+        container = subscription.get("items")
+        raw_items = container.get("data") if isinstance(container, Mapping) else None
+        item = (
+            raw_items[0]
+            if isinstance(container, Mapping)
+            and container.get("has_more") in {None, False}
+            and isinstance(raw_items, list)
+            and len(raw_items) == 1
+            else None
+        )
+        item_end = item.get("current_period_end") if isinstance(item, Mapping) else None
+        return _timestamp(
+            item_end if item_end is not None else subscription.get("current_period_end")
+        )
 
     async def _subscription_updated(
         self, conn: asyncpg.Connection, event: dict[str, Any]
@@ -1885,6 +2359,65 @@ class EventProcessor:
         account_id = str(account["id"])
         current_sub = account["stripe_subscription_id"]
         incoming_sub = str(subscription["id"])
+        customer_id = _as_id(subscription.get("customer"))
+        metadata_raw = subscription.get("metadata")
+        metadata = metadata_raw if isinstance(metadata_raw, Mapping) else {}
+        if customer_id is None or (
+            account["stripe_customer_id"] is not None
+            and str(account["stripe_customer_id"]) != customer_id
+        ):
+            await self._incident(
+                conn,
+                "subscription_customer_identity_conflict",
+                event=event,
+                dedupe_key=f"{account_id}:{incoming_sub}",
+                account_id=account["id"],
+                detail={
+                    "bound": account["stripe_customer_id"],
+                    "incoming": customer_id,
+                },
+            )
+            return ProcessResult(
+                "ignored", "subscription customer identity is missing or conflicting", account_id
+            )
+        if not _product_line_matches(
+            metadata,
+            self.product_line,
+            allow_missing=current_sub == incoming_sub,
+        ):
+            await self._incident(
+                conn,
+                "product_line_identity_conflict",
+                event=event,
+                dedupe_key=f"subscription:{account_id}:{incoming_sub}",
+                account_id=account["id"],
+                detail={"observed": metadata.get("product_line")},
+            )
+            return ProcessResult(
+                "ignored", "Subscription is outside the configured product line", account_id
+            )
+        status = subscription.get("status")
+        cancel_at_period_end = subscription.get("cancel_at_period_end")
+        period_end = self._subscription_period_end(subscription)
+        if (
+            not isinstance(status, str)
+            or status not in _SUBSCRIPTION_STATUSES
+            or not isinstance(cancel_at_period_end, bool)
+            or period_end is None
+        ):
+            await self._incident(
+                conn,
+                "invalid_subscription_projection",
+                event=event,
+                dedupe_key=f"{account_id}:{incoming_sub}",
+                account_id=account["id"],
+                detail={
+                    "status": status if isinstance(status, str) else None,
+                    "cancel_at_period_end_is_boolean": isinstance(cancel_at_period_end, bool),
+                    "period_end_present": period_end is not None,
+                },
+            )
+            return ProcessResult("ignored", "Subscription projection shape is invalid", account_id)
         if current_sub and current_sub != incoming_sub:
             await self._incident(
                 conn,
@@ -1907,8 +2440,47 @@ class EventProcessor:
             return ProcessResult(
                 "ignored", "subscription must contain one catalog item", account_id
             )
+        if current_sub is None:
+            claim = await conn.fetchrow(
+                "select * from checkout_claims where account_id=$1 for update",
+                account["id"],
+            )
+            claim_authorized = bool(
+                claim is not None
+                and metadata.get("claim_token")
+                and str(claim["claim_token"]) == str(metadata["claim_token"])
+                and claim["plan_key"] == parsed[0].key
+                and claim["plan_interval"] == parsed[1]
+            )
+            if not claim_authorized:
+                await self._incident(
+                    conn,
+                    "subscription_update_without_authority",
+                    event=event,
+                    dedupe_key=f"{account_id}:{incoming_sub}",
+                    account_id=account["id"],
+                )
+                return ProcessResult(
+                    "ignored", "unbound subscription lacks a live Checkout claim", account_id
+                )
         if not self._wins(account, event):
+            if _ordering_tie(account, event):
+                await self._incident(
+                    conn,
+                    "event_order_tie",
+                    event=event,
+                    dedupe_key=(
+                        f"{account_id}:{event['type']}:{event['created']}:{account['event_rank']}"
+                    ),
+                    account_id=account["id"],
+                    detail={
+                        "subscription_id": incoming_sub,
+                        "status": status,
+                        "cancel_at_period_end": cancel_at_period_end,
+                    },
+                )
             return ProcessResult("ignored", "older or weaker than the applied state", account_id)
+        projected_created, projected_rank = _projection_order(account, event)
         await conn.execute(
             """update billing_accounts set stripe_customer_id=coalesce(stripe_customer_id,$2),
                  stripe_subscription_id=$3,
@@ -1918,13 +2490,13 @@ class EventProcessor:
                  event_created=$7,event_rank=$8,
                  updated_at=now() where id=$1""",
             account["id"],
-            _as_id(subscription.get("customer")),
+            customer_id,
             incoming_sub,
-            _project_status(subscription.get("status")),
-            self._subscription_period_end(subscription),
-            bool(subscription.get("cancel_at_period_end")),
-            int(event.get("created") or 0),
-            rank_for(event["type"]),
+            _project_status(status),
+            period_end,
+            cancel_at_period_end,
+            projected_created,
+            projected_rank,
         )
         return ProcessResult("handled", account_id=account_id)
 
@@ -1936,26 +2508,74 @@ class EventProcessor:
         if account is None:
             return ProcessResult("ignored", "account not found")
         account_id = str(account["id"])
-        if account["stripe_subscription_id"] not in {None, subscription.get("id")}:
+        incoming_sub = _as_id(subscription.get("id"))
+        customer_id = _as_id(subscription.get("customer"))
+        metadata_raw = subscription.get("metadata")
+        metadata = metadata_raw if isinstance(metadata_raw, Mapping) else {}
+        if incoming_sub is None or account["stripe_subscription_id"] != incoming_sub:
+            await self._incident(
+                conn,
+                "subscription_deleted_identity_conflict",
+                event=event,
+                dedupe_key=f"{account_id}:{incoming_sub or event['id']}",
+                account_id=account["id"],
+                detail={
+                    "bound": account["stripe_subscription_id"],
+                    "incoming": incoming_sub,
+                },
+            )
             return ProcessResult(
-                "ignored", "deleted event belongs to an older subscription", account_id
+                "ignored", "deleted event belongs to an unbound subscription", account_id
+            )
+        if customer_id is None or (
+            account["stripe_customer_id"] is not None
+            and str(account["stripe_customer_id"]) != customer_id
+        ):
+            await self._incident(
+                conn,
+                "subscription_customer_identity_conflict",
+                event=event,
+                dedupe_key=f"{account_id}:{incoming_sub}",
+                account_id=account["id"],
+                detail={
+                    "bound": account["stripe_customer_id"],
+                    "incoming": customer_id,
+                },
+            )
+            return ProcessResult(
+                "ignored",
+                "deleted subscription customer identity is missing or conflicting",
+                account_id,
+            )
+        if not _product_line_matches(metadata, self.product_line, allow_missing=True):
+            await self._incident(
+                conn,
+                "product_line_identity_conflict",
+                event=event,
+                dedupe_key=f"subscription-deleted:{account_id}:{incoming_sub}",
+                account_id=account["id"],
+                detail={"observed": metadata.get("product_line")},
+            )
+            return ProcessResult(
+                "ignored", "deleted Subscription is outside the configured product line", account_id
             )
         if not self._wins(account, event):
             return ProcessResult("ignored", "older than the applied state", account_id)
         old_balance = int(account["credits_balance"])
         new_epoch = int(account["grant_epoch"]) + 1
+        projected_created, projected_rank = _projection_order(account, event)
         await conn.execute(
             """update billing_accounts set stripe_subscription_id=null,plan_key='free',
                  plan_interval=null,subscription_status='canceled',credits_balance=0,
                  grant_epoch=$2,event_created=$3,event_rank=$4,current_period_end=null,
-                 credit_expires_at=null,entitlement_revoked=true,
+                 entitlement_period_end=null,credit_expires_at=null,entitlement_revoked=true,
                  cancel_at_period_end=false,pending_free_at=null,
                  annual_anchor=null,annual_grants_issued=0,annual_grants_allowed=12,
                  funding_invoice_id=null,updated_at=now() where id=$1""",
             account["id"],
             new_epoch,
-            int(event.get("created") or 0),
-            rank_for(event["type"]),
+            projected_created,
+            projected_rank,
         )
         if old_balance:
             await conn.execute(
@@ -1969,10 +2589,20 @@ class EventProcessor:
             )
         await conn.execute(
             """update billing_plan_changes set status='failed',last_error='subscription_deleted',
+                   completed_at=coalesce(completed_at,now()),
                    lease_token=null,lease_expires_at=null,updated_at=now()
-                 where account_id=$1 and status in (
+                 where account_id=$1 and stripe_subscription_id=$2 and status in (
                    'reserved','previewed','applying','scheduled','applied','requires_action'
                  )""",
+            account["id"],
+            incoming_sub,
+        )
+        await conn.execute(
+            """update billing_incidents set resolved_at=now(),last_seen_at=now()
+                 where account_id=$1 and resolved_at is null
+                   and kind in ('plan_change_payment_failed',
+                                'unbound_plan_change_payment_failed',
+                                'plan_change_recovery_required')""",
             account["id"],
         )
         return ProcessResult("handled", account_id=account_id)
@@ -1990,7 +2620,9 @@ class EventProcessor:
         )
         session_id = str(session["id"])
         incoming_sub = _as_id(session.get("subscription"))
-        metadata = session.get("metadata") or {}
+        incoming_customer = _as_id(session.get("customer"))
+        metadata_raw = session.get("metadata")
+        metadata = metadata_raw if isinstance(metadata_raw, Mapping) else {}
         if not incoming_sub:
             await self._incident(
                 conn,
@@ -2000,6 +2632,36 @@ class EventProcessor:
                 account_id=account["id"],
             )
             return ProcessResult("ignored", "completed Checkout has no subscription", account_id)
+        if incoming_customer is None or (
+            account["stripe_customer_id"] is not None
+            and str(account["stripe_customer_id"]) != incoming_customer
+        ):
+            await self._incident(
+                conn,
+                "checkout_customer_identity_conflict",
+                event=event,
+                dedupe_key=f"{account_id}:{session_id}",
+                account_id=account["id"],
+                detail={
+                    "bound": account["stripe_customer_id"],
+                    "incoming": incoming_customer,
+                },
+            )
+            return ProcessResult(
+                "ignored", "Checkout customer identity is missing or conflicting", account_id
+            )
+        if not _product_line_matches(metadata, self.product_line, allow_missing=True):
+            await self._incident(
+                conn,
+                "product_line_identity_conflict",
+                event=event,
+                dedupe_key=f"checkout:{account_id}:{session_id}",
+                account_id=account["id"],
+                detail={"observed": metadata.get("product_line")},
+            )
+            return ProcessResult(
+                "ignored", "Checkout Session is outside the configured product line", account_id
+            )
         if claim is None:
             if incoming_sub and incoming_sub == account["stripe_subscription_id"]:
                 return ProcessResult("replayed", "subscription is already bound", account_id)
@@ -2038,10 +2700,14 @@ class EventProcessor:
             return ProcessResult("ignored", "a different subscription is already bound", account_id)
         await conn.execute(
             """update billing_accounts set stripe_customer_id=coalesce(stripe_customer_id,$2),
+                 event_created=case when stripe_subscription_id is null then 0
+                                    else event_created end,
+                 event_rank=case when stripe_subscription_id is null then 0
+                                 else event_rank end,
                  stripe_subscription_id=coalesce($3,stripe_subscription_id),updated_at=now()
                  where id=$1""",
             account["id"],
-            _as_id(session.get("customer")),
+            incoming_customer,
             incoming_sub,
         )
         await conn.execute(

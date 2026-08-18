@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { completeIdempotentIntent } from "@/lib/idempotency";
 import { getBillingApi } from "@/lib/runtime";
 import type { AccountResponse, BillingApi, BillingInterval } from "@/lib/types";
 
@@ -47,6 +48,12 @@ export function SuccessScreen({
           current.subscription_status === "active" &&
           current.entitlements_enforceable
         ) {
+          completeIdempotentIntent(
+            `checkout:${expectedPlan}:${expectedInterval}`,
+          );
+          completeIdempotentIntent(
+            `preview:${expectedPlan}:${expectedInterval}`,
+          );
           setState("confirmed");
           return;
         }

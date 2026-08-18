@@ -5,6 +5,7 @@ from typing import Literal
 
 import asyncpg
 
+from .bounds import POSTGRES_BIGINT_MAX
 from .clawbacks import collect_clawback_debts
 
 
@@ -14,6 +15,17 @@ class InsufficientCreditsError(RuntimeError):
 
 class CreditsUnavailableError(RuntimeError):
     pass
+
+
+def _validate_idempotency_key(value: str) -> str:
+    if (
+        not value
+        or value != value.strip()
+        or len(value.encode("utf-8")) > 200
+        or any(not character.isprintable() for character in value)
+    ):
+        raise ValueError("idempotency_key must contain 1 to 200 visible characters without padding")
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,20 +41,30 @@ class CreditService:
         self.pool = pool
 
     async def charge(self, account_id: str, amount: int, idempotency_key: str) -> CreditResult:
-        if amount <= 0:
-            raise ValueError("amount must be positive")
-        if not idempotency_key:
-            raise ValueError("idempotency_key is required")
+        if amount <= 0 or amount > POSTGRES_BIGINT_MAX:
+            raise ValueError("amount must be between 1 and the PostgreSQL bigint maximum")
+        idempotency_key = _validate_idempotency_key(idempotency_key)
         async with self.pool.acquire() as conn, conn.transaction():
             account = await conn.fetchrow(
                 "select * from billing_accounts where id=$1::uuid for update", account_id
             )
             if account is None:
                 raise KeyError("account not found")
-            existing = await conn.fetchrow(
-                "select * from credit_debits where idempotency_key=$1", idempotency_key
+            claimed = await conn.fetchval(
+                """insert into credit_debits(idempotency_key,account_id,amount,grant_epoch)
+                     values($1,$2,$3,$4)
+                     on conflict(idempotency_key) do nothing returning idempotency_key""",
+                idempotency_key,
+                account["id"],
+                amount,
+                account["grant_epoch"],
             )
-            if existing is not None:
+            if claimed is None:
+                existing = await conn.fetchrow(
+                    "select * from credit_debits where idempotency_key=$1", idempotency_key
+                )
+                if existing is None:
+                    raise RuntimeError("credit debit identity disappeared during conflict handling")
                 if str(existing["account_id"]) != account_id or int(existing["amount"]) != amount:
                     raise ValueError("idempotency key was already used with different parameters")
                 return CreditResult("replayed", int(account["credits_balance"]))
@@ -63,14 +85,6 @@ class CreditService:
                 balance,
             )
             await conn.execute(
-                """insert into credit_debits(idempotency_key,account_id,amount,grant_epoch)
-                     values($1,$2,$3,$4)""",
-                idempotency_key,
-                account["id"],
-                amount,
-                account["grant_epoch"],
-            )
-            await conn.execute(
                 """insert into credit_ledger
                      (account_id,delta,balance_after,reason,grant_epoch,stripe_event_id)
                    values($1,$2,$3,'usage_charge',$4,$5)""",
@@ -83,6 +97,7 @@ class CreditService:
             return CreditResult("charged", balance)
 
     async def refund(self, idempotency_key: str) -> CreditResult:
+        idempotency_key = _validate_idempotency_key(idempotency_key)
         async with self.pool.acquire() as conn, conn.transaction():
             snapshot = await conn.fetchrow(
                 "select account_id from credit_debits where idempotency_key=$1", idempotency_key

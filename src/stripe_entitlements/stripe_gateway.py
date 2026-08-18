@@ -11,14 +11,93 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import stripe
 
 from .checkout import CheckoutCreationRejected
+from .invoice_policy import has_unsupported_invoice_adjustments
 from .plan_changes import (
     PlanChangeContext,
     PlanChangeEstimate,
     RemotePlanChange,
 )
 from .portal_policy import portal_configuration_is_safe
+from .price_policy import catalog_price_matches
 from .transitions import BillingInterval, TransitionPolicy
 from .types import SubscriptionSnapshot
+
+
+class _UnsupportedStripeShape(RuntimeError):
+    pass
+
+
+_SUBSCRIPTION_STATUSES = {
+    "active",
+    "canceled",
+    "incomplete",
+    "incomplete_expired",
+    "past_due",
+    "paused",
+    "trialing",
+    "unpaid",
+}
+
+
+def _stripe_integer(value: Any) -> int | None:
+    return value if type(value) is int else None
+
+
+def _required_text(value: Any, *, field: str, max_bytes: int = 2048) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value.encode("utf-8")) > max_bytes
+        or any(not character.isprintable() for character in value)
+    ):
+        raise RuntimeError(f"Stripe returned an invalid {field}")
+    return value
+
+
+def _required_https_url(value: Any, *, field: str) -> str:
+    url = _required_text(value, field=field)
+    parsed = urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise RuntimeError(f"Stripe returned a non-HTTPS {field}")
+    return url
+
+
+def _strip_untrusted_internal_fields(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _strip_untrusted_internal_fields(item)
+            for key, item in value.items()
+            if not str(key).startswith("_")
+        }
+    if isinstance(value, list):
+        return [_strip_untrusted_internal_fields(item) for item in value]
+    return value
+
+
+def _stripe_object_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    to_dict = getattr(value, "to_dict_recursive", None)
+    if callable(to_dict):
+        converted = to_dict()
+        if isinstance(converted, Mapping):
+            return dict(converted)
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, ValueError):
+        namespace = getattr(value, "__dict__", None)
+        if isinstance(namespace, Mapping):
+            return dict(namespace)
+        raise RuntimeError("Stripe returned an object that cannot be serialized safely") from None
+    if not isinstance(parsed, Mapping):
+        raise RuntimeError("Stripe returned a non-object response")
+    return dict(parsed)
 
 
 class StripeGateway:
@@ -36,6 +115,8 @@ class StripeGateway:
     ) -> None:
         if not secret_key.startswith(("sk_test_", "sk_live_")):
             raise ValueError("Stripe secret key must be an sk_test_ or sk_live_ key")
+        if not webhook_secret.startswith("whsec_"):
+            raise ValueError("Stripe webhook secret must start with whsec_")
         self.secret_key = secret_key
         self.webhook_secret = webhook_secret
         self.product_line = product_line
@@ -53,21 +134,31 @@ class StripeGateway:
         event = stripe.Webhook.construct_event(  # type: ignore[no-untyped-call]
             payload, signature, self.webhook_secret
         )
-        parsed: dict[str, Any] = json.loads(str(event))
+        parsed = _strip_untrusted_internal_fields(_stripe_object_dict(event))
+        if not isinstance(parsed, dict):
+            raise RuntimeError("Stripe returned a non-object Event")
         return parsed
 
     async def prepare_event(self, event: dict[str, Any]) -> dict[str, Any]:
         """Resolve mutable/network references before opening a DB transaction."""
         prepared = copy.deepcopy(event)
         event_type = prepared.get("type")
-        obj = prepared.get("data", {}).get("object", {})
-        if event_type in {"invoice.paid", "invoice.payment_failed"}:
+        data = prepared.get("data")
+        if not isinstance(data, Mapping):
+            return prepared
+        obj = data.get("object")
+        if not isinstance(obj, dict) or not self._object_id(obj.get("id")):
+            return prepared
+        if event_type == "invoice.paid":
             await self._prepare_invoice_lines(obj)
-        elif event_type in {
-            "customer.subscription.updated",
-            "customer.subscription.deleted",
-        }:
-            await self._resolve_lookups((obj.get("items") or {}).get("data") or [])
+            invoice_id = self._object_id(obj.get("id"))
+            if invoice_id and await self._unsupported_invoice_payment_collection(invoice_id):
+                obj["_unsupported_invoice_payment_shape"] = True
+        elif event_type == "customer.subscription.updated":
+            items = obj.get("items")
+            raw_items = items.get("data") if isinstance(items, Mapping) else None
+            if isinstance(raw_items, list):
+                await self._resolve_lookups(raw_items)
         elif event_type in {"charge.refunded", "charge.dispute.created"}:
             if event_type == "charge.dispute.created":
                 charge_id = obj.get("charge")
@@ -76,40 +167,123 @@ class StripeGateway:
                 charge_object = await asyncio.to_thread(
                     stripe.Charge.retrieve, charge_id, **self._request_options
                 )
-                charge: dict[str, Any] = json.loads(str(charge_object))
+                charge = _stripe_object_dict(charge_object)
                 obj["_resolved_charge"] = charge
             else:
                 charge = obj
             invoice_id = self._object_id(charge.get("invoice"))
-            if not invoice_id and charge.get("payment_intent"):
+            payment_intent_id = self._object_id(charge.get("payment_intent"))
+            if not invoice_id and payment_intent_id:
                 payments = await asyncio.to_thread(
                     stripe.InvoicePayment.list,
                     payment={
                         "type": "payment_intent",
-                        "payment_intent": charge["payment_intent"],
+                        "payment_intent": payment_intent_id,
                     },
-                    limit=1,
+                    limit=2,
                     **self._request_options,
                 )
-                if payments.data:
-                    payment: dict[str, Any] = json.loads(str(payments.data[0]))
-                    invoice_id = self._object_id(payment.get("invoice"))
+                raw_payments = getattr(payments, "data", None)
+                has_more = getattr(payments, "has_more", None)
+                if not isinstance(raw_payments, list) or not isinstance(has_more, bool):
+                    raise RuntimeError("Stripe returned an invalid InvoicePayment collection")
+                if has_more or len(raw_payments) > 1:
+                    obj["_unsupported_invoice_payment_shape"] = True
+                    return prepared
+                if not raw_payments:
+                    raise RuntimeError("Stripe has not exposed the InvoicePayment mapping yet")
+                payment = _stripe_object_dict(raw_payments[0])
+                payment_details = payment.get("payment")
+                if (
+                    not isinstance(payment_details, Mapping)
+                    or payment_details.get("type") != "payment_intent"
+                    or self._object_id(payment_details.get("payment_intent")) != payment_intent_id
+                ):
+                    raise RuntimeError("Stripe returned a conflicting InvoicePayment mapping")
+                invoice_id = self._object_id(payment.get("invoice"))
+                if not invoice_id:
+                    raise RuntimeError("Stripe InvoicePayment mapping has no Invoice identity")
             if invoice_id:
                 obj["_resolved_invoice_id"] = invoice_id
+                if await self._unsupported_invoice_payment_collection(
+                    invoice_id,
+                    expected_payment_intent_id=payment_intent_id,
+                ):
+                    obj["_unsupported_invoice_payment_shape"] = True
         return prepared
+
+    async def _unsupported_invoice_payment_collection(
+        self,
+        invoice_id: str,
+        *,
+        expected_payment_intent_id: str | None = None,
+    ) -> bool:
+        payments = await asyncio.to_thread(
+            stripe.InvoicePayment.list,
+            invoice=invoice_id,
+            status="paid",
+            limit=2,
+            **self._request_options,
+        )
+        raw_payments = getattr(payments, "data", None)
+        has_more = getattr(payments, "has_more", None)
+        if not isinstance(raw_payments, list) or not isinstance(has_more, bool):
+            raise RuntimeError("Stripe returned an invalid InvoicePayment collection")
+        if has_more or len(raw_payments) > 1:
+            return True
+        if not raw_payments:
+            raise RuntimeError("Stripe has not exposed the InvoicePayment mapping yet")
+        payment = _stripe_object_dict(raw_payments[0])
+        payment_id = self._object_id(payment.get("id"))
+        mapped_invoice_id = self._object_id(payment.get("invoice"))
+        details = payment.get("payment")
+        if mapped_invoice_id is not None and mapped_invoice_id != invoice_id:
+            raise RuntimeError("Stripe returned a conflicting InvoicePayment mapping")
+        if not isinstance(details, Mapping):
+            return True
+        payment_intent_id = self._object_id(details.get("payment_intent"))
+        if (
+            payment_id is None
+            or mapped_invoice_id is None
+            or payment.get("status") != "paid"
+            or details.get("type") != "payment_intent"
+            or payment_intent_id is None
+        ):
+            return True
+        if (
+            expected_payment_intent_id is not None
+            and payment_intent_id != expected_payment_intent_id
+        ):
+            raise RuntimeError("Stripe returned a conflicting InvoicePayment payment identity")
+
+        return False
 
     async def _prepare_invoice_lines(self, invoice: dict[str, Any]) -> None:
         """Materialize the complete Invoice line collection before DB processing."""
-        container = invoice.get("lines") or {}
-        lines = list(container.get("data") or []) if isinstance(container, Mapping) else []
-        if isinstance(container, Mapping) and container.get("has_more"):
+        container = invoice.get("lines")
+        if not isinstance(container, Mapping):
+            return
+        raw_lines = container.get("data")
+        if not isinstance(raw_lines, list):
+            return
+        lines = list(raw_lines)
+        if container.get("has_more"):
             invoice_id = self._object_id(invoice.get("id"))
             if not invoice_id:
-                raise RuntimeError("paginated Invoice lines require an Invoice id")
-            lines = await self._list_invoice_lines(invoice_id)
+                return
+            try:
+                lines = await self._list_invoice_lines(invoice_id)
+            except _UnsupportedStripeShape as exc:
+                invoice["_preparation_error"] = str(exc)
+                invoice["lines"] = {
+                    **dict(container),
+                    "has_more": True,
+                    "_all_lines_loaded": False,
+                }
+                return
         await self._resolve_lookups(lines)
         invoice["lines"] = {
-            **(dict(container) if isinstance(container, Mapping) else {}),
+            **dict(container),
             "data": lines,
             "has_more": False,
             "_all_lines_loaded": True,
@@ -117,6 +291,7 @@ class StripeGateway:
 
     async def _list_invoice_lines(self, invoice_id: str) -> list[dict[str, Any]]:
         lines: list[dict[str, Any]] = []
+        seen_line_ids: set[str] = set()
         starting_after: str | None = None
         while True:
             params: dict[str, Any] = {"invoice": invoice_id, "limit": 100}
@@ -128,35 +303,95 @@ class StripeGateway:
                 **{key: value for key, value in params.items() if key != "invoice"},
                 **self._request_options,
             )
-            page_lines = [json.loads(str(item)) for item in page.data]
+            raw_page_lines = getattr(page, "data", None)
+            has_more = getattr(page, "has_more", None)
+            if not isinstance(raw_page_lines, list) or not isinstance(has_more, bool):
+                raise _UnsupportedStripeShape("Stripe Invoice line page has an invalid shape")
+            page_lines: list[dict[str, Any]] = []
+            for raw_line in raw_page_lines:
+                try:
+                    line = _stripe_object_dict(raw_line)
+                except (RuntimeError, TypeError, ValueError) as exc:
+                    raise _UnsupportedStripeShape(
+                        "Stripe Invoice line page contains a non-object line"
+                    ) from exc
+                line_id = self._object_id(line.get("id"))
+                if line_id is None or line_id in seen_line_ids:
+                    raise _UnsupportedStripeShape(
+                        "Stripe Invoice line pagination contains missing or duplicate identity"
+                    )
+                seen_line_ids.add(line_id)
+                page_lines.append(line)
             lines.extend(page_lines)
             if len(lines) > 1000:
-                raise RuntimeError("Invoice has more than the supported 1000 lines")
-            if not getattr(page, "has_more", False):
+                raise _UnsupportedStripeShape("Invoice has more than the supported 1000 lines")
+            if not has_more:
                 return lines
-            if not page_lines or not page_lines[-1].get("id"):
-                raise RuntimeError("Stripe Invoice line pagination did not advance")
-            starting_after = str(page_lines[-1]["id"])
+            if not page_lines:
+                raise _UnsupportedStripeShape("Stripe Invoice line pagination did not advance")
+            next_cursor = self._object_id(page_lines[-1].get("id"))
+            if next_cursor is None or next_cursor == starting_after:
+                raise _UnsupportedStripeShape("Stripe Invoice line pagination did not advance")
+            starting_after = next_cursor
+
+    _catalog_price_matches = staticmethod(catalog_price_matches)
 
     @staticmethod
     def _object_id(value: Any) -> str | None:
-        if isinstance(value, str):
-            return value
-        if isinstance(value, Mapping) and value.get("id"):
-            return str(value["id"])
-        return None
+        candidate = value.get("id") if isinstance(value, Mapping) else value
+        if (
+            not isinstance(candidate, str)
+            or not candidate
+            or candidate != candidate.strip()
+            or len(candidate.encode("utf-8")) > 512
+            or any(not character.isprintable() for character in candidate)
+        ):
+            return None
+        return candidate
 
-    async def _resolve_lookups(self, lines: list[dict[str, Any]]) -> None:
+    @classmethod
+    def _invoice_subscription_id(cls, invoice: Mapping[str, Any]) -> str | None:
+        direct = cls._object_id(invoice.get("subscription"))
+        if direct:
+            return direct
+        parent = invoice.get("parent")
+        details = parent.get("subscription_details") if isinstance(parent, Mapping) else None
+        return cls._object_id(details.get("subscription")) if isinstance(details, Mapping) else None
+
+    async def _resolve_lookups(self, lines: list[Any]) -> None:
+        unresolved: dict[str, list[dict[str, Any]]] = {}
         for line in lines:
-            if self._inline_lookup(line):
+            if not isinstance(line, dict):
+                continue
+            resolved_price = line.get("_resolved_price")
+            if isinstance(resolved_price, Mapping):
+                lookup = resolved_price.get("lookup_key")
+                if lookup:
+                    line["_resolved_lookup_key"] = str(lookup)
                 continue
             price_id = self._price_id(line)
-            if not price_id:
-                continue
-            price = await asyncio.to_thread(
-                stripe.Price.retrieve, price_id, **self._request_options
-            )
-            line["_resolved_lookup_key"] = price.lookup_key
+            if price_id:
+                unresolved.setdefault(price_id, []).append(line)
+        if not unresolved:
+            return
+        semaphore = asyncio.Semaphore(8)
+
+        async def _retrieve(price_id: str) -> tuple[str, dict[str, Any]]:
+            async with semaphore:
+                price = await asyncio.to_thread(
+                    stripe.Price.retrieve,
+                    price_id,
+                    expand=["product", "currency_options"],
+                    **self._request_options,
+                )
+            return price_id, _stripe_object_dict(price)
+
+        resolved = await asyncio.gather(*(_retrieve(price_id) for price_id in unresolved))
+        for price_id, price in resolved:
+            lookup = price.get("lookup_key")
+            for line in unresolved[price_id]:
+                line["_resolved_price"] = price
+                line["_resolved_lookup_key"] = str(lookup) if lookup else None
 
     @staticmethod
     def _inline_lookup(line: Mapping[str, Any]) -> str | None:
@@ -172,15 +407,52 @@ class StripeGateway:
             return price
         if isinstance(price, Mapping) and price.get("id"):
             return str(price["id"])
-        details = (line.get("pricing") or {}).get("price_details") or {}
-        return str(details["price"]) if details.get("price") else None
+        pricing = line.get("pricing")
+        details = pricing.get("price_details") if isinstance(pricing, Mapping) else None
+        if isinstance(details, Mapping) and details.get("price"):
+            return str(details["price"])
+        return None
 
     async def subscription_snapshot(self, subscription_id: str) -> SubscriptionSnapshot:
         subscription = await self.subscription_object(subscription_id)
-        items = (subscription.get("items") or {}).get("data") or []
-        lookup = self._inline_lookup(items[0]) if len(items) == 1 else None
-        lookup = lookup or (items[0].get("_resolved_lookup_key") if len(items) == 1 else None)
-        return SubscriptionSnapshot(subscription_id, subscription.get("status", ""), lookup)
+        container = subscription.get("items")
+        raw_items = container.get("data") if isinstance(container, Mapping) else None
+        if (
+            isinstance(container, Mapping)
+            and container.get("has_more") in {None, False}
+            and isinstance(raw_items, list)
+            and len(raw_items) == 1
+            and isinstance(raw_items[0], Mapping)
+        ):
+            item: Mapping[str, Any] = raw_items[0]
+            items_complete = True
+        else:
+            item = {}
+            items_complete = False
+        lookup = self._inline_lookup(item) if item else None
+        lookup = lookup or (item.get("_resolved_lookup_key") if item else None)
+        period_end_raw = item.get("current_period_end", subscription.get("current_period_end"))
+        period_end_value = _stripe_integer(period_end_raw)
+        try:
+            period_end = (
+                datetime.fromtimestamp(period_end_value, tz=UTC)
+                if period_end_value is not None
+                else None
+            )
+        except (ValueError, OverflowError, OSError):
+            period_end = None
+        resolved_price = item.get("_resolved_price") if item else None
+        quantity = _stripe_integer(item.get("quantity")) if item else None
+        status = subscription.get("status")
+        return SubscriptionSnapshot(
+            subscription_id,
+            status if isinstance(status, str) else "",
+            lookup,
+            period_end,
+            dict(resolved_price) if isinstance(resolved_price, Mapping) else None,
+            quantity,
+            items_complete,
+        )
 
     async def subscription_object(
         self, subscription_id: str, *, expand: list[str] | None = None
@@ -188,17 +460,22 @@ class StripeGateway:
         options: dict[str, Any] = dict(self._request_options)
         if expand:
             options["expand"] = expand
-        subscription: dict[str, Any] = json.loads(
-            str(
-                await asyncio.to_thread(
-                    stripe.Subscription.retrieve,
-                    subscription_id,
-                    **options,
-                )
+        subscription = _stripe_object_dict(
+            await asyncio.to_thread(
+                stripe.Subscription.retrieve,
+                subscription_id,
+                **options,
             )
         )
-        items = (subscription.get("items") or {}).get("data") or []
-        await self._resolve_lookups(items)
+        if self._object_id(subscription.get("id")) != subscription_id:
+            raise RuntimeError("Stripe returned a different Subscription identity")
+        livemode = subscription.get("livemode")
+        if not isinstance(livemode, bool) or livemode != self.secret_key.startswith("sk_live_"):
+            raise RuntimeError("Stripe Subscription mode does not match the configured key")
+        container = subscription.get("items")
+        raw_items = container.get("data") if isinstance(container, Mapping) else None
+        if isinstance(raw_items, list):
+            await self._resolve_lookups(raw_items)
         return subscription
 
     async def latest_paid_invoice_event(self, subscription_id: str) -> dict[str, Any] | None:
@@ -209,19 +486,34 @@ class StripeGateway:
             limit=1,
             **self._request_options,
         )
-        if not invoices.data:
+        raw_invoices = getattr(invoices, "data", None)
+        if not isinstance(raw_invoices, list):
+            raise RuntimeError("Stripe returned an invalid Invoice collection")
+        if not raw_invoices:
             return None
-        invoice: dict[str, Any] = json.loads(str(invoices.data[0]))
+        invoice = _stripe_object_dict(raw_invoices[0])
+        invoice_id = self._object_id(invoice.get("id"))
+        if invoice_id is None:
+            raise RuntimeError("Stripe returned a paid Invoice without stable identity")
+        if self._invoice_subscription_id(invoice) != subscription_id:
+            raise RuntimeError("Stripe returned a paid Invoice for a different Subscription")
+        if invoice.get("status") not in {None, "paid"}:
+            raise RuntimeError("Stripe returned an Invoice that is not paid")
+        livemode = invoice.get("livemode")
+        if not isinstance(livemode, bool) or livemode != self.secret_key.startswith("sk_live_"):
+            raise RuntimeError("Stripe paid Invoice mode does not match the configured key")
+        transitions = invoice.get("status_transitions")
+        paid_at = transitions.get("paid_at") if isinstance(transitions, Mapping) else None
+        created = paid_at if _stripe_integer(paid_at) is not None else invoice.get("created")
+        created_value = _stripe_integer(created)
+        if created_value is None or created_value < 0:
+            raise RuntimeError("Stripe paid Invoice has an invalid creation timestamp")
         event = {
-            "id": f"reconcile:{invoice['id']}",
+            "id": f"reconcile:{invoice_id}",
             "object": "event",
             "type": "invoice.paid",
-            "created": int(
-                (invoice.get("status_transitions") or {}).get("paid_at")
-                or invoice.get("created")
-                or 0
-            ),
-            "livemode": bool(invoice.get("livemode")),
+            "created": created_value,
+            "livemode": livemode,
             "_remote_verified": True,
             "data": {"object": invoice},
         }
@@ -247,18 +539,22 @@ class StripeGateway:
             lookup_keys=[lookup_key],
             active=True,
             limit=2,
+            expand=["data.currency_options", "data.product"],
             **self._request_options,
         )
         if len(prices.data) != 1:
             raise CheckoutCreationRejected(
                 f"expected exactly one active Stripe price for {lookup_key!r}"
             )
-        price_raw: dict[str, Any] = json.loads(str(prices.data[0]))
-        recurring = price_raw.get("recurring") or {}
-        if (
-            str(price_raw.get("currency")) != expected_currency
-            or int(price_raw.get("unit_amount") or 0) != expected_unit_amount
-            or recurring.get("interval") != expected_interval
+        price_raw = _stripe_object_dict(prices.data[0])
+        if not self._catalog_price_matches(
+            price_raw,
+            expected_currency=expected_currency,
+            expected_unit_amount=expected_unit_amount,
+            expected_interval=expected_interval,
+            expected_product_line=self.product_line,
+            expected_plan_key=plan_key,
+            expected_lookup_key=lookup_key,
         ):
             raise CheckoutCreationRejected(f"Stripe price {lookup_key!r} drifted from the catalog")
         params: dict[str, Any] = {
@@ -275,7 +571,11 @@ class StripeGateway:
             "success_url": self._checkout_success_url(plan_key, interval),
             "cancel_url": self.checkout_cancel_url,
             "expires_at": int(expires_at.timestamp()),
-            "metadata": {"claim_token": claim_token, "account_id": account_id},
+            "metadata": {
+                "claim_token": claim_token,
+                "account_id": account_id,
+                "product_line": self.product_line,
+            },
         }
         if customer_id:
             params["customer"] = customer_id
@@ -292,7 +592,12 @@ class StripeGateway:
         session = await asyncio.to_thread(
             _create,
         )
-        return str(session.id), str(session.url)
+        return (
+            _required_text(
+                getattr(session, "id", None), field="Checkout Session id", max_bytes=255
+            ),
+            _required_https_url(getattr(session, "url", None), field="Checkout Session URL"),
+        )
 
     def _checkout_success_url(self, plan_key: str, interval: str) -> str:
         split = urlsplit(self.checkout_success_url)
@@ -319,9 +624,11 @@ class StripeGateway:
             configuration_id,
             **self._request_options,
         )
-        config_raw: dict[str, Any] = json.loads(str(config))
+        config_raw = _stripe_object_dict(config)
         if not portal_configuration_is_safe(
-            config_raw, expected_livemode=self.secret_key.startswith("sk_live_")
+            config_raw,
+            expected_livemode=self.secret_key.startswith("sk_live_"),
+            expected_product_line=self.product_line,
         ):
             raise RuntimeError("Portal configuration drifted from the server safety policy")
 
@@ -335,7 +642,10 @@ class StripeGateway:
             )
 
         session = await asyncio.to_thread(_create)
-        return str(session.id), str(session.url)
+        return (
+            _required_text(getattr(session, "id", None), field="Portal Session id", max_bytes=255),
+            _required_https_url(getattr(session, "url", None), field="Portal Session URL"),
+        )
 
     async def prepare_plan_change(
         self,
@@ -344,71 +654,170 @@ class StripeGateway:
         *,
         expected_currency: str,
         expected_unit_amount: int,
+        expected_plan_key: str,
         target_interval: BillingInterval,
+        expected_source_lookup_key: str,
+        expected_source_currency: str,
+        expected_source_unit_amount: int,
+        expected_source_plan_key: str,
+        source_interval: BillingInterval,
     ) -> PlanChangeContext:
         prices = await asyncio.to_thread(
             stripe.Price.list,
             lookup_keys=[target_lookup_key],
             active=True,
             limit=2,
+            expand=["data.currency_options", "data.product"],
             **self._request_options,
         )
         if len(prices.data) != 1:
             raise RuntimeError(
                 f"expected exactly one active Stripe price for {target_lookup_key!r}"
             )
-        target_price: dict[str, Any] = json.loads(str(prices.data[0]))
-        recurring = target_price.get("recurring") or {}
-        if (
-            str(target_price.get("currency")) != expected_currency
-            or int(target_price.get("unit_amount") or 0) != expected_unit_amount
-            or recurring.get("interval") != target_interval
+        target_price = _stripe_object_dict(prices.data[0])
+        if not self._catalog_price_matches(
+            target_price,
+            expected_currency=expected_currency,
+            expected_unit_amount=expected_unit_amount,
+            expected_interval=target_interval,
+            expected_product_line=self.product_line,
+            expected_plan_key=expected_plan_key,
+            expected_lookup_key=target_lookup_key,
         ):
             raise RuntimeError(f"Stripe price {target_lookup_key!r} drifted from the catalog")
         subscription = await self.subscription_object(
             subscription_id, expand=["latest_invoice.confirmation_secret"]
         )
-        items = list((subscription.get("items") or {}).get("data") or [])
-        if len(items) != 1:
-            raise RuntimeError("subscription must contain exactly one item")
-        item = items[0]
+        container = subscription.get("items")
+        raw_items = container.get("data") if isinstance(container, Mapping) else None
+        if (
+            not isinstance(container, Mapping)
+            or container.get("has_more") not in {None, False}
+            or not isinstance(raw_items, list)
+            or len(raw_items) != 1
+            or not isinstance(raw_items[0], Mapping)
+        ):
+            raise RuntimeError("subscription must contain exactly one item object")
+        item = raw_items[0]
+        if _stripe_integer(item.get("quantity")) != 1:
+            raise RuntimeError("subscription item quantity must be exactly one")
+        subscription_item_id = _required_text(
+            self._object_id(item.get("id")), field="Subscription item id", max_bytes=255
+        )
         current_lookup = self._inline_lookup(item) or item.get("_resolved_lookup_key")
         current_price_id = self._price_id(item)
-        if not current_lookup or not current_price_id or not item.get("id"):
-            raise RuntimeError("subscription item price cannot be resolved")
-        start = item.get("current_period_start", subscription.get("current_period_start"))
-        end = item.get("current_period_end", subscription.get("current_period_end"))
-        if start is None or end is None:
-            raise RuntimeError("subscription item period is missing")
-        schedule_id = self._object_id(subscription.get("schedule"))
-        pending = subscription.get("pending_update") or {}
-        latest = subscription.get("latest_invoice")
-        latest_invoice = latest if isinstance(latest, Mapping) else {}
-        confirmation = latest_invoice.get("confirmation_secret") or {}
-        client_secret = (
-            confirmation.get("client_secret") if isinstance(confirmation, Mapping) else None
+        current_price = item.get("_resolved_price")
+        if (
+            not current_lookup
+            or not current_price_id
+            or not isinstance(current_price, Mapping)
+            or not self._catalog_price_matches(
+                current_price,
+                expected_currency=expected_source_currency,
+                expected_unit_amount=expected_source_unit_amount,
+                expected_interval=source_interval,
+                expected_product_line=self.product_line,
+                expected_plan_key=expected_source_plan_key,
+                expected_lookup_key=expected_source_lookup_key,
+                expected_price_id=current_price_id,
+                require_active=False,
+            )
+        ):
+            raise RuntimeError("subscription item Price drifted from the authorized source plan")
+        start_value = _stripe_integer(
+            item.get("current_period_start", subscription.get("current_period_start"))
         )
-        pending_expires = pending.get("expires_at") if isinstance(pending, Mapping) else None
+        end_value = _stripe_integer(
+            item.get("current_period_end", subscription.get("current_period_end"))
+        )
+        if start_value is None or end_value is None:
+            raise RuntimeError("subscription item period must use integer timestamps")
+        try:
+            period_start = datetime.fromtimestamp(start_value, tz=UTC)
+            period_end = datetime.fromtimestamp(end_value, tz=UTC)
+        except (ValueError, OverflowError, OSError) as exc:
+            raise RuntimeError("subscription item period is outside the supported range") from exc
+        if period_end <= period_start:
+            raise RuntimeError("subscription item period is invalid")
+        schedule_raw = subscription.get("schedule")
+        if schedule_raw is None:
+            schedule_id = None
+        else:
+            schedule_id = self._object_id(schedule_raw)
+            if schedule_id is None:
+                raise RuntimeError("Stripe returned an invalid Subscription Schedule identity")
+        status = subscription.get("status")
+        if not isinstance(status, str) or status not in _SUBSCRIPTION_STATUSES:
+            raise RuntimeError("Stripe returned an unsupported Subscription status")
+        cancel_at_period_end = subscription.get("cancel_at_period_end")
+        if not isinstance(cancel_at_period_end, bool):
+            raise RuntimeError("Stripe returned an invalid cancel_at_period_end value")
+        pending_raw = subscription.get("pending_update")
+        if pending_raw is None:
+            pending: Mapping[str, Any] = {}
+        elif isinstance(pending_raw, Mapping):
+            pending = pending_raw
+        else:
+            raise RuntimeError("Stripe returned an invalid pending_update shape")
+        pending_expires_raw = pending.get("expires_at")
+        pending_expires_value = (
+            _stripe_integer(pending_expires_raw) if pending_expires_raw is not None else None
+        )
+        if pending and pending_expires_value is None:
+            raise RuntimeError("Stripe pending_update is missing an integer expiry")
+        try:
+            pending_expires_at = (
+                datetime.fromtimestamp(pending_expires_value, tz=UTC)
+                if pending_expires_value is not None
+                else None
+            )
+        except (ValueError, OverflowError, OSError) as exc:
+            raise RuntimeError("Stripe returned an invalid pending_update expiry") from exc
+        latest = subscription.get("latest_invoice")
+        if latest is None:
+            latest_invoice: Mapping[str, Any] = {}
+        elif isinstance(latest, Mapping):
+            latest_invoice = latest
+        else:
+            raise RuntimeError("Stripe did not expand the latest Invoice")
+        confirmation_raw = latest_invoice.get("confirmation_secret")
+        if confirmation_raw is None:
+            confirmation: Mapping[str, Any] = {}
+        elif isinstance(confirmation_raw, Mapping):
+            confirmation = confirmation_raw
+        else:
+            raise RuntimeError("Stripe returned an invalid confirmation_secret shape")
+        client_secret_raw = confirmation.get("client_secret")
+        client_secret = (
+            _required_text(client_secret_raw, field="payment client secret", max_bytes=512)
+            if client_secret_raw is not None
+            else None
+        )
+        recovery_raw = latest_invoice.get("hosted_invoice_url")
+        recovery_url = (
+            _required_https_url(recovery_raw, field="hosted Invoice URL")
+            if recovery_raw is not None
+            else None
+        )
+        target_price_id = _required_text(
+            self._object_id(target_price.get("id")), field="target Price id", max_bytes=255
+        )
         return PlanChangeContext(
             subscription_id,
-            str(item["id"]),
+            subscription_item_id,
             current_price_id,
             str(current_lookup),
-            str(prices.data[0].id),
+            target_price_id,
             target_interval,
-            datetime.fromtimestamp(int(start), tz=UTC),
-            datetime.fromtimestamp(int(end), tz=UTC),
+            period_start,
+            period_end,
             schedule_id,
-            str(subscription.get("status") or ""),
-            bool(subscription.get("cancel_at_period_end")),
+            status,
+            cancel_at_period_end,
             bool(pending),
-            datetime.fromtimestamp(int(pending_expires), tz=UTC) if pending_expires else None,
-            (
-                str(latest_invoice["hosted_invoice_url"])
-                if latest_invoice.get("hosted_invoice_url")
-                else None
-            ),
-            str(client_secret) if client_secret else None,
+            pending_expires_at,
+            recovery_url,
+            client_secret,
         )
 
     async def preview_immediate_plan_change(
@@ -445,101 +854,171 @@ class StripeGateway:
             subscription_details=cast(Any, subscription_details),
             **self._request_options,
         )
-        raw: dict[str, Any] = json.loads(str(preview))
-        container = raw.get("lines") or {}
-        lines = list(container.get("data") or []) if isinstance(container, Mapping) else []
-        has_more = bool(container.get("has_more")) if isinstance(container, Mapping) else True
+        raw = _stripe_object_dict(preview)
+        container = raw.get("lines")
+        raw_lines = container.get("data") if isinstance(container, Mapping) else None
+        valid_line_collection = bool(
+            isinstance(raw_lines, list) and all(isinstance(line, Mapping) for line in raw_lines)
+        )
+        lines = cast(list[Mapping[str, Any]], raw_lines) if valid_line_collection else []
+        has_more = bool(
+            not valid_line_collection
+            or not isinstance(container, Mapping)
+            or container.get("has_more")
+        )
         invoice_currency = str(raw.get("currency") or "").lower()
-        total = int(raw.get("total") or 0)
-        amount_due = int(raw.get("amount_due") or 0)
-        subtotal = int(raw.get("subtotal", total) or 0)
+        total_value = _stripe_integer(raw.get("total"))
+        amount_due_value = _stripe_integer(raw.get("amount_due"))
+        subtotal_value = _stripe_integer(raw.get("subtotal"))
+        numeric_totals_valid = all(
+            value is not None for value in (total_value, amount_due_value, subtotal_value)
+        )
+        total = total_value if total_value is not None else 0
+        amount_due = amount_due_value if amount_due_value is not None else 0
+        subtotal = subtotal_value if subtotal_value is not None else 0
         target_non_proration = [
             line
             for line in lines
             if not self._line_is_proration(line) and self._price_id(line) == context.target_price_id
         ]
-        starting_balance = int(raw.get("starting_balance") or 0)
-        ending_balance = int(raw.get("ending_balance") or 0)
+        starting_balance_value = (
+            0 if "starting_balance" not in raw else _stripe_integer(raw.get("starting_balance"))
+        )
+        ending_balance_value = (
+            0 if "ending_balance" not in raw else _stripe_integer(raw.get("ending_balance"))
+        )
+        starting_balance = starting_balance_value if starting_balance_value is not None else 0
+        ending_balance = ending_balance_value if ending_balance_value is not None else 0
         proration_credit = sum(
-            -int(line.get("amount") or 0)
+            -amount
             for line in lines
-            if self._line_is_proration(line) and int(line.get("amount") or 0) < 0
+            if self._line_is_proration(line)
+            and (amount := _stripe_integer(line.get("amount"))) is not None
+            and amount < 0
         )
         source_prorations = [
             line
             for line in lines
             if self._line_is_proration(line)
             and self._price_id(line) == context.current_price_id
-            and int(line.get("amount") or 0) < 0
+            and (amount := _stripe_integer(line.get("amount"))) is not None
+            and amount < 0
         ]
         target_prorations = [
             line
             for line in lines
             if self._line_is_proration(line)
             and self._price_id(line) == context.target_price_id
-            and int(line.get("amount") or 0) > 0
+            and (amount := _stripe_integer(line.get("amount"))) is not None
+            and amount > 0
         ]
-        tax_items = list(raw.get("total_tax_amounts") or []) + list(raw.get("total_taxes") or [])
+
+        def _array(value: Any) -> list[Any]:
+            return list(value) if isinstance(value, list) else []
+
+        def _sum_integer_amounts(items: list[Any]) -> int:
+            return sum(
+                amount
+                for item in items
+                if isinstance(item, Mapping)
+                and (amount := _stripe_integer(item.get("amount"))) is not None
+            )
+
+        tax_items = _array(raw.get("total_tax_amounts")) + _array(raw.get("total_taxes"))
         for line in lines:
-            tax_items.extend(line.get("tax_amounts") or [])
-            tax_items.extend(line.get("taxes") or [])
-        tax_amount = sum(
-            int(item.get("amount") or 0) for item in tax_items if isinstance(item, Mapping)
-        )
-        discount_items = list(raw.get("total_discount_amounts") or [])
+            tax_items.extend(_array(line.get("tax_amounts")))
+            tax_items.extend(_array(line.get("taxes")))
+        tax_amount = _sum_integer_amounts(tax_items)
+        discount_items = _array(raw.get("total_discount_amounts"))
         unsupported_line_adjustment = False
         for line in lines:
-            discount_items.extend(line.get("discount_amounts") or [])
-            for item in line.get("pretax_credit_amounts") or []:
-                if isinstance(item, Mapping) and int(item.get("amount") or 0) != 0:
-                    unsupported_line_adjustment = True
-        discount_amount = sum(
-            int(item.get("amount") or 0) for item in discount_items if isinstance(item, Mapping)
-        )
+            discount_items.extend(_array(line.get("discount_amounts")))
+            for item in _array(line.get("pretax_credit_amounts")):
+                if isinstance(item, Mapping):
+                    amount = _stripe_integer(item.get("amount"))
+                    if amount is None or amount != 0:
+                        unsupported_line_adjustment = True
+        discount_amount = _sum_integer_amounts(discount_items)
         if raw.get("discounts") and discount_amount == 0:
             discount_amount = 1
+        pre_credit_notes = (
+            0
+            if "pre_payment_credit_notes_amount" not in raw
+            else _stripe_integer(raw.get("pre_payment_credit_notes_amount"))
+        )
+        post_credit_notes = (
+            0
+            if "post_payment_credit_notes_amount" not in raw
+            else _stripe_integer(raw.get("post_payment_credit_notes_amount"))
+        )
         balance_fields = (
-            starting_balance,
-            ending_balance,
-            int(raw.get("pre_payment_credit_notes_amount") or 0),
-            int(raw.get("post_payment_credit_notes_amount") or 0),
+            starting_balance_value,
+            ending_balance_value,
+            pre_credit_notes,
+            post_credit_notes,
         )
         common_safe = bool(
             not has_more
+            and numeric_totals_valid
             and all(value == 0 for value in balance_fields)
             and tax_amount == 0
             and discount_amount == 0
             and not unsupported_line_adjustment
+            and not has_unsupported_invoice_adjustments(raw, lines)
         )
         period_start: datetime | None = None
         period_end: datetime | None = None
+        source_proration_amount = 0
+        target_proration_amount = 0
         if policy == "prorated_delta":
             if len(source_prorations) == 1 and len(target_prorations) == 1:
-                source_period = source_prorations[0].get("period") or {}
-                target_period = target_prorations[0].get("period") or {}
-                if source_period == target_period:
+                source_period = source_prorations[0].get("period")
+                target_period = target_prorations[0].get("period")
+                if (
+                    isinstance(source_period, Mapping)
+                    and isinstance(target_period, Mapping)
+                    and source_period == target_period
+                ):
+                    start_value = _stripe_integer(target_period.get("start"))
+                    end_value = _stripe_integer(target_period.get("end"))
                     try:
-                        period_start = datetime.fromtimestamp(int(target_period["start"]), tz=UTC)
-                        period_end = datetime.fromtimestamp(int(target_period["end"]), tz=UTC)
-                    except (KeyError, TypeError, ValueError, OSError):
+                        period_start = (
+                            datetime.fromtimestamp(start_value, tz=UTC)
+                            if start_value is not None
+                            else None
+                        )
+                        period_end = (
+                            datetime.fromtimestamp(end_value, tz=UTC)
+                            if end_value is not None
+                            else None
+                        )
+                    except (ValueError, OverflowError, OSError):
                         period_start = None
                         period_end = None
-            source_amount = (
-                int(source_prorations[0].get("amount") or 0) if len(source_prorations) == 1 else 0
+            source_amount_value = (
+                _stripe_integer(source_prorations[0].get("amount"))
+                if len(source_prorations) == 1
+                else None
             )
-            target_amount = (
-                int(target_prorations[0].get("amount") or 0) if len(target_prorations) == 1 else 0
+            target_amount_value = (
+                _stripe_integer(target_prorations[0].get("amount"))
+                if len(target_prorations) == 1
+                else None
             )
+            source_proration_amount = source_amount_value if source_amount_value is not None else 0
+            target_proration_amount = target_amount_value if target_amount_value is not None else 0
             safe_shape = bool(
                 common_safe
                 and len(lines) == 2
                 and len(source_prorations) == 1
                 and len(target_prorations) == 1
-                and all(line.get("id") for line in lines)
-                and all(int(line.get("quantity") or 0) == 1 for line in lines)
-                and source_amount < 0
-                and target_amount > -source_amount > 0
-                and source_amount + target_amount == total
+                and all(isinstance(line.get("id"), str) and line.get("id") for line in lines)
+                and all(_stripe_integer(line.get("quantity")) == 1 for line in lines)
+                and source_amount_value is not None
+                and target_amount_value is not None
+                and source_proration_amount < 0
+                and target_proration_amount > -source_proration_amount > 0
+                and source_proration_amount + target_proration_amount == total
                 and total == amount_due == subtotal
                 and bool(invoice_currency)
                 and all(
@@ -554,21 +1033,45 @@ class StripeGateway:
             )
         else:
             target_line = target_non_proration[0] if len(target_non_proration) == 1 else {}
-            target_period = target_line.get("period") or {}
+            target_period = target_line.get("period")
+            target_start = (
+                _stripe_integer(target_period.get("start"))
+                if isinstance(target_period, Mapping)
+                else None
+            )
+            target_end = (
+                _stripe_integer(target_period.get("end"))
+                if isinstance(target_period, Mapping)
+                else None
+            )
             try:
-                full_period_start = datetime.fromtimestamp(int(target_period["start"]), tz=UTC)
-                full_period_end = datetime.fromtimestamp(int(target_period["end"]), tz=UTC)
-                valid_full_period = full_period_end > full_period_start
-            except (KeyError, TypeError, ValueError, OSError):
+                full_period_start = (
+                    datetime.fromtimestamp(target_start, tz=UTC)
+                    if target_start is not None
+                    else None
+                )
+                full_period_end = (
+                    datetime.fromtimestamp(target_end, tz=UTC) if target_end is not None else None
+                )
+                valid_full_period = bool(
+                    full_period_start is not None
+                    and full_period_end is not None
+                    and full_period_end > full_period_start
+                )
+            except (ValueError, OverflowError, OSError):
                 valid_full_period = False
+            target_quantity = _stripe_integer(target_line.get("quantity"))
+            full_target_amount = _stripe_integer(target_line.get("amount"))
             safe_shape = bool(
                 common_safe
                 and len(lines) == 1
                 and len(target_non_proration) == 1
+                and isinstance(target_line.get("id"), str)
                 and target_line.get("id")
-                and int(target_line.get("quantity") or 0) == 1
-                and int(target_line.get("amount") or 0) > 0
-                and int(target_line.get("amount") or 0) == total == amount_due == subtotal
+                and target_quantity == 1
+                and full_target_amount is not None
+                and full_target_amount > 0
+                and full_target_amount == total == amount_due == subtotal
                 and str(target_line.get("currency") or invoice_currency).lower() == invoice_currency
                 and bool(invoice_currency)
                 and valid_full_period
@@ -579,8 +1082,8 @@ class StripeGateway:
             max(-starting_balance, -ending_balance, 0),
             str(raw.get("currency") or "usd"),
             safe_shape,
-            (-int(source_prorations[0].get("amount") or 0) if len(source_prorations) == 1 else 0),
-            (int(target_prorations[0].get("amount") or 0) if len(target_prorations) == 1 else 0),
+            -source_proration_amount,
+            target_proration_amount,
             tax_amount,
             discount_amount,
             period_start,
@@ -625,22 +1128,69 @@ class StripeGateway:
                 **self._request_options,
             )
 
-        subscription: dict[str, Any] = json.loads(str(await asyncio.to_thread(_modify)))
-        pending = subscription.get("pending_update") or {}
+        subscription = _stripe_object_dict(await asyncio.to_thread(_modify))
+        returned_subscription_id = self._object_id(subscription.get("id"))
+        if returned_subscription_id != context.subscription_id:
+            raise RuntimeError("Stripe returned a different Subscription after plan mutation")
+        livemode = subscription.get("livemode")
+        if not isinstance(livemode, bool) or livemode != self.secret_key.startswith("sk_live_"):
+            raise RuntimeError("Stripe plan mutation mode does not match the configured key")
+        status = subscription.get("status")
+        if not isinstance(status, str) or status not in _SUBSCRIPTION_STATUSES:
+            raise RuntimeError("Stripe plan mutation returned an unsupported Subscription status")
+        pending_raw = subscription.get("pending_update")
+        if pending_raw is None:
+            pending: Mapping[str, Any] = {}
+        elif isinstance(pending_raw, Mapping):
+            pending = pending_raw
+        else:
+            raise RuntimeError("Stripe returned an invalid pending_update shape")
         latest_invoice = subscription.get("latest_invoice")
-        invoice = latest_invoice if isinstance(latest_invoice, Mapping) else {}
-        confirmation = invoice.get("confirmation_secret") or {}
+        if not isinstance(latest_invoice, Mapping):
+            raise RuntimeError("Stripe plan mutation did not return an expanded latest Invoice")
+        invoice = latest_invoice
+        settlement_invoice_id = self._object_id(invoice)
+        if settlement_invoice_id is None:
+            raise RuntimeError("Stripe plan mutation returned an Invoice without identity")
+        confirmation_raw = invoice.get("confirmation_secret")
+        if confirmation_raw is None:
+            confirmation: Mapping[str, Any] = {}
+        elif isinstance(confirmation_raw, Mapping):
+            confirmation = confirmation_raw
+        else:
+            raise RuntimeError("Stripe returned an invalid confirmation_secret shape")
+        client_secret_raw = confirmation.get("client_secret")
         client_secret = (
-            confirmation.get("client_secret") if isinstance(confirmation, Mapping) else None
+            _required_text(client_secret_raw, field="payment client secret", max_bytes=512)
+            if client_secret_raw is not None
+            else None
         )
-        expires = pending.get("expires_at") if isinstance(pending, Mapping) else None
+        expires_raw = pending.get("expires_at")
+        expires = _stripe_integer(expires_raw) if expires_raw is not None else None
+        if expires_raw is not None and expires is None:
+            raise RuntimeError("Stripe returned an invalid pending_update expiry")
+        if pending and expires is None:
+            raise RuntimeError("Stripe pending_update is missing an integer expiry")
+        try:
+            pending_expires_at = (
+                datetime.fromtimestamp(expires, tz=UTC) if expires is not None else None
+            )
+        except (ValueError, OverflowError, OSError) as exc:
+            raise RuntimeError("Stripe returned an invalid pending_update expiry") from exc
+        recovery_raw = invoice.get("hosted_invoice_url")
+        recovery_url = (
+            _required_https_url(recovery_raw, field="hosted Invoice URL")
+            if recovery_raw is not None
+            else None
+        )
+        pending_active = bool(pending)
         return RemotePlanChange(
-            context.subscription_id,
-            bool(pending),
-            datetime.fromtimestamp(int(expires), tz=UTC) if expires else None,
-            str(invoice["hosted_invoice_url"]) if invoice.get("hosted_invoice_url") else None,
-            str(client_secret) if client_secret else None,
-            self._object_id(invoice),
+            returned_subscription_id,
+            pending_active,
+            pending_expires_at if pending_active else None,
+            recovery_url if pending_active else None,
+            client_secret if pending_active else None,
+            settlement_invoice_id,
         )
 
     async def schedule_plan_change(
@@ -657,16 +1207,22 @@ class StripeGateway:
             idempotency_key=f"{idempotency_key}:create",
             **self._request_options,
         )
-        if context.schedule_id and str(schedule.id) != context.schedule_id:
+        schedule_raw = _stripe_object_dict(schedule)
+        schedule_id = _required_text(
+            self._object_id(schedule_raw.get("id")), field="Subscription Schedule id", max_bytes=255
+        )
+        if context.schedule_id and schedule_id != context.schedule_id:
             raise RuntimeError("subscription is controlled by an unrelated Stripe Schedule")
-        schedule_raw: dict[str, Any] = json.loads(str(schedule))
-        phases = list(schedule_raw.get("phases") or [])
+        raw_phases = schedule_raw.get("phases")
+        phases = raw_phases if isinstance(raw_phases, list) else []
         if len(phases) == 2:
             if not self._configured_schedule_matches(schedule_raw, context, idempotency_key):
                 raise RuntimeError("existing Stripe Schedule differs from this plan change")
-            return RemotePlanChange(str(schedule.id))
+            return RemotePlanChange(schedule_id)
         if len(phases) != 1:
             raise RuntimeError("new subscription schedule must contain one current phase")
+        if not isinstance(phases[0], Mapping):
+            raise RuntimeError("new Subscription Schedule phase must be an object")
         current_phase = self._schedule_phase_payload(phases[0])
         current_phase["end_date"] = int(context.current_period_end.timestamp())
         target_phase = copy.deepcopy(current_phase)
@@ -682,7 +1238,7 @@ class StripeGateway:
 
         def _configure() -> Any:
             return stripe.SubscriptionSchedule.modify(
-                schedule.id,
+                schedule_id,
                 phases=cast(Any, [current_phase, target_phase]),
                 end_behavior="release",
                 proration_behavior="none",
@@ -695,15 +1251,53 @@ class StripeGateway:
             )
 
         configured = await asyncio.to_thread(_configure)
+        configured_raw = _stripe_object_dict(configured)
+        configured_id = _required_text(
+            self._object_id(configured_raw.get("id")),
+            field="configured Subscription Schedule id",
+            max_bytes=255,
+        )
+        if configured_id != schedule_id:
+            raise RuntimeError("Stripe configured a different Subscription Schedule")
         verified = await asyncio.to_thread(
             stripe.SubscriptionSchedule.retrieve,
-            configured.id,
+            configured_id,
             **self._request_options,
         )
-        verified_raw: dict[str, Any] = json.loads(str(verified))
-        if not self._configured_schedule_matches(verified_raw, context, idempotency_key):
+        verified_raw = _stripe_object_dict(verified)
+        if self._object_id(
+            verified_raw.get("id")
+        ) != configured_id or not self._configured_schedule_matches(
+            verified_raw, context, idempotency_key
+        ):
             raise RuntimeError("configured Stripe Schedule failed policy verification")
-        return RemotePlanChange(str(configured.id))
+        return RemotePlanChange(configured_id)
+
+    @staticmethod
+    def _phase_duration_matches(
+        phase: Mapping[str, Any], *, boundary: int, interval: BillingInterval
+    ) -> bool:
+        duration = phase.get("duration")
+        if isinstance(duration, Mapping):
+            return duration == {"interval": interval, "interval_count": 1}
+        end_date = _stripe_integer(phase.get("end_date"))
+        if end_date is None:
+            return False
+        start = datetime.fromtimestamp(boundary, tz=UTC)
+        if interval == "month":
+            year = start.year + (1 if start.month == 12 else 0)
+            month = 1 if start.month == 12 else start.month + 1
+        else:
+            year = start.year + 1
+            month = start.month
+        day = start.day
+        while True:
+            try:
+                expected = start.replace(year=year, month=month, day=day)
+                break
+            except ValueError:
+                day -= 1
+        return end_date == int(expected.timestamp())
 
     def _configured_schedule_matches(
         self,
@@ -711,13 +1305,26 @@ class StripeGateway:
         context: PlanChangeContext,
         plan_change_key: str,
     ) -> bool:
-        phases = list(schedule.get("phases") or [])
-        if len(phases) != 2:
+        raw_phases = schedule.get("phases")
+        if (
+            not isinstance(raw_phases, list)
+            or len(raw_phases) != 2
+            or not all(isinstance(phase, Mapping) for phase in raw_phases)
+        ):
             return False
-        metadata = schedule.get("metadata") or {}
+        phases = raw_phases
+        metadata = schedule.get("metadata")
+        if not isinstance(metadata, Mapping):
+            return False
         subscription_id = self._object_id(schedule.get("subscription"))
-        current_items = list(phases[0].get("items") or [])
-        target_items = list(phases[1].get("items") or [])
+        current_raw_items = phases[0].get("items")
+        target_raw_items = phases[1].get("items")
+        if not isinstance(current_raw_items, list) or not isinstance(target_raw_items, list):
+            return False
+        current_items = current_raw_items
+        target_items = target_raw_items
+        if not all(isinstance(item, Mapping) for item in current_items + target_items):
+            return False
         boundary = int(context.current_period_end.timestamp())
         return bool(
             subscription_id == context.subscription_id
@@ -726,22 +1333,28 @@ class StripeGateway:
             and metadata.get("plan_change_key") == plan_change_key
             and phases[0].get("end_date") == boundary
             and phases[1].get("start_date") == boundary
+            and self._phase_duration_matches(
+                phases[1], boundary=boundary, interval=context.target_interval
+            )
             and phases[0].get("proration_behavior") == "none"
             and phases[1].get("proration_behavior") == "none"
             and len(current_items) == 1
             and len(target_items) == 1
             and self._price_id(current_items[0]) == context.current_price_id
             and self._price_id(target_items[0]) == context.target_price_id
-            and int(current_items[0].get("quantity") or 0) == 1
-            and int(target_items[0].get("quantity") or 0) == 1
+            and _stripe_integer(current_items[0].get("quantity")) == 1
+            and _stripe_integer(target_items[0].get("quantity")) == 1
         )
 
     @staticmethod
     def _line_is_proration(line: Mapping[str, Any]) -> bool:
-        return bool(
-            line.get("proration")
-            or ((line.get("parent") or {}).get("subscription_item_details") or {}).get("proration")
-        )
+        if line.get("proration"):
+            return True
+        parent = line.get("parent")
+        if not isinstance(parent, Mapping):
+            return False
+        details = parent.get("subscription_item_details")
+        return bool(details.get("proration")) if isinstance(details, Mapping) else False
 
     @staticmethod
     def _schedule_phase_payload(phase: Mapping[str, Any]) -> dict[str, Any]:
@@ -769,11 +1382,16 @@ class StripeGateway:
             "trial_end",
         }
         payload = {key: copy.deepcopy(value) for key, value in phase.items() if key in allowed}
+        raw_items = payload.get("items")
+        if not isinstance(raw_items, list) or len(raw_items) != 1:
+            raise RuntimeError("schedule phase must contain exactly one item")
         items: list[dict[str, Any]] = []
-        for item in payload.get("items") or []:
+        for item in raw_items:
+            if not isinstance(item, Mapping):
+                raise RuntimeError("schedule phase item must be an object")
             price_id = StripeGateway._price_id(item)
-            if not price_id:
-                raise RuntimeError("schedule phase item price cannot be resolved")
-            items.append({"price": price_id, "quantity": int(item.get("quantity") or 1)})
+            if not price_id or _stripe_integer(item.get("quantity")) != 1:
+                raise RuntimeError("schedule phase item must have one resolvable Price")
+            items.append({"price": price_id, "quantity": 1})
         payload["items"] = items
         return payload

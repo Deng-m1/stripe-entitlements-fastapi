@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import fcntl
 import hashlib
 import os
@@ -13,7 +14,7 @@ import asyncpg
 import pytest
 
 from stripe_entitlements.catalog import PlanCatalog
-from stripe_entitlements.database import _init_connection
+from stripe_entitlements.database import Database, _init_connection
 from stripe_entitlements.processor import EventProcessor
 
 ROOT = Path(__file__).parents[1]
@@ -87,30 +88,20 @@ def postgres_container() -> Iterator[None]:
     else:
         _run(["docker", "rm", "-f", PG_CONTAINER])
         pytest.exit("PostgreSQL did not become ready")
-    migration = "\n".join(path.read_text() for path in sorted((ROOT / "migrations").glob("*.sql")))
-    applied = subprocess.run(
-        [
-            "docker",
-            "exec",
-            "-i",
-            PG_CONTAINER,
-            "psql",
-            "-h",
-            "127.0.0.1",
-            "-U",
-            "postgres",
-            "-d",
-            PG_DATABASE,
-            "-v",
-            "ON_ERROR_STOP=1",
-        ],
-        input=migration,
-        capture_output=True,
-        text=True,
-    )
-    if applied.returncode:
+
+    async def _migrate() -> None:
+        database = Database(TEST_DSN)
+        await database.connect()
+        try:
+            await database.apply_migrations(ROOT / "migrations")
+        finally:
+            await database.close()
+
+    try:
+        asyncio.run(_migrate())
+    except Exception as exc:
         _run(["docker", "rm", "-f", PG_CONTAINER])
-        pytest.exit(f"migration failed: {applied.stderr}")
+        pytest.exit(f"migration failed: {type(exc).__name__}: {exc}")
     yield
     _run(["docker", "rm", "-f", PG_CONTAINER])
     fcntl.flock(lock, fcntl.LOCK_UN)

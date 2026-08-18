@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+## 0.2.1 - 2026-08-18
+
+- Harden signed Event processing around Customer/Subscription ownership, Checkout claims,
+  Price identity, settlement-Invoice binding, malformed Stripe object shapes, same-second
+  ordering ties, annual period verification, reconciliation CAS recovery, and
+  cross-account refund/dispute isolation.
+- Add migration `004_event_audit_hardening.sql`: retain a redacted Event audit snapshot,
+  store the exact signed-body SHA-256 when available, scrub legacy full payloads, and keep
+  secrets, PII, hosted URLs, and internal prefetch fields out of PostgreSQL.
+- Add append-only migration filenames, advisory-lock serialization, known-file checksum
+  verification, packaged migration/catalog resources, and schema readiness. Databases may
+  contain later migrations so backward-compatible rolling deploys and rollbacks are not
+  blocked by an exact-history equality gate.
+- Make the single-payment model explicit with one paid InvoicePayment mapping per Invoice;
+  reject pagination, multiple payments, PaymentRecord, out-of-band payment, and overpayment
+  shapes without performing a redundant reverse PaymentIntent query.
+- Accept Stripe's current expanded default `currency_options` and treat Product/Price
+  metadata as conflict detection rather than a second authorization system. Stable lookup
+  key, currency, amount, recurring interval, quantity, Customer, and Subscription remain
+  authoritative.
+- Remove low-value false-positive gates: exact readiness inspection of index/trigger SQL,
+  exact Portal benign-feature whitelisting, plan-rank price monotonicity, and duplicate-
+  Event payload-hash conflict incidents. Raw request hashes remain audit evidence, not an
+  entitlement decision.
+- Use PostgreSQL time for distributed claims, leases, reconciliation, and annual workers;
+  isolate per-account worker failures and prevent persistent first-page starvation.
+- Add fail-closed HTTP input bounds, streamed webhook size limits, no-store responses,
+  Origin validation, sanitized auth errors, safer CORS, browser redirect validation,
+  build-time production demo rejection, Stripe.js result validation, and reusable browser
+  idempotency intents.
+- Accept legitimate Stripe-hosted URL fragments in both Gateway and CheckoutCoordinator.
+  Speed up browser E2E by aborting only the application's automatic external navigation,
+  then explicitly opening the captured test Session after the route is removed.
+- Package `plans.toml` and all four migrations in the Wheel, make installed CLI defaults
+  independent of the current working directory, and run the Docker image as UID/GID 10001
+  with a healthcheck and read-only-root compatibility.
+- Verify the `0.2.1` release candidate with 701 local PostgreSQL tests from 710 collected,
+  all 9 real Stripe test-mode cases, 102 frontend tests, both real-browser policies through
+  Stripe CLI signed forwarding, Python/npm audits with zero known vulnerabilities,
+  independent Wheel migration, non-root/read-only Docker runtime, and strict run-owned
+  Stripe cleanup. The public promotional video remains the separately reviewed `0.2.0`
+  artifact rather than being relabeled as new network evidence.
+
 ## 0.2.0 - 2026-08-17
 
 - Add complete `full_period_reset` and `prorated_delta` templates, each with an explicit

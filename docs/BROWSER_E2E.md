@@ -38,12 +38,12 @@ A successful complete run proves one isolated Stripe test-mode Checkout and sele
 upgrade lifecycle. It does not prove live mode, every bank's 3DS UI, Stripe Tax,
 coupons, trials, or arbitrary Checkout settings.
 
-Current local signed-forwarding evidence: both policies passed on the `0.2.0` release
-candidate on 2026-08-17 through explicit Stripe CLI forwarding. Each reached
-Pro/Monthly/1,000, bound exactly three essential Events, found zero unrelated Events,
-used a Clover signed payload/Event API view for that test account, had no unresolved
-run-related incident, and completed strict cleanup. This proves the raw-signature,
-application, browser, and PostgreSQL path, not Webhook Endpoint metadata.
+Current local signed-forwarding evidence: both policies passed on the `0.2.1` release
+candidate on 2026-08-18 through explicit Stripe CLI forwarding. Each reached
+Pro/Monthly/1,000, observed seven account-related and zero unrelated Events, bound exactly
+three essential Events, used a Clover signed payload/Event API view for that test account,
+had no unresolved run-related incident, and completed strict cleanup. This proves the
+raw-signature, application, browser, and PostgreSQL path, not Webhook Endpoint metadata.
 
 The latest stronger endpoint-mode evidence remains the 2026-08-02 dual-policy run.
 `full_period_reset` completed in about 1.6 minutes and `prorated_delta` in about

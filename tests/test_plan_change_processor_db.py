@@ -323,7 +323,9 @@ async def test_prorated_delta_different_events_same_invoice_are_concurrent_safe(
         "discount",
         "wrong_proration_date",
         "inconsistent_fraction",
+        "overfull_fraction",
         "preview_fact_drift",
+        "price_product_identity",
         "extra_line",
     ],
 )
@@ -366,12 +368,27 @@ async def test_prorated_delta_unknown_or_ambiguous_invoice_shapes_fail_closed(
         invoice["amount_paid"] = invoice["amount_due"] = invoice["subtotal"] = invoice["total"] = (
             1450
         )
+    elif malformation == "overfull_fraction":
+        lines[0]["amount"] = -3800
+        lines[1]["amount"] = 9800
+        invoice["amount_paid"] = invoice["amount_due"] = invoice["subtotal"] = invoice["total"] = (
+            6000
+        )
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """update billing_plan_changes set estimated_source_proration=3800,
+                       estimated_target_proration=9800,estimated_amount_due=6000
+                     where account_id=$1::uuid""",
+                account_id,
+            )
     elif malformation == "preview_fact_drift":
         lines[0]["amount"] = -475
         lines[1]["amount"] = 1225
         invoice["amount_paid"] = invoice["amount_due"] = invoice["subtotal"] = invoice["total"] = (
             750
         )
+    elif malformation == "price_product_identity":
+        lines[1]["_resolved_price"]["product"]["metadata"]["plan"] = "ultra"
     elif malformation == "extra_line":
         lines.append(dict(lines[1], id="il_extra"))
     result = await processor.process(payload)
@@ -381,9 +398,14 @@ async def test_prorated_delta_unknown_or_ambiguous_invoice_shapes_fail_closed(
             "select plan_key,credits_balance from billing_accounts where id=$1::uuid",
             account_id,
         )
+        expected_kind = (
+            "incomplete_invoice_lines"
+            if malformation == "pagination_incomplete"
+            else "invalid_prorated_delta_invoice"
+        )
         incident = await conn.fetchval(
-            """select count(*) from billing_incidents
-                 where kind='invalid_prorated_delta_invoice'"""
+            "select count(*) from billing_incidents where kind=$1",
+            expected_kind,
         )
     assert account is not None and tuple(account) == ("starter", 300)
     assert incident == 1
@@ -1181,11 +1203,16 @@ async def test_checkout_completed_and_paid_create_converge_in_either_order(
     claim = await checkout.reserve(account_id, "starter", "month", request_key="first-buy")
     await checkout.attach_session(claim, "cs_first", "https://checkout.test/first")
     completed = checkout_event(
-        "checkout.session.completed", account_id, "cs_first", subscription="sub_first"
+        "checkout.session.completed",
+        account_id,
+        "cs_first",
+        subscription="sub_first",
+        customer="cus_first",
     )
     paid = paid_invoice(
         account_id,
         invoice_id="in_first",
+        customer="cus_first",
         subscription="sub_first",
         billing_reason="subscription_create",
         claim_token=claim.claim_token,

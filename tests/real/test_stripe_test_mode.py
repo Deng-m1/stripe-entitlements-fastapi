@@ -549,7 +549,7 @@ async def test_real_paid_and_refund_events_converge_in_postgres(
             expected_api_version=observed_event_version,
         )
         paid_result = await processor.process(prepared_paid)
-        assert paid_result.outcome == "handled"
+        assert paid_result.outcome == "handled", paid_result
         async with pool.acquire() as conn:
             assert (
                 await conn.fetchval(
@@ -841,7 +841,7 @@ async def test_real_prorated_delta_upgrade_and_refund_preserve_funding_lineage(
             expected_api_version=observed_event_version,
         )
         initial_result = await processor.process(await gateway.prepare_event(initial_event))
-        assert initial_result.outcome == "handled"
+        assert initial_result.outcome == "handled", initial_result
 
         coordinator = PlanChangeCoordinator(
             pool,

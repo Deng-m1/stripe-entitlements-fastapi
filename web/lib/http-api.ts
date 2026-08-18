@@ -27,6 +27,45 @@ interface HttpApiOptions {
   baseUrl: string;
   auth: AuthAdapter;
   fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}
+
+const defaultTimeoutMs = 30_000;
+const maximumTimeoutMs = 120_000;
+const maximumAccessTokenBytes = 8_192;
+
+function validAccessToken(value: string): boolean {
+  return (
+    /^[\x21-\x7E]+$/u.test(value) &&
+    new TextEncoder().encode(value).length <= maximumAccessTokenBytes
+  );
+}
+
+function idempotencyKey(value: string | undefined): string {
+  const key = value ?? createIdempotencyKey();
+  if (!/^[\x21-\x7E]{1,200}$/u.test(key)) {
+    throw new BillingApiError(
+      "Idempotency key must contain 1 to 200 visible ASCII characters.",
+    );
+  }
+  return key;
+}
+
+function responseErrorMessage(body: unknown, status: number): string {
+  if (body && typeof body === "object") {
+    for (const field of ["detail", "error", "message"] as const) {
+      const value = (body as Record<string, unknown>)[field];
+      if (
+        typeof value === "string" &&
+        value.length > 0 &&
+        value.length <= 500 &&
+        !/[\u0000-\u001F\u007F]/u.test(value)
+      ) {
+        return value;
+      }
+    }
+  }
+  return `Request failed (${status})`;
 }
 
 function isLoopbackHostname(hostname: string): boolean {
@@ -75,8 +114,18 @@ export function createHttpBillingApi({
   baseUrl,
   auth,
   fetchImpl = fetch,
+  timeoutMs = defaultTimeoutMs,
 }: HttpApiOptions): BillingApi {
   const normalizedBase = normalizeBillingApiBaseUrl(baseUrl);
+  if (
+    !Number.isInteger(timeoutMs) ||
+    timeoutMs < 1 ||
+    timeoutMs > maximumTimeoutMs
+  ) {
+    throw new BillingApiError(
+      `Billing API timeout must be an integer between 1 and ${maximumTimeoutMs} milliseconds.`,
+    );
+  }
 
   async function request<T>(path: string, init?: RequestInit): Promise<T> {
     if (!normalizedBase) {
@@ -91,23 +140,42 @@ export function createHttpBillingApi({
         401,
       );
     }
-    const response = await fetchImpl(`${normalizedBase}${path}`, {
-      ...init,
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${token}`,
-        ...(init?.body ? { "Content-Type": "application/json" } : {}),
-        ...init?.headers,
-      },
-    });
-    const body = (await response.json().catch(() => null)) as
-      | { detail?: string; error?: string; message?: string }
-      | T
-      | null;
-    if (!response.ok) {
-      const error = body as { detail?: string; error?: string; message?: string } | null;
+    if (!validAccessToken(token)) {
       throw new BillingApiError(
-        error?.detail ?? error?.error ?? error?.message ?? `Request failed (${response.status})`,
+        "The authentication adapter returned an invalid access token.",
+        401,
+      );
+    }
+    const controller = new AbortController();
+    const timeout = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+    let response: Response;
+    try {
+      response = await fetchImpl(`${normalizedBase}${path}`, {
+        ...init,
+        cache: "no-store",
+        credentials: "omit",
+        redirect: "error",
+        referrerPolicy: "no-referrer",
+        signal: controller.signal,
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+          ...(init?.body ? { "Content-Type": "application/json" } : {}),
+          ...init?.headers,
+        },
+      });
+    } catch {
+      if (controller.signal.aborted) {
+        throw new BillingApiError("Billing API request timed out.", 504);
+      }
+      throw new BillingApiError("Billing API is temporarily unavailable.", 503);
+    } finally {
+      globalThis.clearTimeout(timeout);
+    }
+    const body: unknown = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new BillingApiError(
+        responseErrorMessage(body, response.status),
         response.status,
       );
     }
@@ -128,8 +196,7 @@ export function createHttpBillingApi({
         method: "POST",
         body: JSON.stringify(input),
         headers: {
-          "Idempotency-Key":
-            options?.idempotencyKey ?? createIdempotencyKey(),
+          "Idempotency-Key": idempotencyKey(options?.idempotencyKey),
         },
       }),
     createPortal: (
@@ -140,8 +207,7 @@ export function createHttpBillingApi({
         method: "POST",
         body: JSON.stringify({ return_url: returnUrl }),
         headers: {
-          "Idempotency-Key":
-            options?.idempotencyKey ?? createIdempotencyKey(),
+          "Idempotency-Key": idempotencyKey(options?.idempotencyKey),
         },
       }),
     previewPlanChange: (
@@ -152,8 +218,7 @@ export function createHttpBillingApi({
         method: "POST",
         body: JSON.stringify(input),
         headers: {
-          "Idempotency-Key":
-            options?.idempotencyKey ?? createIdempotencyKey(),
+          "Idempotency-Key": idempotencyKey(options?.idempotencyKey),
         },
       }),
     confirmPlanChange: (input: ChangeConfirmRequest) =>

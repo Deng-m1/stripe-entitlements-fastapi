@@ -681,7 +681,7 @@ wheels = [
 
 [[package]]
 name = "stripe-entitlements-fastapi"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "asyncpg" },

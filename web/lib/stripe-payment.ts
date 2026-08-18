@@ -10,9 +10,20 @@ export async function confirmRequiredStripePayment(
       "Additional payment authentication is required, but NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY is not configured. No billing change was assumed.",
     );
   }
+  if (!/^pk_(?:test|live)_[A-Za-z0-9]+$/.test(publishableKey)) {
+    throw new Error(
+      "NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY is invalid. No billing change was assumed.",
+    );
+  }
   if (!result.payment_client_secret) {
     throw new Error(
       "The billing API returned payment_required without a payment_client_secret.",
+    );
+  }
+  const method = result.payment_confirmation_method;
+  if (method !== "confirm_payment" && method !== "confirm_card_payment") {
+    throw new Error(
+      "The billing API returned an unsupported payment confirmation method. No billing change was assumed.",
     );
   }
 
@@ -21,7 +32,6 @@ export async function confirmRequiredStripePayment(
     throw new Error("Stripe.js could not be initialized.");
   }
 
-  const method = result.payment_confirmation_method ?? "confirm_card_payment";
   let confirmation;
   try {
     confirmation =
@@ -45,6 +55,16 @@ export async function confirmRequiredStripePayment(
     // client secrets, must never enter the DOM, logs, URLs, or browser storage.
     throw new Error(
       "Stripe could not authenticate the payment. No plan change was assumed.",
+    );
+  }
+  const status = confirmation.paymentIntent?.status;
+  if (
+    status !== "succeeded" &&
+    status !== "processing" &&
+    status !== "requires_capture"
+  ) {
+    throw new Error(
+      "Stripe did not return a completed payment authentication state. No billing change was assumed.",
     );
   }
 }

@@ -9,6 +9,7 @@ import {
   formatMoney,
   priceFor,
 } from "@/lib/money";
+import { BillingApiError } from "@/lib/http-api";
 import {
   completeIdempotentIntent,
   idempotencyKeyForIntent,
@@ -94,17 +95,17 @@ export function PricingScreen({
 
   async function choose(plan: CatalogPlan) {
     if (!account) return;
+    const hasSubscription =
+      account.plan_key !== "free" &&
+      account.plan_interval !== null &&
+      account.subscription_status !== "none" &&
+      account.subscription_status !== "canceled";
+    const key = requestKey(hasSubscription ? "preview" : "checkout", plan.key);
     setBusyKey(plan.key);
     setError(null);
     setMessage(null);
     try {
-      const hasSubscription =
-        account.plan_key !== "free" &&
-        account.plan_interval !== null &&
-        account.subscription_status !== "none" &&
-        account.subscription_status !== "canceled";
       if (hasSubscription) {
-        const key = requestKey("preview", plan.key);
         const nextPreview = await api.previewPlanChange(
           {
             plan_key: plan.key,
@@ -112,12 +113,10 @@ export function PricingScreen({
           },
           { idempotencyKey: key.value },
         );
-        completeIdempotentIntent(key.identity);
         setPreview(nextPreview);
         setPaymentUrl(null);
         setPreviewError(null);
       } else {
-        const key = requestKey("checkout", plan.key);
         const origin = window.location.origin;
         const checkoutSuccessUrl = new URL("/billing/success", origin);
         checkoutSuccessUrl.searchParams.set("expected_plan", plan.key);
@@ -132,9 +131,16 @@ export function PricingScreen({
           { idempotencyKey: key.value },
         );
         billingRedirect(result.url);
-        completeIdempotentIntent(key.identity);
       }
     } catch (caught) {
+      if (
+        hasSubscription &&
+        caught instanceof BillingApiError &&
+        caught.status === 409 &&
+        caught.message.includes("no longer reusable")
+      ) {
+        completeIdempotentIntent(key.identity);
+      }
       setError(errorMessage(caught));
     } finally {
       setBusyKey(null);
@@ -164,11 +170,15 @@ export function PricingScreen({
       }
       if (result.timing === "immediate") {
         // A successful confirmation request (including SCA) is not entitlement
-        // proof. The success screen waits for the webhook-projected account.
+        // proof. Keep the preview idempotency key until the success screen sees
+        // webhook-projected entitlement state.
         internalRedirect(successUrl(result));
         return;
       }
       const refreshedAccount = await api.getAccount();
+      completeIdempotentIntent(
+        `preview:${preview.target_plan_key}:${preview.target_interval}`,
+      );
       setAccount(refreshedAccount);
       setPreview(null);
       setPaymentUrl(null);

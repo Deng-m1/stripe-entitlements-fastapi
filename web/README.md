@@ -328,14 +328,15 @@ process environment. Remote existing-stack runs additionally require a private m
 the isolated full-stack runner and follow all prerequisites in
 [the browser E2E runbook](../docs/BROWSER_E2E.md).
 
-Current `0.2.0` release-candidate evidence recorded on 2026-08-17 is 62 passing
+Current `0.2.1` release-candidate evidence recorded on 2026-08-18 is 102 passing
 RTL/Vitest tests, plus passing lint, typecheck, production build, production npm audit,
-and complete npm audit. It covers annual pricing math, both transition policies and
-period-end copy, Checkout, Portal, client-secret-first SCA and hosted-Invoice fallback,
-webhook polling, browser secret isolation, SEO configuration, server-rendered plans,
-JSON-LD, and fail-closed indexing. The earlier 60-test result is historical. Both
-real-browser policies also passed through explicit Stripe CLI signed forwarding on the
-current tree: each completed decline, Checkout 3DS, upgrade SCA, signed webhook
-projection, exact three-essential-Event binding, and strict cleanup. The latest separate
-temporary-endpoint evidence remains the 2026-08-02 dual-policy run. All browser results
-remain test-mode evidence, not live-production proof.
+and complete npm audit. It covers annual pricing math, both transition policies,
+reusable billing intents, Checkout/Portal redirect boundaries, strict Stripe.js result
+validation, webhook polling, HTTP timeout/error sanitization, browser secret isolation,
+security headers, SEO configuration, server-rendered plans, JSON-LD, and fail-closed
+indexing/demo builds. Both real-browser policies also passed through explicit Stripe CLI
+signed forwarding: each completed decline, Checkout 3DS, upgrade SCA, Starter/300 and
+Pro/1,000 projection, seven related and zero unrelated Events, exact three-essential-
+Event binding, and strict cleanup. The latest separate temporary-endpoint evidence remains
+the 2026-08-02 dual-policy run. All browser results remain test-mode evidence, not live-
+production proof.

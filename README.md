@@ -143,6 +143,8 @@ behavior are in [Plan transition policies](docs/PLAN_TRANSITIONS.md).
   does not claim impossible end-to-end exactly-once delivery.
 - Stripe Event IDs guard duplicate deliveries; `(stripe_invoice_id, grant_slot)`
   independently guards the same business grant through another Event or worker.
+  The exact signed request SHA-256 is retained as audit evidence only—it is not a
+  second entitlement authorization rule or a reason to reprocess an existing Event ID.
 - Account row locks serialize balance, grant, refund, cancellation, and
   plan-change projection.
 - `(event.created, event_rank)` prevents older/weaker subscription projections
@@ -202,11 +204,12 @@ are documented in [web/README.md](web/README.md).
   equal that actual Event value and is a required startup setting; it deliberately
   has no fallback to `STRIPE_API_VERSION`.
 
-The request version does not rewrite webhook payloads. In the current 2026-08-02
-browser gates, Event API retrievals reported `2025-12-15.clover`; each isolated endpoint
-pinned to Dahlia delivered signed `2026-06-24.dahlia` payloads for the same browser
-lifecycle. A mismatch is
-recorded as `webhook_contract_mismatch` and ignored fail-closed. This repository does
+The request version does not rewrite webhook payloads. The 2026-08-18 `0.2.1` browser
+reruns used Stripe CLI signed forwarding and observed `2025-12-15.clover`; those runs
+prove raw-signature processing but not endpoint metadata. In the separate 2026-08-02
+endpoint gates, Event API retrievals reported Clover while isolated endpoints pinned to
+Dahlia delivered signed `2026-06-24.dahlia` payloads for the same lifecycle. A mismatch
+is recorded as `webhook_contract_mismatch` and ignored fail-closed. This repository does
 not infer request, Event API view, or endpoint payload versions from one another. See
 [Testing](docs/TESTING.md),
 [Stripe CLI](docs/STRIPE_CLI.md), and
@@ -306,24 +309,29 @@ privacy rules, and reproducible workflow.
 Evidence is split by execution layer; collecting a test or retaining an older run does
 not prove the current tree against Stripe's network.
 
-Current `0.2.0` release-candidate evidence recorded on 2026-08-17:
+Current `0.2.1` release-candidate evidence recorded on 2026-08-18:
 
-- 270 local/backend tests passed against disposable PostgreSQL 17; the full collection
-  contained 279 cases and 9 `real_stripe` cases were deselected;
-- 62 frontend tests passed with lint, typecheck, production build, production-only npm
+- 701 local/backend tests passed against disposable PostgreSQL 17; the full collection
+  contained 710 cases and 9 `real_stripe` cases were deselected;
+- 102 frontend tests passed with lint, typecheck, production build, production-only npm
   audit, complete npm audit, and Python dependency audit all passing with zero known
   vulnerabilities;
 - all 9 real Stripe cases executed and passed against test mode, including strict
-  run-owned cleanup and the complete annual Test Clock renewal lifecycle;
+  run-owned cleanup, paid/refund projection, both upgrade policies, the four-case failed-
+  payment matrix, annual Schedule construction, and the complete Test Clock renewal
+  lifecycle;
 - `full_period_reset` and `prorated_delta` each passed the real-browser lifecycle through
   explicit Stripe CLI signed forwarding: decline, Checkout 3DS, Starter/300 projection,
   upgrade SCA, Pro/1,000 projection, seven related Events, zero unrelated Events, and
   exact three-essential-Event binding;
-- the final 48.800-second public demo cut decoded all 1,464 frames, contained no black
-  segment longer than 0.35 seconds, passed six payment/3DS privacy checkpoints plus 98
-  full-frame OCR samples at 2 fps with zero forbidden-term matches, passed 15/15
-  semantic scene checks, and produced 1080p/30 fps H.264 with 48 kHz stereo AAC at
-  -20.0 LUFS;
+- the `0.2.1` Wheel installed in an independent virtual environment, loaded its packaged
+  catalog and four migrations from an arbitrary working directory, and migrated a fresh
+  PostgreSQL database; the Docker image ran as UID/GID 10001 with a read-only root,
+  completed migration, and returned a healthy `0.2.1` API;
+- the final 48.800-second public demo remains the separately reviewed `0.2.0` visual
+  artifact: 1,464 decoded frames, no long black segment, zero forbidden-term OCR matches,
+  15/15 semantic scene checks, and 1080p/30 fps H.264 with 48 kHz stereo AAC at -20.0
+  LUFS. It is not relabeled as proof of the changed `0.2.1` code;
 - no live-production webhook payload verification is claimed.
 
 CLI signed forwarding proves the raw-signature/application/database path but does not
@@ -388,7 +396,7 @@ designed to verify:
   run-marked inventory error;
 - direct Event polling and PostgreSQL projection for those networked API cases.
 
-All nine assertions passed on the `0.2.0` release candidate on 2026-08-17. Future
+All nine assertions passed on the `0.2.1` release candidate on 2026-08-18. Future
 releases must rerun them with an isolated test account rather than treating this result
 as permanent proof.
 
@@ -404,11 +412,13 @@ The current browser verifier binds its final result to one account, Checkout Ses
 initial Invoice, settlement Invoice, and their three essential signed Events. It also
 requires no unresolved incident for that identity and verifies one 700-credit delta
 allocation or no allocation according to policy. The older five-Event observation is
-not a fixed assertion. Both policies passed this gate on the current hardened tree on
-2026-08-02; each run happened to observe seven account-related Events, zero unrelated
-Events, a Dahlia signed endpoint payload, and an independent Clover Event API view.
-The incidental count of seven is not an invariant, and no live-production payload is
-claimed.
+not a fixed assertion. Both `0.2.1` policies passed on 2026-08-18 through Stripe CLI
+signed forwarding; each run observed seven account-related Events, zero unrelated
+Events, exactly three essential Events, and a Clover signed payload/Event API view. CLI
+forwarding does not prove temporary endpoint metadata. The latest separate temporary-
+endpoint evidence remains the 2026-08-02 dual-policy run with signed Dahlia payloads and
+an independent Clover Event API view. The incidental count of seven is not an invariant,
+and no live-production payload is claimed.
 
 Manual test-mode observations from 2026-07-31 additionally covered:
 
@@ -433,10 +443,15 @@ customer, Event, Invoice, or secret identifiers are committed. See
    immutable invoice/account attribution;
 3. `003_transition_policies.sql`: persisted policy/preview/remote-call snapshots,
    unique settlement binding, cross-Invoice funding allocations, clawback debt,
-   terminal-closure business idempotency, and reconciliation rotation state.
+   terminal-closure business idempotency, and reconciliation rotation state;
+4. `004_event_audit_hardening.sql`: redacted Event audit snapshots, exact signed-body
+   hashes when available, legacy payload scrubbing, and audit-shape constraints.
 
-Apply every migration before routing traffic to the new application version.
-Back up all ten correctness tables together and test point-in-time restore.
+The runner serializes migration application, verifies the checksum of every bundled
+migration already present in the database, and allows later migration rows so a backward-
+compatible rolling deploy does not make the previous replica fail readiness. Apply every
+migration required by the new version before routing traffic to it. Back up all ten
+correctness tables together and test point-in-time restore.
 
 Production is a deliberate separate cutover:
 

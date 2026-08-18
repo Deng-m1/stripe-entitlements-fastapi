@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any, Literal, Protocol, cast
 
 import asyncpg
@@ -96,7 +96,13 @@ class PlanChangeGateway(Protocol):
         *,
         expected_currency: str,
         expected_unit_amount: int,
+        expected_plan_key: str,
         target_interval: BillingInterval,
+        expected_source_lookup_key: str,
+        expected_source_currency: str,
+        expected_source_unit_amount: int,
+        expected_source_plan_key: str,
+        source_interval: BillingInterval,
     ) -> PlanChangeContext: ...
 
     async def apply_immediate_plan_change(
@@ -161,6 +167,8 @@ class PlanChangeCoordinator:
         self.pool = pool
         self.catalog = catalog
         self.gateway = gateway
+        if lease_ttl <= timedelta(0):
+            raise ValueError("plan-change lease TTL must be positive")
         self.lease_ttl = lease_ttl
         if transition_policy not in {"full_period_reset", "prorated_delta"}:
             raise ValueError(f"unknown transition policy {transition_policy!r}")
@@ -189,8 +197,15 @@ class PlanChangeCoordinator:
         interval: str,
         idempotency_key: str,
     ) -> PlanChangeResult:
-        if not idempotency_key or len(idempotency_key) > 200:
-            raise PlanChangeConflictError("Idempotency-Key must contain 1 to 200 characters")
+        if (
+            not idempotency_key
+            or idempotency_key != idempotency_key.strip()
+            or len(idempotency_key.encode("utf-8")) > 200
+            or any(ord(character) < 32 for character in idempotency_key)
+        ):
+            raise PlanChangeConflictError(
+                "Idempotency-Key must contain 1 to 200 visible characters without padding"
+            )
         row, replayed = await self._reserve(account_id, plan, interval, idempotency_key)
         decision = self._decision_from_row(row)
         status = cast(PlanChangeStatus, row["status"])
@@ -203,7 +218,10 @@ class PlanChangeCoordinator:
         lease_token = uuid.uuid4()
         leased = await self._acquire_lease(str(row["id"]), lease_token, "reserved")
         if leased is None:
-            return self._result(await self._get(str(row["id"])), decision, replayed=True)
+            refreshed = await self._get(str(row["id"]))
+            if refreshed["status"] == "reserved":
+                raise PlanChangeBusyError("this plan-change preview is still being calculated")
+            return self._result(refreshed, decision, replayed=True)
         try:
             target_lookup = self.catalog.lookup_key(decision.target_plan, decision.target_interval)
             target_plan = self.catalog.require(decision.target_plan)
@@ -218,7 +236,20 @@ class PlanChangeCoordinator:
                     else target_plan.year_usd
                 )
                 * 100,
+                expected_plan_key=target_plan.key,
                 target_interval=decision.target_interval,
+                expected_source_lookup_key=self.catalog.lookup_key(
+                    source_plan.key, decision.from_interval
+                ),
+                expected_source_currency=source_plan.currency,
+                expected_source_unit_amount=(
+                    source_plan.month_usd
+                    if decision.from_interval == "month"
+                    else source_plan.year_usd
+                )
+                * 100,
+                expected_source_plan_key=source_plan.key,
+                source_interval=decision.from_interval,
             )
             await self._revalidate_before_remote(row, context, target_lookup)
             estimate: PlanChangeEstimate | None = None
@@ -230,7 +261,7 @@ class PlanChangeCoordinator:
                     else target_plan.year_usd
                 ) * 100
                 if decision.policy == "prorated_delta":
-                    proration_date = int(datetime.now(UTC).timestamp())
+                    proration_date = await self._database_epoch()
                 estimate = await self.gateway.preview_immediate_plan_change(
                     context,
                     policy=decision.policy,
@@ -246,8 +277,10 @@ class PlanChangeCoordinator:
                     safe = (
                         estimate.safe_invoice_shape
                         and estimate.amount_due > 0
-                        and estimate.source_proration_amount > 0
-                        and estimate.target_proration_amount > estimate.source_proration_amount
+                        and 0 < estimate.source_proration_amount <= source_catalog_amount
+                        and estimate.source_proration_amount
+                        < estimate.target_proration_amount
+                        <= target_catalog_amount
                         and estimate.amount_due
                         == estimate.target_proration_amount - estimate.source_proration_amount
                         and estimate.customer_balance_credit == 0
@@ -342,6 +375,7 @@ class PlanChangeCoordinator:
         try:
             target_lookup = self.catalog.lookup_key(decision.target_plan, decision.target_interval)
             target_plan = self.catalog.require(decision.target_plan)
+            source_plan = self.catalog.require(decision.from_plan)
             context = await self.gateway.prepare_plan_change(
                 str(row["stripe_subscription_id"]),
                 target_lookup,
@@ -352,12 +386,25 @@ class PlanChangeCoordinator:
                     else target_plan.year_usd
                 )
                 * 100,
+                expected_plan_key=target_plan.key,
                 target_interval=decision.target_interval,
+                expected_source_lookup_key=self.catalog.lookup_key(
+                    source_plan.key, decision.from_interval
+                ),
+                expected_source_currency=source_plan.currency,
+                expected_source_unit_amount=(
+                    source_plan.month_usd
+                    if decision.from_interval == "month"
+                    else source_plan.year_usd
+                )
+                * 100,
+                expected_source_plan_key=source_plan.key,
+                source_interval=decision.from_interval,
             )
             await self._revalidate_before_remote(row, context, target_lookup)
             request_key = str(row["stripe_request_key"])
             if decision.timing == "immediate":
-                self._assert_remote_retry_window(row)
+                await self._assert_remote_retry_window(row)
                 row = await self._mark_remote_started(str(row["id"]), lease_token)
                 remote = await self.gateway.apply_immediate_plan_change(
                     context,
@@ -372,7 +419,7 @@ class PlanChangeCoordinator:
                 )
                 effective_at = None
             else:
-                self._assert_remote_retry_window(row)
+                await self._assert_remote_retry_window(row)
                 row = await self._mark_remote_started(str(row["id"]), lease_token)
                 remote = await self.gateway.schedule_plan_change(
                     context, idempotency_key=f"{request_key}:schedule"
@@ -505,6 +552,7 @@ class PlanChangeCoordinator:
                     raise PlanChangeConflictError(
                         "a prorated upgrade requires a positive entitlement delta"
                     )
+            completed_at = await conn.fetchval("select now()") if status == "completed" else None
             row = await conn.fetchrow(
                 """insert into billing_plan_changes(
                        id,account_id,idempotency_key,stripe_subscription_id,
@@ -529,7 +577,7 @@ class PlanChangeCoordinator:
                 status,
                 account["current_period_end"] if decision.timing == "period_end" else None,
                 f"plan-change:{change_id}",
-                datetime.now().astimezone() if status == "completed" else None,
+                completed_at,
                 account["grant_epoch"],
                 account["entitlement_period_end"],
                 account["subscription_status"],
@@ -719,7 +767,7 @@ class PlanChangeCoordinator:
         recovery_url: str | None,
         settlement_invoice_id: str | None,
     ) -> asyncpg.Record:
-        async with self.pool.acquire() as conn:
+        async with self.pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 """update billing_plan_changes set
                        status=case when status='completed' then status else $3 end,
@@ -781,10 +829,20 @@ class PlanChangeCoordinator:
                 error_name,
             )
 
-    @staticmethod
-    def _assert_remote_retry_window(row: Mapping[str, Any]) -> None:
+    async def _database_epoch(self) -> int:
+        async with self.pool.acquire() as conn:
+            value = await conn.fetchval("select extract(epoch from now())::bigint")
+        return int(value)
+
+    async def _assert_remote_retry_window(self, row: Mapping[str, Any]) -> None:
         started = row.get("remote_started_at")
-        if started is not None and datetime.now(UTC) - started >= timedelta(hours=23):
+        if started is None:
+            return
+        async with self.pool.acquire() as conn:
+            too_old = await conn.fetchval(
+                "select now() - $1::timestamptz >= interval '23 hours'", started
+            )
+        if too_old:
             raise PlanChangeUnavailableError(
                 "Stripe call outcome is too old to retry safely; reconcile it manually"
             )

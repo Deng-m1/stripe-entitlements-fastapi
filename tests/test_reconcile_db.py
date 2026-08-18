@@ -6,10 +6,18 @@ from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
+import pytest
 
 from stripe_entitlements.processor import EventProcessor
-from stripe_entitlements.reconcile import ReconciliationService
-from tests.builders import paid_invoice, prorated_upgrade_invoice
+from stripe_entitlements.reconcile import ReconciliationService, _projection_committed
+from stripe_entitlements.types import ProcessResult
+from tests.builders import (
+    paid_invoice,
+    payment_failed,
+    prorated_upgrade_invoice,
+    resolved_price,
+    subscription_event,
+)
 
 
 class FakeGateway:
@@ -30,15 +38,23 @@ class FakeGateway:
             "customer": "cus_test",
             "status": self.status,
             "canceled_at": 1_800_000_100 if self.status == "canceled" else None,
+            "current_period_end": 1_802_592_000,
+            "cancel_at_period_end": False,
             "livemode": False,
-            "metadata": {"account_id": self.account_id},
+            "metadata": {
+                "account_id": self.account_id,
+                "product_line": "example-entitlements",
+            },
             "items": {
                 "data": [
                     {
+                        "quantity": 1,
+                        "current_period_end": 1_802_592_000,
                         "price": {
                             "id": "price_starter_month",
                             "lookup_key": "ent_starter_month",
-                        }
+                        },
+                        "_resolved_price": resolved_price("starter", "month"),
                     }
                 ]
             },
@@ -56,6 +72,28 @@ class FakeGateway:
         return payload
 
 
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        (ProcessResult("handled"), True),
+        (ProcessResult("replayed"), True),
+        (ProcessResult("duplicate", "event id already committed"), True),
+        (ProcessResult("duplicate", "event id was reused with a conflicting payload"), False),
+        (ProcessResult("ignored", "remote CAS lost"), False),
+    ],
+)
+def test_projection_committed_distinguishes_safe_and_conflicting_duplicates(
+    result: ProcessResult, expected: bool
+) -> None:
+    assert _projection_committed(result) is expected
+
+
+class FailingGateway(FakeGateway):
+    async def subscription_object(self, subscription_id: str) -> dict[str, Any]:
+        del subscription_id
+        raise TimeoutError("simulated Stripe outage")
+
+
 class FakeDeltaGateway(FakeGateway):
     async def subscription_object(self, subscription_id: str) -> dict[str, Any]:
         payload = await super().subscription_object(subscription_id)
@@ -63,6 +101,7 @@ class FakeDeltaGateway(FakeGateway):
             "id": "price_pro_month",
             "lookup_key": "ent_pro_month",
         }
+        payload["items"]["data"][0]["_resolved_price"] = resolved_price("pro", "month")
         return payload
 
     async def latest_paid_invoice_event(self, subscription_id: str) -> dict[str, Any] | None:
@@ -77,6 +116,75 @@ class FakeDeltaGateway(FakeGateway):
         return payload
 
 
+async def test_reconcile_gateway_failure_is_incident_and_still_raises(
+    processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account()
+    service = ReconciliationService(pool, processor, FailingGateway(account_id))
+    with pytest.raises(TimeoutError, match="simulated Stripe outage"):
+        await service.reconcile_account(account_id)
+    async with pool.acquire() as conn:
+        incident = await conn.fetchrow(
+            """select detail from billing_incidents
+                 where kind='reconciliation_failed'"""
+        )
+    assert incident is not None
+    assert incident["detail"] == {"reason": "subscription retrieval failed: TimeoutError"}
+
+
+@pytest.mark.parametrize(
+    ("malformation", "reason"),
+    [
+        ("subscription_id", "Stripe returned a different subscription"),
+        ("status", "Stripe returned an invalid subscription status"),
+        ("livemode", "Stripe returned an invalid subscription mode"),
+        ("canceled_at", "Stripe returned an invalid cancellation timestamp"),
+    ],
+)
+async def test_reconcile_rejects_malformed_remote_subscription_contract(
+    malformation: str,
+    reason: str,
+    processor: EventProcessor,
+    pool: asyncpg.Pool,
+    make_account,
+) -> None:
+    account_id = await make_account()
+
+    class MalformedGateway(FakeGateway):
+        async def subscription_object(self, subscription_id: str) -> dict[str, Any]:
+            payload = await super().subscription_object(subscription_id)
+            if malformation == "subscription_id":
+                payload["id"] = "sub_other"
+            elif malformation == "status":
+                payload["status"] = None
+            elif malformation == "livemode":
+                payload["livemode"] = "false"
+            else:
+                payload["status"] = "canceled"
+                payload["canceled_at"] = "1800000100"
+            return payload
+
+    result = await ReconciliationService(
+        pool,
+        processor,
+        MalformedGateway(account_id),
+    ).reconcile_account(account_id)
+    async with pool.acquire() as conn:
+        account = await conn.fetchrow(
+            """select stripe_subscription_id,subscription_status,event_created
+                 from billing_accounts where id=$1::uuid""",
+            account_id,
+        )
+        incident = await conn.fetchrow(
+            """select detail from billing_incidents
+                 where kind='reconciliation_failed'"""
+        )
+    assert result.outcome == "ignored"
+    assert result.reason == reason
+    assert account is not None and tuple(account) == ("sub_test", "active", 0)
+    assert incident is not None and incident["detail"]["reason"] == reason
+
+
 async def test_reconcile_recovers_lost_paid_event_even_after_newer_local_failure(
     processor: EventProcessor, pool: asyncpg.Pool, make_account
 ) -> None:
@@ -88,14 +196,114 @@ async def test_reconcile_recovers_lost_paid_event_even_after_newer_local_failure
             account_id,
         )
     service = ReconciliationService(pool, processor, FakeGateway(account_id))
+    async with pool.acquire() as conn:
+        before = int(await conn.fetchval("select extract(epoch from now())::bigint"))
     result = await service.reconcile_account(account_id)
     assert result.outcome == "handled"
     async with pool.acquire() as conn:
+        after = int(await conn.fetchval("select extract(epoch from now())::bigint"))
         row = await conn.fetchrow(
-            "select subscription_status,credits_balance from billing_accounts where id=$1::uuid",
+            """select subscription_status,credits_balance,event_created,event_rank
+                 from billing_accounts where id=$1::uuid""",
             account_id,
         )
-    assert row is not None and tuple(row) == ("active", 300)
+    assert row is not None
+    assert (row["subscription_status"], row["credits_balance"], row["event_rank"]) == (
+        "active",
+        300,
+        20,
+    )
+    assert before <= row["event_created"] <= after
+
+    stale_failure = await processor.process(
+        payment_failed(account_id, event_id="evt_stale_after_reconcile", created=500)
+    )
+    assert stale_failure.outcome == "ignored"
+    async with pool.acquire() as conn:
+        status = await conn.fetchval(
+            "select subscription_status from billing_accounts where id=$1::uuid",
+            account_id,
+        )
+    assert status == "active"
+
+
+async def test_reconcile_status_projection_uses_database_clock(
+    processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account()
+    async with pool.acquire() as conn:
+        before = int(await conn.fetchval("select extract(epoch from now())::bigint"))
+    result = await ReconciliationService(
+        pool,
+        processor,
+        FakeGateway(account_id, status="past_due"),
+    ).reconcile_account(account_id)
+    async with pool.acquire() as conn:
+        after = int(await conn.fetchval("select extract(epoch from now())::bigint"))
+        account = await conn.fetchrow(
+            """select subscription_status,event_created,event_rank
+                 from billing_accounts where id=$1::uuid""",
+            account_id,
+        )
+    assert result.outcome == "handled"
+    assert account is not None
+    assert account["subscription_status"] == "past_due"
+    assert before <= account["event_created"] <= after
+    assert account["event_rank"] == 20
+
+
+async def test_reconcile_resolves_same_second_subscription_update_tie(
+    processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account()
+    invoice_id = "in_reconcile_subscription_tie"
+    await processor.process(
+        paid_invoice(
+            account_id, invoice_id=invoice_id, event_id="evt_tie_initial_paid", created=100
+        )
+    )
+    await processor.process(
+        subscription_event(
+            account_id,
+            event_id="evt_tie_first_update",
+            created=200,
+            cancel_at_period_end=False,
+        )
+    )
+    await processor.process(
+        subscription_event(
+            account_id,
+            event_id="evt_tie_second_update",
+            created=200,
+            cancel_at_period_end=True,
+        )
+    )
+
+    class CancelingGateway(FakeGateway):
+        async def subscription_object(self, subscription_id: str) -> dict[str, Any]:
+            payload = await super().subscription_object(subscription_id)
+            payload["cancel_at_period_end"] = True
+            return payload
+
+    result = await ReconciliationService(
+        pool,
+        processor,
+        CancelingGateway(account_id, invoice_id=invoice_id),
+    ).reconcile_account(account_id)
+    async with pool.acquire() as conn:
+        account = await conn.fetchrow(
+            """select cancel_at_period_end,pending_free_at
+                 from billing_accounts where id=$1::uuid""",
+            account_id,
+        )
+        resolved = await conn.fetchval(
+            """select resolved_at is not null from billing_incidents
+                 where kind='event_order_tie'"""
+        )
+    assert result.outcome == "replayed"
+    assert account is not None and account["cancel_at_period_end"] is True
+    assert account["pending_free_at"] is not None
+    assert resolved is True
 
 
 async def test_reconcile_remote_cancellation_clears_local_entitlement(
@@ -103,16 +311,28 @@ async def test_reconcile_remote_cancellation_clears_local_entitlement(
 ) -> None:
     account_id = await make_account()
     await processor.process(paid_invoice(account_id, event_id="evt_before_remote_cancel"))
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """insert into billing_incidents(kind,dedupe_key,account_id,detail)
+                 values('reconciliation_failed',$1,$2::uuid,'{}'::jsonb)""",
+            f"{account_id}:sub_test",
+            account_id,
+        )
     service = ReconciliationService(pool, processor, FakeGateway(account_id, status="canceled"))
     result = await service.reconcile_account(account_id)
     assert result.outcome == "handled"
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """select plan_key,subscription_status,credits_balance
+            """select plan_key,subscription_status,credits_balance,event_created,event_rank
                  from billing_accounts where id=$1::uuid""",
             account_id,
         )
-    assert row is not None and tuple(row) == ("free", "canceled", 0)
+        incident = await conn.fetchrow(
+            """select resolved_at from billing_incidents
+                 where kind='reconciliation_failed'"""
+        )
+    assert row is not None and tuple(row) == ("free", "canceled", 0, 1_800_000_100, 40)
+    assert incident is not None and incident["resolved_at"] is not None
 
 
 async def test_reconcile_cancellation_cas_race_gets_a_new_synthetic_event_id(
@@ -141,8 +361,9 @@ async def test_reconcile_cancellation_cas_race_gets_a_new_synthetic_event_id(
     service = ReconciliationService(pool, processor, gateway)
     first = await service.reconcile_account(account_id)
     second = await service.reconcile_account(account_id)
-    assert first.outcome == "ignored"
-    assert second.outcome == "handled"
+    assert first.outcome == "handled"
+    assert second.outcome == "ignored"
+    assert second.reason == "account has no subscription"
     async with pool.acquire() as conn:
         account = await conn.fetchrow(
             "select plan_key,subscription_status from billing_accounts where id=$1::uuid",
@@ -189,6 +410,57 @@ async def test_candidate_scan_includes_stale_plan_change_projection(
     assert [str(candidate["id"]) for candidate in candidates] == [account_id]
 
 
+async def test_reconcile_marks_stale_plan_change_for_same_preview_recovery(
+    processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account()
+    await processor.process(
+        paid_invoice(account_id, invoice_id="in_reconcile_recovery_source", created=100)
+    )
+    change_id = uuid.uuid4()
+    async with pool.acquire() as conn:
+        account = await conn.fetchrow(
+            "select * from billing_accounts where id=$1::uuid", account_id
+        )
+        assert account is not None
+        await conn.execute(
+            """insert into billing_plan_changes(
+                   id,account_id,idempotency_key,stripe_subscription_id,
+                   from_plan_key,from_interval,target_plan_key,target_interval,
+                   effective_mode,status,stripe_request_key,expected_grant_epoch,
+                   expected_entitlement_period_end,expected_subscription_status,
+                   expected_cancel_at_period_end,updated_at)
+                 values($1,$2::uuid,'recovery-required','sub_test','starter','month',
+                        'pro','month','immediate','applying',$3,$4,$5,$6,false,
+                        now()-interval '10 minutes')""",
+            change_id,
+            account_id,
+            f"plan-change:{change_id}",
+            account["grant_epoch"],
+            account["entitlement_period_end"],
+            account["subscription_status"],
+        )
+    service = ReconciliationService(
+        pool,
+        processor,
+        FakeGateway(account_id, invoice_id="in_reconcile_old_funding"),
+    )
+    result = await service.reconcile_account(account_id)
+    async with pool.acquire() as conn:
+        incident = await conn.fetchrow(
+            """select kind,detail from billing_incidents
+                 where kind='plan_change_recovery_required'"""
+        )
+        status = await conn.fetchval(
+            "select status from billing_plan_changes where id=$1::uuid", change_id
+        )
+    assert result.outcome == "ignored"
+    assert status == "applying"
+    assert incident is not None
+    assert incident["detail"]["plan_change_id"] == str(change_id)
+    assert incident["detail"]["status"] == "applying"
+
+
 async def test_many_reconcilers_share_business_idempotency(
     processor: EventProcessor, pool: asyncpg.Pool, make_account
 ) -> None:
@@ -206,6 +478,72 @@ async def test_many_reconcilers_share_business_idempotency(
             )
             == 300
         )
+
+
+async def test_candidate_scan_uses_database_clock_and_explicit_exclusion(
+    processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    account_ids = [
+        await make_account(),
+        await make_account(customer="cus_db_clock_2", subscription="sub_db_clock_2"),
+    ]
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "update billing_accounts set subscription_status='past_due' where id=any($1::uuid[])",
+            account_ids,
+        )
+        before = await conn.fetchval("select now()")
+    service = ReconciliationService(pool, processor, FakeGateway(account_ids[0]))
+    database_now = await service.database_now()
+    first = await service.candidates(None, limit=1)
+    assert len(first) == 1
+    excluded = {str(first[0]["id"])}
+    second = await service.candidates(None, exclude_account_ids=excluded)
+    async with pool.acquire() as conn:
+        after = await conn.fetchval("select now()")
+    assert before <= database_now <= after
+    assert {str(row["id"]) for row in second} == set(account_ids) - excluded
+
+
+@pytest.mark.parametrize(
+    ("now", "attempted_before", "limit"),
+    [
+        (datetime(2026, 8, 1), None, 100),
+        (None, datetime(2026, 8, 1), 100),
+        (None, None, 0),
+    ],
+)
+async def test_candidate_scan_rejects_invalid_clock_or_limit(
+    now: datetime | None,
+    attempted_before: datetime | None,
+    limit: int,
+    processor: EventProcessor,
+    pool: asyncpg.Pool,
+) -> None:
+    service = ReconciliationService(pool, processor, FakeGateway("unused"))
+    with pytest.raises(ValueError):
+        await service.candidates(now, attempted_before=attempted_before, limit=limit)
+
+
+@pytest.mark.parametrize("incident_kind", ["reconciliation_failed", "event_order_tie"])
+async def test_candidate_scan_includes_reconciliation_incidents(
+    incident_kind: str,
+    processor: EventProcessor,
+    pool: asyncpg.Pool,
+    make_account,
+) -> None:
+    account_id = await make_account()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """insert into billing_incidents(kind,dedupe_key,account_id,detail)
+                 values($1,$2,$3::uuid,'{}'::jsonb)""",
+            incident_kind,
+            f"{account_id}:sub_test:{incident_kind}",
+            account_id,
+        )
+    service = ReconciliationService(pool, processor, FakeGateway(account_id))
+    candidates = await service.candidates(datetime(2026, 7, 31, tzinfo=UTC))
+    assert [str(candidate["id"]) for candidate in candidates] == [account_id]
 
 
 async def test_candidate_scan_includes_past_due_accounts(
@@ -295,6 +633,13 @@ async def test_reconcile_recovers_lost_prorated_delta_invoice(
             account["entitlement_period_end"],
             account["subscription_status"],
         )
+        await conn.execute(
+            """insert into billing_incidents(kind,dedupe_key,account_id,detail)
+                 values('plan_change_recovery_required',$1,$2::uuid,$3::jsonb)""",
+            f"{account_id}:{change_id}",
+            account_id,
+            {"plan_change_id": str(change_id), "status": "applied"},
+        )
     service = ReconciliationService(
         pool,
         processor,
@@ -312,8 +657,13 @@ async def test_reconcile_recovers_lost_prorated_delta_invoice(
                  from billing_funding_allocations
                  where stripe_invoice_id='in_reconcile_delta_upgrade'"""
         )
+        incident_resolved = await conn.fetchval(
+            """select resolved_at is not null from billing_incidents
+                 where kind='plan_change_recovery_required'"""
+        )
     assert account is not None and tuple(account) == ("pro", 1000)
     assert allocation is not None and tuple(allocation) == (
         "in_reconcile_delta_source",
         700,
     )
+    assert incident_resolved is True

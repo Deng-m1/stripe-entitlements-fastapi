@@ -5,6 +5,44 @@ import time
 from typing import Any
 
 _counter = itertools.count(1)
+_CATALOG_AMOUNTS = {
+    ("starter", "month"): 1900,
+    ("starter", "year"): 13_700,
+    ("pro", "month"): 4900,
+    ("pro", "year"): 35_300,
+    ("ultra", "month"): 14_900,
+    ("ultra", "year"): 107_300,
+}
+
+
+def resolved_price(plan: str, interval: str) -> dict[str, Any]:
+    return {
+        "id": f"price_{plan}_{interval}",
+        "lookup_key": f"ent_{plan}_{interval}",
+        "active": True,
+        "type": "recurring",
+        "currency": "usd",
+        "unit_amount": _CATALOG_AMOUNTS[(plan, interval)],
+        "billing_scheme": "per_unit",
+        "recurring": {
+            "interval": interval,
+            "interval_count": 1,
+            "usage_type": "licensed",
+        },
+        "tax_behavior": "unspecified",
+        "tiers_mode": None,
+        "transform_quantity": None,
+        "custom_unit_amount": None,
+        "currency_options": None,
+        "product": {
+            "id": f"prod_{plan}",
+            "active": True,
+            "metadata": {
+                "product_line": "example-entitlements",
+                "plan": plan,
+            },
+        },
+    }
 
 
 def event(
@@ -41,15 +79,7 @@ def paid_invoice(
     billing_reason: str = "subscription_cycle",
     claim_token: str | None = None,
 ) -> dict[str, Any]:
-    catalog_amounts = {
-        ("starter", "month"): 1900,
-        ("starter", "year"): 13_700,
-        ("pro", "month"): 4900,
-        ("pro", "year"): 35_300,
-        ("ultra", "month"): 14_900,
-        ("ultra", "year"): 107_300,
-    }
-    amount = amount if amount is not None else catalog_amounts[(plan, interval)]
+    amount = amount if amount is not None else _CATALOG_AMOUNTS[(plan, interval)]
     period_end = period_end or period_start + (31_536_000 if interval == "year" else 2_592_000)
     lines: list[dict[str, Any]] = [
         {
@@ -58,6 +88,7 @@ def paid_invoice(
             "currency": "usd",
             "quantity": 1,
             "price": {"id": f"price_{plan}_{interval}", "lookup_key": f"ent_{plan}_{interval}"},
+            "_resolved_price": resolved_price(plan, interval),
             "period": {"start": period_start, "end": period_end},
             "proration": False,
         }
@@ -71,6 +102,7 @@ def paid_invoice(
                     "id": f"price_{plan}_{interval}",
                     "lookup_key": f"ent_{plan}_{interval}",
                 },
+                "_resolved_price": resolved_price(plan, interval),
                 "period": {"start": period_start, "end": period_end},
                 "proration": True,
             }
@@ -124,6 +156,7 @@ def prorated_upgrade_invoice(
                 "id": f"price_{source_plan}_month",
                 "lookup_key": f"ent_{source_plan}_month",
             },
+            "_resolved_price": resolved_price(source_plan, "month"),
             "period": {"start": proration_date, "end": period_end},
             "proration": True,
         },
@@ -136,6 +169,7 @@ def prorated_upgrade_invoice(
                 "id": f"price_{target_plan}_month",
                 "lookup_key": f"ent_{target_plan}_month",
             },
+            "_resolved_price": resolved_price(target_plan, "month"),
             "period": {"start": proration_date, "end": period_end},
             "proration": True,
         },
@@ -174,12 +208,17 @@ def payment_failed(
     *,
     event_id: str | None = None,
     created: int = 1_800_000_010,
+    billing_reason: str = "subscription_cycle",
 ) -> dict[str, Any]:
     obj = {
         "id": "in_failed",
         "customer": "cus_test",
         "subscription": "sub_test",
-        "metadata": {"account_id": account_id},
+        "billing_reason": billing_reason,
+        "metadata": {
+            "account_id": account_id,
+            "product_line": "example-entitlements",
+        },
         "lines": {"data": []},
     }
     return event("invoice.payment_failed", obj, event_id=event_id, created=created)
@@ -201,19 +240,24 @@ def subscription_event(
         "id": subscription,
         "customer": "cus_test",
         "status": status,
-        "metadata": {"account_id": account_id},
+        "metadata": {
+            "account_id": account_id,
+            "product_line": "example-entitlements",
+        },
         "current_period_end": 1_802_592_000,
         "cancel_at_period_end": cancel_at_period_end,
         "items": {
             "data": [
                 {
                     "id": "si_test",
+                    "quantity": 1,
                     "current_period_start": 1_800_000_000,
                     "current_period_end": 1_802_592_000,
                     "price": {
                         "id": f"price_{plan}_{interval}",
                         "lookup_key": f"ent_{plan}_{interval}",
                     },
+                    "_resolved_price": resolved_price(plan, interval),
                 }
             ]
         },
@@ -272,6 +316,7 @@ def checkout_event(
     session_id: str,
     *,
     subscription: str = "sub_checkout",
+    customer: str = "cus_checkout",
     event_id: str | None = None,
     claim_token: str | None = None,
 ) -> dict[str, Any]:
@@ -279,11 +324,12 @@ def checkout_event(
         event_type,
         {
             "id": session_id,
-            "customer": "cus_checkout",
+            "customer": customer,
             "subscription": subscription,
             "client_reference_id": account_id,
             "metadata": {
                 "account_id": account_id,
+                "product_line": "example-entitlements",
                 **({"claim_token": claim_token} if claim_token else {}),
             },
         },

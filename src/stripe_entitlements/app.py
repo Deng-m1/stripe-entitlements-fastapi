@@ -1,15 +1,16 @@
 import hashlib
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 from urllib.parse import parse_qsl, urlsplit
+from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from .auth import (
     AuthAccountAdapter,
@@ -38,24 +39,28 @@ from .processor import EventProcessor
 from .stripe_gateway import StripeGateway
 
 
-class CheckoutRequest(BaseModel):
-    plan_key: str
+class _StrictRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class CheckoutRequest(_StrictRequest):
+    plan_key: Annotated[str, Field(min_length=1, max_length=64)]
     interval: Literal["month", "year"]
-    success_url: str
-    cancel_url: str
+    success_url: Annotated[str, Field(min_length=1, max_length=2048)]
+    cancel_url: Annotated[str, Field(min_length=1, max_length=2048)]
 
 
-class PortalRequest(BaseModel):
-    return_url: str
+class PortalRequest(_StrictRequest):
+    return_url: Annotated[str, Field(min_length=1, max_length=2048)]
 
 
-class PlanChangePreviewRequest(BaseModel):
-    plan_key: str
+class PlanChangePreviewRequest(_StrictRequest):
+    plan_key: Annotated[str, Field(min_length=1, max_length=64)]
     interval: Literal["month", "year"]
 
 
-class PlanChangeConfirmRequest(BaseModel):
-    preview_id: str
+class PlanChangeConfirmRequest(_StrictRequest):
+    preview_id: UUID
 
 
 _FEATURE_LABELS = {
@@ -65,6 +70,8 @@ _FEATURE_LABELS = {
     "api_access": "API access",
     "priority_queue": "Priority queue",
 }
+_MAX_STRIPE_WEBHOOK_BYTES = 1_048_576
+
 _LIMIT_PRESENTATION = {
     "max_file_mb": ("Maximum file size", "MB"),
     "max_pages_per_job": ("Maximum pages per job", "pages"),
@@ -97,10 +104,47 @@ def create_app(
         ("sk_test_", "sk_live_")
     ):
         raise ValueError("billing gateway must expose an sk_test_ or sk_live_ secret key")
+    if not settings.stripe_secret_key.startswith(("sk_test_", "sk_live_")):
+        raise ValueError("configured Stripe key must be an sk_test_ or sk_live_ secret key")
     settings_test_mode = settings.stripe_secret_key.startswith("sk_test_")
     gateway_test_mode = gateway_secret_key.startswith("sk_test_")
     if settings_test_mode != gateway_test_mode:
         raise ValueError("settings and billing gateway Stripe modes do not match")
+    if not settings.stripe_webhook_secret.startswith("whsec_"):
+        raise ValueError("Stripe webhook secret must start with whsec_")
+    origins = [origin.strip().rstrip("/") for origin in settings.frontend_origins.split(",")]
+    origins = [origin for origin in origins if origin]
+    if "*" in origins:
+        raise ValueError("credentialed billing CORS cannot allow a wildcard origin")
+    for origin in origins:
+        parsed_origin = urlsplit(origin)
+        if (
+            parsed_origin.scheme not in {"http", "https"}
+            or not parsed_origin.netloc
+            or parsed_origin.username is not None
+            or parsed_origin.password is not None
+            or parsed_origin.path not in {"", "/"}
+            or parsed_origin.query
+            or parsed_origin.fragment
+        ):
+            raise ValueError("FRONTEND_ORIGINS entries must be bare HTTP(S) origins")
+    if not gateway_test_mode:
+        public_urls = {
+            "CHECKOUT_SUCCESS_URL": settings.checkout_success_url,
+            "CHECKOUT_CANCEL_URL": settings.checkout_cancel_url,
+            "PORTAL_RETURN_URL": settings.portal_return_url,
+            **{f"FRONTEND_ORIGINS[{index}]": origin for index, origin in enumerate(origins)},
+        }
+        for field, value in public_urls.items():
+            parsed = urlsplit(value)
+            if (
+                parsed.scheme != "https"
+                or not parsed.netloc
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.fragment
+            ):
+                raise ValueError(f"{field} must be an origin-safe HTTPS URL in live mode")
     if auth_adapter is None:
         if (
             settings.app_env == "development"
@@ -119,36 +163,39 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logging.basicConfig(level=settings.log_level)
-        if database.pool is None:
+        connected_here = database.pool is None
+        if connected_here:
             await database.connect()
-        app.state.database = database
-        app.state.gateway = gateway
-        app.state.processor = EventProcessor(
-            database.require_pool(),
-            catalog,
-            settings.product_line,
-            expected_livemode=not gateway_test_mode,
-            expected_api_version=settings.stripe_webhook_api_version,
-        )
-        app.state.checkout = CheckoutCoordinator(database.require_pool())
-        app.state.plan_changes = PlanChangeCoordinator(
-            database.require_pool(),
-            catalog,
-            gateway,
-            transition_policy=settings.billing_transition_policy,
-        )
-        yield
-        await database.close()
+        try:
+            app.state.database = database
+            app.state.gateway = gateway
+            app.state.processor = EventProcessor(
+                database.require_pool(),
+                catalog,
+                settings.product_line,
+                expected_livemode=not gateway_test_mode,
+                expected_api_version=settings.stripe_webhook_api_version,
+            )
+            app.state.checkout = CheckoutCoordinator(database.require_pool())
+            app.state.plan_changes = PlanChangeCoordinator(
+                database.require_pool(),
+                catalog,
+                gateway,
+                transition_policy=settings.billing_transition_policy,
+            )
+            yield
+        finally:
+            if connected_here:
+                await database.close()
 
     app = FastAPI(
         title="Stripe Entitlements Reference",
-        version="0.2.0",
+        version="0.2.1",
         lifespan=lifespan,
     )
-    origins = [origin.strip().rstrip("/") for origin in settings.frontend_origins.split(",")]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[origin for origin in origins if origin],
+        allow_origins=origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=[
@@ -159,13 +206,57 @@ def create_app(
         ],
     )
 
+    protected_origins = frozenset(origins)
+
+    def harden_billing_response(path: str, response: Response) -> Response:
+        if path.startswith(("/api/", "/billing/", "/webhooks/")):
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    @app.middleware("http")
+    async def billing_response_headers(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        path = request.url.path
+        origin = request.headers.get("Origin")
+        if (
+            request.method in {"POST", "PUT", "PATCH", "DELETE"}
+            and path.startswith(("/api/", "/billing/"))
+            and origin is not None
+            and origin not in protected_origins
+        ):
+            return harden_billing_response(
+                path,
+                JSONResponse({"error": "request origin is not allowed"}, status_code=403),
+            )
+        response = await call_next(request)
+        return harden_billing_response(path, response)
+
     async def current_identity(request: Request) -> AuthenticatedIdentity:
         try:
             identity = await auth_adapter.authenticate(request)
         except AuthenticationError as exc:
-            raise HTTPException(401, str(exc)) from exc
-        if not identity.external_ref:
-            raise HTTPException(401, "authenticated identity has no stable subject")
+            raise HTTPException(401, "authentication failed") from exc
+        external_ref = identity.external_ref
+        if (
+            not external_ref
+            or external_ref != external_ref.strip()
+            or len(external_ref.encode("utf-8")) > 512
+            or any(not character.isprintable() for character in external_ref)
+        ):
+            raise HTTPException(401, "authenticated identity has an invalid stable subject")
+        if identity.email is not None and (
+            identity.email != identity.email.strip()
+            or len(identity.email.encode("utf-8")) > 320
+            or identity.email.count("@") != 1
+            or any(
+                character.isspace() or not character.isprintable() for character in identity.email
+            )
+        ):
+            raise HTTPException(401, "authenticated identity has an invalid email")
         return identity
 
     Identity = Annotated[AuthenticatedIdentity, Depends(current_identity)]
@@ -209,6 +300,7 @@ def create_app(
     async def account_response(account: dict[str, Any]) -> dict[str, Any]:
         pending = await database.pending_plan_change(str(account["id"]))
         plan = catalog.plans.get(str(account["plan_key"]))
+        database_now = account.get("database_now")
         pending_change = None
         if pending is not None:
             effective = pending["effective_at"] or pending["created_at"]
@@ -250,7 +342,8 @@ def create_app(
                 account["subscription_status"] == "active"
                 and not account["entitlement_revoked"]
                 and account["credit_expires_at"]
-                and account["credit_expires_at"] > datetime.now(UTC)
+                and isinstance(database_now, datetime)
+                and account["credit_expires_at"] > database_now
             ),
             "pending_change": pending_change,
             "pending_cancellation": (
@@ -267,8 +360,16 @@ def create_app(
         }
 
     def require_idempotency(value: str) -> str:
-        if not value or len(value) > 200:
-            raise HTTPException(400, "Idempotency-Key must contain 1 to 200 characters")
+        if (
+            not value
+            or value != value.strip()
+            or len(value.encode("utf-8")) > 200
+            or any(ord(character) < 32 for character in value)
+        ):
+            raise HTTPException(
+                400,
+                "Idempotency-Key must contain 1 to 200 visible characters without padding",
+            )
         return value
 
     def require_configured_url(value: str, expected: str, field: str) -> None:
@@ -284,7 +385,10 @@ def create_app(
             expected.path,
         ) or supplied.fragment:
             raise HTTPException(400, "success_url must match the server allowlisted URL")
-        query = dict(parse_qsl(supplied.query, keep_blank_values=True))
+        query_pairs = parse_qsl(supplied.query, keep_blank_values=True)
+        if len({key for key, _ in query_pairs}) != len(query_pairs):
+            raise HTTPException(400, "success_url query contains duplicate keys")
+        query = dict(query_pairs)
         if query not in (
             {},
             {"expected_plan": plan_key, "expected_interval": interval},
@@ -305,6 +409,15 @@ def create_app(
         response.headers["Cache-Control"] = "no-store"
         async with database.require_pool().acquire() as conn:
             await conn.fetchval("select 1")
+        if not await database.schema_ready():
+            response.status_code = 503
+            return {
+                "ok": False,
+                "database": True,
+                "schema": False,
+                "stripe_mode": ("test" if gateway_test_mode else "live"),
+                "transition_policy": settings.billing_transition_policy,
+            }
         return {
             "ok": True,
             "database": True,
@@ -359,7 +472,6 @@ def create_app(
     ) -> dict[str, str]:
         if stripe_mode_requirement == "test" and not gateway_test_mode:
             raise HTTPException(409, "billing backend is not in the required Stripe test mode")
-        account = await database.account_for_external_ref(identity.external_ref)
         request_key = require_idempotency(idempotency_key)
         require_checkout_success_url(
             body.success_url, plan_key=body.plan_key, interval=body.interval
@@ -367,6 +479,10 @@ def create_app(
         require_configured_url(body.cancel_url, settings.checkout_cancel_url, "cancel_url")
         try:
             plan = catalog.require(body.plan_key)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        account = await database.account_for_external_ref(identity.external_ref)
+        try:
             session_id, url = await app.state.checkout.create(
                 gateway,
                 account_id=str(account["id"]),
@@ -385,9 +501,12 @@ def create_app(
             CheckoutBusyError,
             CheckoutActiveSubscriptionError,
             CheckoutCreationRejected,
-            ValueError,
         ) as exc:
             raise HTTPException(409, str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                502, "Stripe Checkout is temporarily unavailable; retry the same request"
+            ) from exc
         del session_id
         return {"url": url}
 
@@ -395,13 +514,14 @@ def create_app(
     @app.post("/billing/portal", include_in_schema=False)
     async def create_portal(
         body: PortalRequest,
-        account: Account,
+        identity: Identity,
         idempotency_key: str = Header(alias="Idempotency-Key"),
     ) -> dict[str, str]:
         require_configured_url(body.return_url, settings.portal_return_url, "return_url")
-        if not account["stripe_customer_id"]:
-            raise HTTPException(409, "account has no Stripe customer")
         digest = hashlib.sha256(require_idempotency(idempotency_key).encode()).hexdigest()
+        account = await database.existing_account_for_external_ref(identity.external_ref)
+        if account is None or not account["stripe_customer_id"]:
+            raise HTTPException(409, "account has no Stripe customer")
         try:
             _, url = await gateway.create_portal_session(
                 customer_id=str(account["stripe_customer_id"]),
@@ -415,15 +535,23 @@ def create_app(
     @app.post("/billing/plan-change/preview", include_in_schema=False)
     async def preview_plan_change(
         body: PlanChangePreviewRequest,
-        account: Account,
+        identity: Identity,
         idempotency_key: str = Header(alias="Idempotency-Key"),
     ) -> dict[str, Any]:
+        request_key = require_idempotency(idempotency_key)
+        try:
+            catalog.require(body.plan_key)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        account = await database.existing_account_for_external_ref(identity.external_ref)
+        if account is None:
+            raise HTTPException(409, "an active paid subscription is required")
         try:
             result: PlanChangeResult = await app.state.plan_changes.preview_remote(
                 str(account["id"]),
                 body.plan_key,
                 body.interval,
-                require_idempotency(idempotency_key),
+                request_key,
             )
         except Exception as exc:
             raise plan_change_error(exc) from exc
@@ -473,11 +601,14 @@ def create_app(
     @app.post("/billing/plan-change/confirm", include_in_schema=False)
     async def confirm_plan_change(
         body: PlanChangeConfirmRequest,
-        account: Account,
+        identity: Identity,
     ) -> dict[str, Any]:
+        account = await database.existing_account_for_external_ref(identity.external_ref)
+        if account is None:
+            raise HTTPException(409, "plan-change preview not found")
         try:
             result: PlanChangeResult = await app.state.plan_changes.confirm(
-                str(account["id"]), body.preview_id
+                str(account["id"]), str(body.preview_id)
             )
         except Exception as exc:
             raise plan_change_error(exc) from exc
@@ -509,15 +640,35 @@ def create_app(
         request: Request,
         stripe_signature: str = Header(default="", alias="Stripe-Signature"),
     ) -> JSONResponse:
-        payload = await request.body()
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                declared_length = int(content_length)
+            except ValueError:
+                return JSONResponse({"error": "invalid Content-Length"}, 400)
+            if declared_length < 0:
+                return JSONResponse({"error": "invalid Content-Length"}, 400)
+            if declared_length > _MAX_STRIPE_WEBHOOK_BYTES:
+                return JSONResponse({"error": "Stripe webhook payload is too large"}, 413)
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > _MAX_STRIPE_WEBHOOK_BYTES:
+                return JSONResponse({"error": "Stripe webhook payload is too large"}, 413)
+            body.extend(chunk)
+        payload = bytes(body)
         try:
             event = gateway.construct_event(payload, stripe_signature)
+            event["_raw_payload_sha256"] = hashlib.sha256(payload).hexdigest()
         except Exception as exc:
             del exc
             return JSONResponse({"error": "invalid Stripe signature"}, 400)
         try:
-            prepared = await gateway.prepare_event(event)
-            result = await app.state.processor.process(prepared)
+            processor = app.state.processor
+            if await processor.has_committed_event(event.get("id")):
+                result = await processor.process(event)
+            else:
+                prepared = await gateway.prepare_event(event)
+                result = await processor.process(prepared)
         except Exception:
             logging.getLogger("stripe_entitlements.webhook").exception(
                 "stripe.webhook.failed",

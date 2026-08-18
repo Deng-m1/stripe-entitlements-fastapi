@@ -8,11 +8,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   backend:
     name: Backend
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -24,13 +28,88 @@ jobs:
         run: |
           uv run ruff format --check .
           uv run ruff check .
-          bash -n scripts/run_browser_e2e.sh scripts/run_test_clock_e2e.sh
+          while IFS= read -r -d '' script; do
+            bash -n "$script"
+          done < <(find scripts -type f -name '*.sh' -print0)
+          uv run python -m compileall -q src scripts
       - name: Type check
         run: uv run mypy src
       - name: PostgreSQL and race tests
         run: uv run pytest -m "not real_stripe"
+      - name: Audit Python dependencies
+        run: uv audit
+      - name: Build and inspect distributions
+        run: |
+          uv build --out-dir dist
+          uv run python - <<'PY'
+          import glob
+          import zipfile
+
+          wheel = glob.glob("dist/*.whl")
+          assert len(wheel) == 1, wheel
+          with zipfile.ZipFile(wheel[0]) as archive:
+              names = set(archive.namelist())
+          required = {
+              "stripe_entitlements/plans.toml",
+              "stripe_entitlements/migrations/001_schema.sql",
+              "stripe_entitlements/migrations/002_plan_transitions.sql",
+              "stripe_entitlements/migrations/003_transition_policies.sql",
+              "stripe_entitlements/migrations/004_event_audit_hardening.sql",
+          }
+          missing = required - names
+          assert not missing, sorted(missing)
+          PY
+
+          wheel="$(realpath "$(find dist -maxdepth 1 -name '*.whl' -print -quit)")"
+          test_root="$(mktemp -d)"
+          uv venv "$test_root/venv"
+          uv pip install --python "$test_root/venv/bin/python" "$wheel"
+          (
+            cd "$test_root"
+            "$test_root/venv/bin/python" - <<'PY'
+          from pathlib import Path
+
+          from stripe_entitlements.catalog import PlanCatalog
+          from stripe_entitlements.resources import (
+              default_migration_directory,
+              default_plan_catalog_path,
+          )
+
+          catalog_path = Path(default_plan_catalog_path())
+          migration_dir = default_migration_directory()
+          assert catalog_path.is_file(), catalog_path
+          assert [path.name for path in sorted(migration_dir.glob("*.sql"))] == [
+              "001_schema.sql",
+              "002_plan_transitions.sql",
+              "003_transition_policies.sql",
+              "004_event_audit_hardening.sql",
+          ]
+          assert [plan.key for plan in PlanCatalog.from_toml(catalog_path).ordered()] == [
+              "starter",
+              "pro",
+              "ultra",
+          ]
+          PY
+          )
       - name: Check whitespace
         run: git diff --check
+
+  container:
+    name: Container
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build hardened image
+        run: |
+          docker build \
+            --build-arg PYTHON_IMAGE=public.ecr.aws/docker/library/python:3.12-slim \
+            --tag stripe-entitlements-ci .
+      - name: Verify non-root read-only runtime
+        run: |
+          test "$(docker image inspect stripe-entitlements-ci --format '{{.Config.User}}')" = "10001:10001"
+          test "$(docker image inspect stripe-entitlements-ci --format '{{json .Config.Healthcheck.Test}}')" != "null"
+          docker run --rm --read-only stripe-entitlements-ci stripe-entitlements --help
 
   web:
     name: Web
@@ -48,8 +127,10 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Install locked dependencies
         run: npm ci
-      - name: Audit production dependencies
-        run: npm audit --omit=dev
+      - name: Audit dependencies
+        run: |
+          npm audit --omit=dev
+          npm audit
       - name: Lint
         run: npm run lint
       - name: Type check
