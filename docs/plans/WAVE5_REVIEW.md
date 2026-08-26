@@ -1,7 +1,9 @@
 # Wave 5 终审
 
-审查分支：`cursor/stripe-promo-ui-expand-7789`  
-审查基线：`origin/main`（`96209417fade1d57b7a42f5cc507ec1aea69fb21`）  
+审查分支：`cursor/stripe-promo-ui-expand-7789`
+
+审查基线：`origin/main`（`96209417fade1d57b7a42f5cc507ec1aea69fb21`）
+
 审查提交：`b2b286ec584ac6f1a97c74b0964d08853338892e`
 
 ## 结论
