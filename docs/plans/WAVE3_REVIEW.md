@@ -4,9 +4,9 @@
 
 ## 结论
 
-**阻断通过。** 已提交的 `HEAD` 明确要求 Checkout Session 无条件省略
-`allow_promotion_codes`，但审查期间的并行未提交改动重新引入了可开启路径。该路径与
-`docs/plans/TEST_GATES_PROMO_UI.md` 的政策边界直接冲突，在清理前不可合入。
+**代码项通过，文档仍有风险。** 已提交的 `HEAD` 和最终工作树中的可执行代码均未保留
+`allow_promotion_codes` Session 传参或可开启旗标，符合无条件省略的政策边界。审查
+期间曾短暂出现危险接线，但并行代理已将其清理；未跟踪文档仍有过期描述，合入前需收敛。
 
 ## 通过项
 
@@ -23,24 +23,21 @@
 
 ## 风险
 
-- 审查快照中的未提交改动包含：
-  - `.env.example` 暴露 `CHECKOUT_ALLOW_PROMOTION_CODES=false`；
-  - `app.py` 将 `settings.checkout_allow_promotion_codes` 注入网关；
-  - `stripe_gateway.py` 接受 `allow_promotion_codes: bool = False`，为真时向
-    `stripe.checkout.Session.create` 传 `allow_promotion_codes=True`。
-- 因此当前工作树仍存在可开启旗标和实际 Session 传参路径；默认关闭不能满足“无条件
-  省略”不变量。
-- 现有网关断言只覆盖默认构造。即使显式开启路径存在，该断言仍可通过，不能阻止回归。
+- 未跟踪的 `docs/PROMOTION_CODES.md` 仍声称存在默认关闭的
+  `CHECKOUT_ALLOW_PROMOTION_CODES` / `Settings.checkout_allow_promotion_codes` hook，
+  与最终代码和禁止可开启旗标的政策不一致；该描述不可按现状提交。
+- 现有网关断言只覆盖默认 Checkout 请求。若未来再次加入显式开启路径，该断言可能仍然
+  通过，回归门禁还不够强。
 - 折扣 Invoice 当前会 fail-closed；若先开放促销码，可能出现客户已按折扣付款、权益未
   发放并产生 incident 的状态。
-- 审查期间这些未提交文件持续变化，表明另有并行代理正在修改同一工作树；本次未覆盖
-  或回滚其代码。
+- 审查期间并行未提交文件持续变化；本次未覆盖或回滚其他代理的 UI 与规划文档改动。
 
 ## 下一步
 
-1. 删除环境变量、Settings/App 注入、网关构造参数及 Session 条件传参，恢复无条件省略。
-2. 增加覆盖所有构造/配置路径的回归门禁，确保无法通过显式参数或环境变量开启。
-3. 清理后运行网关、配置、Invoice policy 及非 real-Stripe 后端测试，并再次执行本次 Web
-   定向测试与 `git diff --check`。
+1. 修正或暂缓提交 `docs/PROMOTION_CODES.md` 中不存在的 reserved hook 描述。
+2. 增加覆盖构造签名、Settings 和 Session 参数的回归门禁，确保无法通过显式参数或环境
+   变量开启。
+3. 运行网关、配置、Invoice policy 及非 real-Stripe 后端测试，并再次执行本次 Web 定向
+   测试与 `git diff --check`。
 4. 只有在折扣资金政策、Invoice 允收规则、运营约束及端到端测试原子落地后，才重新评估
    促销码支持。
