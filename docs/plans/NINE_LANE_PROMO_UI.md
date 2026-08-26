@@ -8,9 +8,12 @@ test matrix that several lanes depend on live in
 [Promotion codes and coupons](../PROMOTION_CODES.md).
 
 Scope anchor: today every discount shape on an Invoice fails closed, and the ~40%
-annual saving is explicit yearly pricing in `plans.toml`, not a Coupon. Lanes A–E are
-Phase 1 (display, docs, reserved default-off hooks). Lanes F–I are Phase 2 (actually
-accepting a narrow discounted-Invoice slice) and merge only as a complete unit.
+annual saving is explicit yearly pricing in `plans.toml`, not a Coupon. On this
+integration branch, Phase 1 is **display, docs, and prohibition tests only** — Checkout
+Session creation must never send `allow_promotion_codes`, including via a default-off
+feature flag (see the parent override in
+[promo-ui-expansion-9-lane-plan.md](promo-ui-expansion-9-lane-plan.md)). Lanes that
+would accept discounted Invoices are Phase 2 and merge only as a complete unit.
 
 ## Lane summaries
 
@@ -18,7 +21,7 @@ accepting a narrow discounted-Invoice slice) and merge only as a complete unit.
 | --- | --- | --- | --- |
 | A | 1 | Pricing-page promo presentation | `web/app/pricing/`, `web/components/` |
 | B | 1 | Promo demo recording refresh | `web/promo/ui-tour.spec.ts`, `scripts/run_promo_ui.sh`, `scripts/build_promo_video.sh` |
-| C | 1 | Reserved Checkout promo-code hook | `src/stripe_entitlements/config.py`, `app.py`, `stripe_gateway.py`, `.env.example` |
+| C | 1 | Prohibit Checkout promo-code parameter | `tests/test_checkout_promo_prohibition.py`, `stripe_gateway.py` comments, `.env.example` |
 | D | 1 | Promotion-code phase plan | `docs/PROMOTION_CODES.md` |
 | E | 1 | Invariant future gates + testing gates | `docs/INVARIANTS.md`, `docs/TESTING.md` |
 | F | 2 | Discount-aware Invoice attribution | `src/stripe_entitlements/invoice_policy.py`, `processor.py`, `stripe_gateway.py`, `migrations/` |
@@ -26,8 +29,9 @@ accepting a narrow discounted-Invoice slice) and merge only as a complete unit.
 | H | 2 | Promo test matrix implementation | `tests/` |
 | I | 2 | Real-Stripe and browser promo gates | `tests/` (`real_stripe`), `web/e2e/`, release evidence |
 
-Lanes D, E, and G are delivered by this documentation change. Lane C's reserved hook
-(`CHECKOUT_ALLOW_PROMOTION_CODES`, default off) is in flight on this branch.
+Lanes D, E, and G are documentation coordination. Lane C on this branch is the
+**prohibition** gate (Session params / Settings must not expose `allow_promotion_codes`),
+not a reserved enablement hook.
 
 ### Lane A — Pricing-page promo presentation (Phase 1)
 
@@ -48,18 +52,14 @@ Depends on: Lane A.
 Done when: `scripts/run_promo_ui.sh` and `scripts/build_promo_video.sh` produce the
 refreshed recording and the review script passes.
 
-### Lane C — Reserved Checkout promo-code hook (Phase 1)
+### Lane C — Prohibit Checkout promo-code parameter (Phase 1)
 
-Goal: land `CHECKOUT_ALLOW_PROMOTION_CODES` (`Settings.checkout_allow_promotion_codes`,
-default `false`). When true, `create_checkout_session` passes
-`allow_promotion_codes=True` so hosted Checkout renders Stripe's promo-code field — and
-nothing else changes: a redeemed promo yields a discounted Invoice that still fails
-closed with a durable incident. The flag must not be enabled on any production path
-before Lanes F/H/I ship (see the hard rule in
-[Promotion codes and coupons](../PROMOTION_CODES.md) and
-[Billing invariants §16](../INVARIANTS.md)).
-Done when: config default-off test exists, `.env.example` documents the semantics, and
-Ruff/Mypy/pytest pass.
+Goal: keep Checkout Session creation free of `allow_promotion_codes` at every layer
+(no Settings field, no gateway constructor argument, no Session parameter). Document
+the charged-but-not-entitled failure mode and enforce it with
+`tests/test_checkout_promo_prohibition.py` plus gateway assertions.
+Done when: prohibition tests pass, `.env.example` states there is intentionally no
+enablement switch, and Ruff/Mypy/pytest pass.
 
 ### Lane D — Promotion-code phase plan (Phase 1, this change)
 
@@ -120,15 +120,15 @@ assertion; plus a browser-gate variant that redeems a promo code end to end. Upd
 release evidence recording in [Testing](../TESTING.md).
 Depends on: Lanes F and H merged.
 Done when: both gates pass in test mode and the evidence table records them; only then
-may `CHECKOUT_ALLOW_PROMOTION_CODES` be considered for a production path.
+may Checkout Session creation be allowed to send `allow_promotion_codes` on a
+production path under the Phase-2 contract.
 
 ## Execution order
 
-1. **G, D, E** — this documentation change. The contract must exist before code lanes
-   start, so no lane can invent its own attribution semantics.
-2. **C** — the reserved default-off hook (in flight on this branch). Safe at any point
-   after the docs because it changes display availability only and the paid path stays
-   fail-closed.
+1. **G, D, E** — documentation contract (promotion phase plan, invariant 16, testing
+   gates). Must exist before any acceptance code lands.
+2. **C** — prohibition tests and comments ensuring Session/Settings never expose
+   `allow_promotion_codes` on this branch.
 3. **A, then B** — Phase-1 display and demo work, parallel to C. B waits for A's UI.
 4. **F + H** — the Phase-2 attribution change and its test matrix as one merge unit,
    gated on the D/E contract.
@@ -140,8 +140,8 @@ F/H/I are strictly ordered after D/E and must not start from an undocumented con
 
 ## Hard gates
 
-- `CHECKOUT_ALLOW_PROMOTION_CODES` stays default-off and is prohibited on production
-  paths until Lanes F, H, and I are complete ([Billing invariants §16](../INVARIANTS.md)).
+- Checkout Session creation must not send `allow_promotion_codes` until Lanes F, H,
+  and I are complete ([Billing invariants §16](../INVARIANTS.md)).
 - No lane may weaken the symmetric preview/paid discount-drift rejection in
   `full_period_reset` and `prorated_delta`.
 - Catalog credits never scale with discounts, in any lane, in any phase.

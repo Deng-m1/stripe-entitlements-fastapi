@@ -276,14 +276,15 @@ skipped scenarios and reason:
 
 ## Promo future gates
 
-`CHECKOUT_ALLOW_PROMOTION_CODES` is a reserved, default-off display hook. No Coupon or
-Promotion Code behavior is part of the evidence above, and none of the gates below have
-been run. They become required release gates only when a change starts accepting
-discount-bearing Invoices under
+Checkout Session creation on this branch must never send `allow_promotion_codes`.
+No Coupon or Promotion Code behavior is part of the evidence above, and none of the
+gates below have been run. They become required release gates only when a change
+starts accepting discount-bearing Invoices under
 [Promotion codes and coupons](PROMOTION_CODES.md) Phase 2 and
 [invariant 16](INVARIANTS.md):
 
-- flag-off regression equivalence: every discount shape is rejected exactly as today;
+- Session-parameter omission regression: Settings/gateway/Session never expose
+  `allow_promotion_codes`; every discount shape is rejected exactly as today;
 - accepted-shape unit tests for the narrow Phase-2 first-purchase contract, including
   zero-due and repeating-coupon rejection;
 - refund/dispute convergence permutations computed from the discounted paid amount,
@@ -295,7 +296,7 @@ discount-bearing Invoices under
   webhook-projected full-catalog entitlement.
 
 Passing any earlier layer must not be described as passing these gates, and enabling
-the hook in production before they pass is prohibited.
+Checkout promotion codes before they pass is prohibited.
 
 ## Required release commands
 
