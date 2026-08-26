@@ -167,3 +167,32 @@ Refund/dispute processing follows account → Invoice → grant/allocation lock 
 Invoice state, grant slot, or delta allocation bound to another account creates an
 incident before refund facts or balances are changed. Customer lookup alone is never
 sufficient authority to debit credits.
+
+## 16. Discounts remain fail-closed until promo attribution gates pass
+
+Nothing in this section weakens invariants 1, 4, or 14. Today any Coupon, Promotion
+Code, or discount participation on an Invoice, including zero-valued shapes, fails
+closed with no entitlement effect: the paid path rolls back for retry or records a
+durable incident, and both transition policies symmetrically reject discount drift in
+preview and paid settlement. The annual saving is explicit yearly pricing in
+`plans.toml`, not a discount object. `CHECKOUT_ALLOW_PROMOTION_CODES` is a reserved
+display hook, defaults to off, and must not be enabled on a production path while this
+section stands, because a redeemed code would charge the customer without granting
+entitlement.
+
+A future change may accept a discount-bearing Invoice only when all of these gates hold
+(see [Promotion codes and coupons](PROMOTION_CODES.md)):
+
+1. Durable discount facts (Coupon, Promotion Code, discount total, amount paid)
+   commit in the same PostgreSQL transaction as the grant they fund.
+2. Catalog credits never scale with discounts: a discounted paid Invoice grants exactly
+   the full catalog quantity or nothing.
+3. Refund and dispute ratios are computed from the discounted amount actually paid,
+   preserving invariant-4 convergence.
+4. Both transition policies keep symmetric preview and paid rejection of discount
+   drift; discounts never enter `prorated_delta` or `full_period_reset` settlement math.
+5. The promo test matrix in [Promotion codes and coupons](PROMOTION_CODES.md) and the
+   promo future gates in [Testing](TESTING.md) pass, including flag-off regression
+   equivalence.
+
+Until every gate is met, the fail-closed behavior above is the invariant.
