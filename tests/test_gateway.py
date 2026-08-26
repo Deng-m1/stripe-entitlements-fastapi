@@ -794,6 +794,7 @@ async def test_checkout_uses_pinned_version_and_server_built_success_query(
     assert captured["stripe_version"] == "2026-06-24.dahlia"
     assert captured["subscription_data"]["metadata"]["claim_token"] == "claim-1"
     assert captured["metadata"]["product_line"] == "example-entitlements"
+    assert "allow_promotion_codes" not in captured
     assert price_list_kwargs["expand"] == ["data.currency_options", "data.product"]
 
 
