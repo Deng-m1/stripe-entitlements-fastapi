@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## 0.2.2 - 2026-08-18
+
+- Remove webhook payload hashing from runtime with `005_simplify_event_audit.sql`, clear
+  stored digests, and retain only a nullable compatibility column for one rolling-upgrade
+  window. Stripe signatures authenticate delivery, Event IDs
+  provide delivery idempotency, and database constraints provide business idempotency;
+  the redacted Event audit snapshot remains.
+- Simplify readiness to verify required tables and migration-version presence without
+  rereading and rehashing migration files on every health probe. The migration command
+  continues to enforce immutable checksums before applying SQL.
+- Treat Stripe `product_line` metadata as advisory during webhook projection. Exact
+  Customer, Subscription, Checkout claim/session, and Price-to-Product identity remain
+  the authorization chain, avoiding a duplicate metadata gate on otherwise proven Events.
+- Remove the unnecessary SHA-256 transform from Portal idempotency keys; the validated
+  caller key is scoped by account and remains below Stripe's key-length limit.
+- Verify the `0.2.2` release candidate with 702 local PostgreSQL tests from 711 collected,
+  all 9 real Stripe test-mode cases, 102 frontend tests, and both real-browser policies
+  through signed Stripe CLI forwarding. Python/npm audits report zero known
+  vulnerabilities; an independently installed Wheel applied all five migrations; and the
+  non-root, read-only Docker image migrated PostgreSQL and reached a healthy API state.
+
 ## 0.2.1 - 2026-08-18
 
 - Harden signed Event processing around Customer/Subscription ownership, Checkout claims,

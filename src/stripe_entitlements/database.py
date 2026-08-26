@@ -16,7 +16,7 @@ MigrationFile = tuple[str, str, str]
 _MIGRATION_NAME = re.compile(r"^(\d{3})_[a-z0-9][a-z0-9_]*\.sql$")
 
 
-def _load_migrations(root: Path) -> list[MigrationFile]:
+def _migration_paths(root: Path) -> list[Path]:
     if not root.is_dir():
         raise FileNotFoundError(f"migration directory does not exist: {root}")
     paths = sorted(root.glob("*.sql"))
@@ -34,8 +34,12 @@ def _load_migrations(root: Path) -> list[MigrationFile]:
             "migration filenames must form one contiguous append-only sequence "
             f"starting at 001; observed={sequences}"
         )
+    return paths
+
+
+def _load_migrations(root: Path) -> list[MigrationFile]:
     loaded: list[MigrationFile] = []
-    for path in paths:
+    for path in _migration_paths(root):
         payload = path.read_bytes()
         loaded.append(
             (
@@ -152,8 +156,10 @@ class Database:
             "schema_migrations",
         )
         try:
-            expected = await asyncio.to_thread(_load_migrations, default_migration_directory())
-        except (FileNotFoundError, RuntimeError, UnicodeDecodeError):
+            expected_paths = await asyncio.to_thread(
+                _migration_paths, default_migration_directory()
+            )
+        except (FileNotFoundError, RuntimeError):
             return False
         async with pool.acquire() as conn:
             present = await conn.fetchval(
@@ -165,24 +171,13 @@ class Database:
             )
             if not present:
                 return False
-            rows = await conn.fetch("select filename,sha256 from schema_migrations")
-            payload_hash_column = await conn.fetchval(
-                """select exists(
-                       select 1 from information_schema.columns
-                        where table_schema=current_schema()
-                          and table_name='stripe_webhook_events'
-                          and column_name='payload_sha256'
-                     )"""
-            )
-        applied = {str(row["filename"]): str(row["sha256"]) for row in rows}
-        expected_checksums = {filename: checksum for filename, _, checksum in expected}
-        # Readiness answers whether this process can safely serve requests. The
-        # immutable migration ledger is the schema contract; deep index/trigger
-        # auditing belongs in an explicit diagnostic command, not every health probe.
-        known_history_matches = all(
-            applied.get(filename) == checksum for filename, checksum in expected_checksums.items()
-        )
-        return bool(payload_hash_column and known_history_matches)
+            rows = await conn.fetch("select filename from schema_migrations")
+        applied = {str(row["filename"]) for row in rows}
+        expected_filenames = {path.name for path in expected_paths}
+        # The migration command enforces immutable checksums. Readiness only verifies
+        # that this binary's schema versions are present; it stays cheap and allows a
+        # database to be ahead during a rolling deployment.
+        return expected_filenames.issubset(applied)
 
     async def create_account(
         self, external_ref: str, *, account_id: uuid.UUID | None = None

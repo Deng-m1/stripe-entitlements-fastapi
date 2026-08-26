@@ -55,6 +55,7 @@ jobs:
               "stripe_entitlements/migrations/002_plan_transitions.sql",
               "stripe_entitlements/migrations/003_transition_policies.sql",
               "stripe_entitlements/migrations/004_event_audit_hardening.sql",
+              "stripe_entitlements/migrations/005_simplify_event_audit.sql",
           }
           missing = required - names
           assert not missing, sorted(missing)
@@ -83,6 +84,7 @@ jobs:
               "002_plan_transitions.sql",
               "003_transition_policies.sql",
               "004_event_audit_hardening.sql",
+              "005_simplify_event_audit.sql",
           ]
           assert [plan.key for plan in PlanCatalog.from_toml(catalog_path).ordered()] == [
               "starter",

@@ -67,6 +67,7 @@ def test_default_repository_resources_are_complete() -> None:
         "002_plan_transitions.sql",
         "003_transition_policies.sql",
         "004_event_audit_hardening.sql",
+        "005_simplify_event_audit.sql",
     ]
 
 

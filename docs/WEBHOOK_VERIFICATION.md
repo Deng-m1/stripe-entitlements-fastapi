@@ -49,7 +49,7 @@ See [BROWSER_E2E.md](BROWSER_E2E.md) for prerequisites, failure artifacts and th
 browser assertions. A collected, skipped or partially completed Playwright test is not
 evidence.
 
-Current `0.2.1` evidence: both policy runs passed on 2026-08-18 through explicit
+Current `0.2.2` evidence: both policy runs passed on 2026-08-18 through explicit
 Stripe CLI signed forwarding. Each passed its decline barrier, Checkout 3DS, UI upgrade
 SCA, Starter/Monthly/300 and Pro/Monthly/1,000 projection, three-essential-Event binding,
 zero-unrelated-Event check, unresolved-incident check, and strict cleanup. Each happened

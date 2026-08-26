@@ -40,39 +40,53 @@ async def test_migration_runner_serializes_and_records_checksums(
         "002_plan_transitions.sql",
         "003_transition_policies.sql",
         "004_event_audit_hardening.sql",
+        "005_simplify_event_audit.sql",
     ]
     assert all(len(row["sha256"]) == 64 for row in rows)
     assert await database.schema_ready()
 
 
-async def test_schema_ready_rejects_missing_or_drifted_migration_ledger(
+async def test_schema_ready_does_not_read_or_rehash_migration_contents(
+    pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = Database(TEST_DSN)
+    database.pool = pool
+
+    def unexpected_read(path: Path) -> bytes:
+        raise AssertionError(f"readiness tried to read migration contents: {path}")
+
+    monkeypatch.setattr(Path, "read_bytes", unexpected_read)
+    assert await database.schema_ready()
+
+
+async def test_schema_ready_requires_known_versions_without_rehashing_files(
     pool: asyncpg.Pool,
 ) -> None:
     database = Database(TEST_DSN)
     database.pool = pool
+    filename = "005_simplify_event_audit.sql"
     async with pool.acquire() as conn:
         original = await conn.fetchval(
-            "select sha256 from schema_migrations where filename='004_event_audit_hardening.sql'"
+            "select sha256 from schema_migrations where filename=$1", filename
         )
         assert original is not None
-        await conn.execute(
-            "delete from schema_migrations where filename='004_event_audit_hardening.sql'"
-        )
+        await conn.execute("delete from schema_migrations where filename=$1", filename)
     assert not await database.schema_ready()
     async with pool.acquire() as conn:
         await conn.execute(
             "insert into schema_migrations(filename,sha256) values($1,$2)",
-            "004_event_audit_hardening.sql",
+            filename,
             "0" * 64,
         )
-    assert not await database.schema_ready()
+    # The migration command owns checksum enforcement. A hot readiness probe only
+    # checks that this binary's migration versions are present.
+    assert await database.schema_ready()
     async with pool.acquire() as conn:
         await conn.execute(
             "update schema_migrations set sha256=$2 where filename=$1",
-            "004_event_audit_hardening.sql",
+            filename,
             original,
         )
-    assert await database.schema_ready()
 
 
 async def test_migration_runner_rejects_changed_applied_file(
@@ -80,7 +94,7 @@ async def test_migration_runner_rejects_changed_applied_file(
 ) -> None:
     migration_dir = tmp_path / "migrations"
     shutil.copytree(ROOT / "migrations", migration_dir)
-    filename = "005_checksum_probe.sql"
+    filename = "006_checksum_probe.sql"
     migration = migration_dir / filename
     migration.write_text("select 1;\n", encoding="utf-8")
     database = Database(TEST_DSN)
@@ -134,12 +148,12 @@ async def test_schema_ready_allows_extra_forward_migration_history(
     database.pool = pool
     async with pool.acquire() as conn:
         await conn.execute(
-            "insert into schema_migrations(filename,sha256) values('005_removed.sql',$1)",
+            "insert into schema_migrations(filename,sha256) values('006_removed.sql',$1)",
             "a" * 64,
         )
     assert await database.schema_ready()
     async with pool.acquire() as conn:
-        await conn.execute("delete from schema_migrations where filename='005_removed.sql'")
+        await conn.execute("delete from schema_migrations where filename='006_removed.sql'")
     assert await database.schema_ready()
 
 
@@ -207,10 +221,55 @@ async def test_event_audit_migration_scrubs_legacy_full_payloads(
         ):
             assert secret not in serialized
         with pytest.raises(asyncpg.CheckViolationError):
-            await conn.execute(
-                """insert into stripe_webhook_events(id,event_type,livemode,payload)
-                     values('evt_missing_audit','invoice.paid',false,'{}'::jsonb)"""
-            )
+            async with conn.transaction():
+                await conn.execute(
+                    """insert into stripe_webhook_events(id,event_type,livemode,payload)
+                         values('evt_missing_audit','invoice.paid',false,'{}'::jsonb)"""
+                )
+
+        await conn.execute((ROOT / "migrations/005_simplify_event_audit.sql").read_text())
+        assert await conn.fetchval(
+            """select exists(
+                   select 1 from information_schema.columns
+                    where table_schema=$1 and table_name='stripe_webhook_events'
+                      and column_name='payload_sha256'
+                 )""",
+            schema,
+        )
+        assert not await conn.fetchval(
+            """select exists(
+                   select 1 from pg_constraint con
+                   join pg_class c on c.oid=con.conrelid
+                   join pg_namespace n on n.oid=c.relnamespace
+                  where n.nspname=$1 and c.relname='stripe_webhook_events'
+                    and con.conname in (
+                      'stripe_webhook_events_payload_sha256_ck',
+                      'stripe_webhook_events_payload_audit_ck'
+                    )
+                 )""",
+            schema,
+        )
+        await conn.execute(
+            """insert into stripe_webhook_events(id,event_type,livemode,payload)
+                 values('evt_redacted_only','customer.created',false,
+                        '{"id":"evt_redacted_only","type":"customer.created"}'::jsonb)"""
+        )
+        assert await conn.fetchval(
+            "select payload_sha256 is null from stripe_webhook_events where id='evt_redacted_only'"
+        )
+        # A draining 0.2.1 replica still names the compatibility column in its INSERT.
+        # Keep that write shape valid for this rolling-upgrade window.
+        await conn.execute(
+            """insert into stripe_webhook_events(
+                   id,event_type,livemode,payload,payload_sha256)
+                 values('evt_old_writer','customer.created',false,
+                        '{"id":"evt_old_writer","type":"customer.created"}'::jsonb,$1)""",
+            "a" * 64,
+        )
+        assert await conn.fetchval(
+            "select payload_sha256=$1 from stripe_webhook_events where id='evt_old_writer'",
+            "a" * 64,
+        )
 
 
 async def test_transition_policy_migration_backfills_only_applied_closures(

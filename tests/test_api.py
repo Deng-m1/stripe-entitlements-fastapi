@@ -132,15 +132,16 @@ async def test_valid_raw_signature_reaches_processor(postgres_container: None) -
                 headers={"Stripe-Signature": _signature(payload, secret)},
             )
         async with database.require_pool().acquire() as conn:
-            stored_hash = await conn.fetchval(
-                "select payload_sha256 from stripe_webhook_events where id='evt_api_signature'"
+            stored_payload = await conn.fetchval(
+                "select payload from stripe_webhook_events where id='evt_api_signature'"
             )
     assert response.status_code == 200, response.text
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["pragma"] == "no-cache"
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.json()["outcome"] == "ignored"
-    assert stored_hash == hashlib.sha256(payload).hexdigest()
+    assert stored_payload["id"] == "evt_api_signature"
+    assert all(not str(key).startswith("_") for key in stored_payload)
 
 
 async def test_committed_webhook_duplicate_skips_remote_preparation(

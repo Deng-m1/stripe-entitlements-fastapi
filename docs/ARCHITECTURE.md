@@ -125,15 +125,13 @@ Paths that touch account and invoice state lock account first, then invoice.
   after a refund or dispute; and
 - reconciliation rotation state/indexes so bounded runs do not starve later accounts.
 
-`004_event_audit_hardening.sql` adds:
-
-- a SHA-256 column for the exact signed request body when the Event arrived over HTTP;
-- redacted audit snapshots that remove secrets, PII, hosted URLs, and internal prefetch
-  fields from future Event rows; and
-- legacy-payload scrubbing plus audit-shape constraints for previously stored Events.
-
-The hash is forensic evidence only. Event ID and business uniqueness constraints remain
-the idempotency/authorization boundary.
+`004_event_audit_hardening.sql` introduces redacted audit snapshots that remove secrets,
+PII, hosted URLs, and internal prefetch fields, and scrubs pre-hardening full payloads.
+`005_simplify_event_audit.sql` then stops new digest writes, clears stored values, and
+removes the hash-based constraints. The nullable column remains for one rolling-upgrade
+compatibility window so an older replica can drain safely. Stripe signatures authenticate
+delivery, Event IDs provide delivery idempotency, and business uniqueness constraints
+provide effect idempotency; the active audit contract uses only the redacted snapshot.
 
 Together the migrations define ten correctness tables. Backup and restore them as one
 unit; restoring account balances without their inbox, Invoice, allocation, debt, or
@@ -163,7 +161,7 @@ to send only this set.
 the endpoint's snapshot `api_version`; `STRIPE_WEBHOOK_API_VERSION` validates that value.
 Pinning one does not pin the other.
 
-In the 2026-08-18 `0.2.1` Stripe CLI forwarding evidence, the signed payload/Event API
+In the 2026-08-18 `0.2.2` Stripe CLI forwarding evidence, the signed payload/Event API
 view used `2025-12-15.clover` while outbound request code targeted
 `2026-06-24.dahlia`. In the separate 2026-08-02 endpoint evidence, isolated endpoints
 pinned to Dahlia delivered signed Dahlia payloads while Event API retrieval remained

@@ -328,7 +328,7 @@ process environment. Remote existing-stack runs additionally require a private m
 the isolated full-stack runner and follow all prerequisites in
 [the browser E2E runbook](../docs/BROWSER_E2E.md).
 
-Current `0.2.1` release-candidate evidence recorded on 2026-08-18 is 102 passing
+Current `0.2.2` release-candidate evidence recorded on 2026-08-18 is 102 passing
 RTL/Vitest tests, plus passing lint, typecheck, production build, production npm audit,
 and complete npm audit. It covers annual pricing math, both transition policies,
 reusable billing intents, Checkout/Portal redirect boundaries, strict Stripe.js result

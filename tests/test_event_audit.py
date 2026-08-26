@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 import json
 
-from stripe_entitlements.event_audit import (
-    event_payload_sha256,
-    redacted_event_snapshot,
-)
+from stripe_entitlements.event_audit import redacted_event_snapshot
 
 
 def test_event_audit_redacts_secrets_pii_urls_and_unknown_metadata() -> None:
@@ -14,7 +10,6 @@ def test_event_audit_redacts_secrets_pii_urls_and_unknown_metadata() -> None:
         "id": "evt_audit",
         "type": "invoice.payment_failed",
         "api_version": "2026-06-24.dahlia",
-        "_raw_payload_sha256": "a" * 64,
         "_remote_verified": True,
         "data": {
             "object": {
@@ -54,7 +49,6 @@ def test_event_audit_redacts_secrets_pii_urls_and_unknown_metadata() -> None:
     encoded = json.dumps(snapshot, sort_keys=True)
     obj = snapshot["data"]["object"]
     assert snapshot["id"] == "evt_audit"
-    assert "_raw_payload_sha256" not in snapshot
     assert "_remote_verified" not in snapshot
     assert obj["customer_email"] == "[redacted]"
     assert obj["customer_name"] == "[redacted]"
@@ -92,27 +86,3 @@ def test_event_audit_redacts_secrets_pii_urls_and_unknown_metadata() -> None:
         "sk_test_embeddedsecret",
     ):
         assert forbidden not in encoded
-
-
-def test_event_payload_hash_prefers_exact_raw_request_digest() -> None:
-    event = {
-        "id": "evt_raw_hash",
-        "type": "customer.created",
-        "_raw_payload_sha256": "b" * 64,
-    }
-    assert event_payload_sha256(event) == "b" * 64
-
-
-def test_event_payload_hash_is_stable_and_ignores_internal_fields() -> None:
-    first = {"id": "evt_stable", "type": "customer.created", "data": {"object": {"b": 2, "a": 1}}}
-    second = {
-        "type": "customer.created",
-        "id": "evt_stable",
-        "_remote_verified": True,
-        "data": {"object": {"a": 1, "b": 2, "_resolved_lookup_key": "ignored"}},
-    }
-    expected = hashlib.sha256(
-        b'{"data":{"object":{"a":1,"b":2}},"id":"evt_stable","type":"customer.created"}'
-    ).hexdigest()
-    assert event_payload_sha256(first) == expected
-    assert event_payload_sha256(second) == expected

@@ -6,7 +6,7 @@
 - [ ] Link every billing behavior change to an invariant and migration.
 - [ ] Separate automated PostgreSQL, automated real Stripe, manual test-mode and
       production evidence.
-- [ ] Bind every pass claim to the exact commit. Current `0.2.1` evidence is 701 local
+- [ ] Bind every pass claim to the exact commit. Current `0.2.2` evidence is 702 local
       PostgreSQL tests, 9 real Stripe cases, 102 frontend tests, and 2 browser policies;
       label older 239/7/60/2 and 270/9/62/2 results as historical.
 - [ ] Cite Test Clock renewal/annual-slot evidence only when the full annual lifecycle
@@ -93,7 +93,7 @@
 ## Database and deployment
 
 - [ ] Back up all ten correctness tables together.
-- [ ] Apply all four migrations through `004_event_audit_hardening.sql` before new code.
+- [ ] Apply all five migrations through `005_simplify_event_audit.sql` before new code.
 - [ ] Verify every bundled migration checksum; tolerate later migration rows only when
       the runtime/schema change remains backward-compatible during rolling deployment.
 - [ ] Verify restore/PITR and run reconciliation in staging.
@@ -127,7 +127,7 @@
       return routes `noindex` using `docs/SEO.md`.
 - [ ] Confirm visible landing, plan, savings and FAQ copy matches JSON-LD and the
       enforced catalog; do not advertise unsupported coupons, trials, tax or currency.
-- [ ] Confirm CI `Backend` and `Web` jobs pass from a clean clone.
+- [ ] Confirm CI `Backend`, `Container`, and `Web` jobs pass from a clean clone.
 - [ ] Review dependency/security alerts and license changes.
 - [ ] When publishing a demo video:
   - [ ] record only isolated Stripe test mode and show an explicit test-mode label;
@@ -140,6 +140,6 @@
         cardholder data;
   - [ ] describe CLI signed forwarding separately from endpoint-metadata evidence;
   - [ ] unless a new cut is recorded and reviewed, label the 48.800-second video as the
-        `0.2.0` visual artifact rather than `0.2.1` code/network evidence.
+        `0.2.0` visual artifact rather than `0.2.2` code/network evidence.
 - [ ] Tag with a signed/annotated version and publish release notes.
 - [ ] Include migrations, compatibility, evidence boundary, rollback and known limits.

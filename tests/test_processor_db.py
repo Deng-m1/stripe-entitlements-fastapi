@@ -8,7 +8,6 @@ import pytest
 
 from stripe_entitlements.bounds import POSTGRES_BIGINT_MAX
 from stripe_entitlements.credits import CreditService
-from stripe_entitlements.event_audit import event_payload_sha256
 from stripe_entitlements.processor import EventProcessor
 from tests.builders import (
     checkout_event,
@@ -90,46 +89,28 @@ async def test_paid_invoice_price_and_product_identity_drift_fail_closed(
     assert incident == 1
 
 
-async def test_paid_invoice_allows_legacy_missing_product_line_when_price_identity_matches(
-    processor: EventProcessor, pool: asyncpg.Pool, make_account
+@pytest.mark.parametrize("observed", [None, "other-product"])
+async def test_paid_invoice_treats_product_line_metadata_as_advisory(
+    observed: str | None,
+    processor: EventProcessor,
+    pool: asyncpg.Pool,
+    make_account,
 ) -> None:
     account_id = await make_account()
-    payload = paid_invoice(account_id, invoice_id="in_legacy_missing_product_line")
+    payload = paid_invoice(account_id, invoice_id=f"in_advisory_product_line_{observed}")
     metadata = payload["data"]["object"]["parent"]["subscription_details"]["metadata"]
-    metadata.pop("product_line")
+    if observed is None:
+        metadata.pop("product_line")
+    else:
+        metadata["product_line"] = observed
 
     result = await processor.process(payload)
     async with pool.acquire() as conn:
         balance = await conn.fetchval(
             "select credits_balance from billing_accounts where id=$1::uuid", account_id
-        )
-        incident = await conn.fetchval(
-            "select count(*) from billing_incidents where kind='product_line_identity_conflict'"
         )
     assert result.outcome == "handled"
     assert balance == 300
-    assert incident == 0
-
-
-async def test_paid_invoice_rejects_conflicting_product_line(
-    processor: EventProcessor, pool: asyncpg.Pool, make_account
-) -> None:
-    account_id = await make_account()
-    payload = paid_invoice(account_id, invoice_id="in_conflicting_product_line")
-    metadata = payload["data"]["object"]["parent"]["subscription_details"]["metadata"]
-    metadata["product_line"] = "other-product"
-
-    result = await processor.process(payload)
-    async with pool.acquire() as conn:
-        balance = await conn.fetchval(
-            "select credits_balance from billing_accounts where id=$1::uuid", account_id
-        )
-        incident = await conn.fetchval(
-            "select count(*) from billing_incidents where kind='product_line_identity_conflict'"
-        )
-    assert result.outcome == "ignored"
-    assert balance == 0
-    assert incident == 1
 
 
 @pytest.mark.parametrize("customer", [None, 123, " padded ", "zero\u200bwidth"])
@@ -556,32 +537,22 @@ async def test_supported_event_without_object_identity_fails_closed_durably(
         ("type", "x" * 256),
     ],
 )
-async def test_invalid_event_identity_uses_stable_payload_hash_audit_id(
+async def test_invalid_event_identity_is_ignored_before_database_claim(
     field: str, value: object, processor: EventProcessor, pool: asyncpg.Pool
 ) -> None:
     payload = paid_invoice("00000000-0000-0000-0000-000000000001")
     payload[field] = value
-    digest = event_payload_sha256(payload)
-    expected_id = payload["id"] if field == "type" else f"invalid-event:{digest}"
 
-    result = await processor.process(payload)
-    duplicate = await processor.process(payload)
+    first = await processor.process(payload)
+    second = await processor.process(payload)
     async with pool.acquire() as conn:
-        inbox = await conn.fetchrow(
-            "select event_type,outcome,processed_at from stripe_webhook_events where id=$1",
-            expected_id,
-        )
-        incident = await conn.fetchrow(
-            "select kind,stripe_event_id from billing_incidents where stripe_event_id=$1",
-            expected_id,
-        )
-    assert result.outcome == "ignored"
-    assert duplicate.outcome == "duplicate"
-    assert inbox is not None
-    assert inbox["event_type"] == ("invalid" if field == "type" else "invoice.paid")
-    assert inbox["outcome"] == "ignored"
-    assert inbox["processed_at"] is not None
-    assert incident is not None and tuple(incident) == ("invalid_event_shape", expected_id)
+        inbox_count = await conn.fetchval("select count(*) from stripe_webhook_events")
+        incident_count = await conn.fetchval("select count(*) from billing_incidents")
+    assert first.outcome == "ignored"
+    assert second.outcome == "ignored"
+    assert "stable visible string" in str(first.reason)
+    assert inbox_count == 0
+    assert incident_count == 0
 
 
 @pytest.mark.parametrize(
@@ -1286,8 +1257,12 @@ async def test_subscription_update_rejects_price_product_identity_drift(
     assert incident == 1
 
 
-async def test_unbound_subscription_update_requires_product_line_even_with_valid_claim(
-    processor: EventProcessor, pool: asyncpg.Pool, make_account
+@pytest.mark.parametrize("observed", [None, "other-product"])
+async def test_unbound_subscription_update_uses_claim_and_price_identity_not_metadata(
+    observed: str | None,
+    processor: EventProcessor,
+    pool: asyncpg.Pool,
+    make_account,
 ) -> None:
     account_id = await make_account(customer=None, subscription=None)
     claim_token = uuid.uuid4()
@@ -1297,19 +1272,22 @@ async def test_unbound_subscription_update_requires_product_line_even_with_valid
                    account_id,claim_token,plan_key,plan_interval,expires_at,
                    client_request_key)
                  values($1::uuid,$2,'starter','month',now()+interval '30 minutes',
-                        'legacy-unbound-subscription')""",
+                        'advisory-product-line-subscription')""",
             account_id,
             claim_token,
         )
     payload = subscription_event(
         account_id,
-        subscription="sub_unbound_missing_product_line",
-        event_id="evt_unbound_missing_product_line",
+        subscription=f"sub_unbound_advisory_{observed}",
+        event_id=f"evt_unbound_advisory_{observed}",
         created=100,
     )
     metadata = payload["data"]["object"]["metadata"]
     metadata["claim_token"] = str(claim_token)
-    metadata.pop("product_line")
+    if observed is None:
+        metadata.pop("product_line")
+    else:
+        metadata["product_line"] = observed
 
     result = await processor.process(payload)
     async with pool.acquire() as conn:
@@ -1317,16 +1295,11 @@ async def test_unbound_subscription_update_requires_product_line_even_with_valid
             "select stripe_customer_id,stripe_subscription_id from billing_accounts where id=$1",
             account_id,
         )
-        claim_count = await conn.fetchval(
-            "select count(*) from checkout_claims where account_id=$1", account_id
-        )
-        incident = await conn.fetchval(
-            "select count(*) from billing_incidents where kind='product_line_identity_conflict'"
-        )
-    assert result.outcome == "ignored"
-    assert account is not None and tuple(account) == (None, None)
-    assert claim_count == 1
-    assert incident == 1
+    assert result.outcome == "handled"
+    assert account is not None and tuple(account) == (
+        "cus_test",
+        f"sub_unbound_advisory_{observed}",
+    )
 
 
 async def test_unbound_subscription_update_cannot_authorize_checkoutless_paid_invoice(
@@ -1376,21 +1349,23 @@ async def test_unbound_subscription_update_cannot_authorize_checkoutless_paid_in
         ("subscription_deleted", (None, "free", "canceled", 0)),
     ],
 )
-async def test_bound_subscription_events_allow_legacy_missing_product_line(
+@pytest.mark.parametrize("observed", [None, "other-product"])
+async def test_bound_subscription_events_ignore_advisory_product_line_metadata(
     kind: str,
     expected: tuple[str | None, str, str, int],
+    observed: str | None,
     processor: EventProcessor,
     pool: asyncpg.Pool,
     make_account,
 ) -> None:
     account_id = await make_account()
     await processor.process(
-        paid_invoice(account_id, invoice_id=f"in_before_legacy_product_line_{kind}", created=100)
+        paid_invoice(account_id, invoice_id=f"in_before_advisory_product_line_{kind}", created=100)
     )
     if kind == "payment_failed":
         payload = payment_failed(
             account_id,
-            event_id=f"evt_legacy_product_line_{kind}",
+            event_id=f"evt_advisory_product_line_{kind}_{observed}",
             created=200,
         )
     else:
@@ -1402,17 +1377,17 @@ async def test_bound_subscription_events_allow_legacy_missing_product_line(
                 else "customer.subscription.updated"
             ),
             status="canceled" if kind == "subscription_deleted" else "active",
-            event_id=f"evt_legacy_product_line_{kind}",
+            event_id=f"evt_advisory_product_line_{kind}_{observed}",
             created=200,
         )
-    payload["data"]["object"]["metadata"].pop("product_line")
+    metadata = payload["data"]["object"]["metadata"]
+    if observed is None:
+        metadata.pop("product_line")
+    else:
+        metadata["product_line"] = observed
 
     result = await processor.process(payload)
     account = await _account(pool, account_id)
-    async with pool.acquire() as conn:
-        incidents = await conn.fetchval(
-            "select count(*) from billing_incidents where kind='product_line_identity_conflict'"
-        )
     assert result.outcome == "handled"
     assert (
         account["stripe_subscription_id"],
@@ -1420,59 +1395,6 @@ async def test_bound_subscription_events_allow_legacy_missing_product_line(
         account["subscription_status"],
         account["credits_balance"],
     ) == expected
-    assert incidents == 0
-
-
-@pytest.mark.parametrize(
-    "kind",
-    ["payment_failed", "subscription_updated", "subscription_deleted"],
-)
-async def test_subscription_events_reject_conflicting_product_line(
-    kind: str,
-    processor: EventProcessor,
-    pool: asyncpg.Pool,
-    make_account,
-) -> None:
-    account_id = await make_account()
-    await processor.process(
-        paid_invoice(
-            account_id, invoice_id=f"in_before_conflicting_product_line_{kind}", created=100
-        )
-    )
-    if kind == "payment_failed":
-        payload = payment_failed(
-            account_id,
-            event_id=f"evt_conflicting_product_line_{kind}",
-            created=200,
-        )
-    else:
-        payload = subscription_event(
-            account_id,
-            (
-                "customer.subscription.deleted"
-                if kind == "subscription_deleted"
-                else "customer.subscription.updated"
-            ),
-            status="canceled" if kind == "subscription_deleted" else "active",
-            event_id=f"evt_conflicting_product_line_{kind}",
-            created=200,
-        )
-    payload["data"]["object"]["metadata"]["product_line"] = "other-product"
-
-    result = await processor.process(payload)
-    account = await _account(pool, account_id)
-    async with pool.acquire() as conn:
-        incidents = await conn.fetchval(
-            "select count(*) from billing_incidents where kind='product_line_identity_conflict'"
-        )
-    assert result.outcome == "ignored"
-    assert (
-        account["stripe_subscription_id"],
-        account["plan_key"],
-        account["subscription_status"],
-        account["credits_balance"],
-    ) == ("sub_test", "starter", "active", 300)
-    assert incidents == 1
 
 
 @pytest.mark.parametrize(
@@ -1734,16 +1656,11 @@ async def test_unhandled_event_is_audited_without_side_effects(
             "metadata": {"free_form": "private note"},
         },
     )
-    payload["_raw_payload_sha256"] = "c" * 64
     result = await processor.process(payload)
     assert result.outcome == "ignored"
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """select outcome,processed_at,payload,payload_sha256
-                 from stripe_webhook_events"""
-        )
+        row = await conn.fetchrow("select outcome,processed_at,payload from stripe_webhook_events")
     assert row is not None and row["outcome"] == "ignored" and row["processed_at"] is not None
-    assert row["payload_sha256"] == "c" * 64
     assert row["payload"]["data"]["object"]["email"] == "[redacted]"
     assert row["payload"]["data"]["object"]["metadata"]["free_form"] == "[redacted]"
 

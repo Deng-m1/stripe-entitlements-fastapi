@@ -12,7 +12,7 @@ import asyncpg
 from .bounds import POSTGRES_BIGINT_MAX
 from .catalog import Plan, PlanCatalog
 from .clawbacks import collect_clawback_debts
-from .event_audit import event_payload_sha256, redacted_event_snapshot
+from .event_audit import redacted_event_snapshot
 from .invoice_policy import (
     has_unsupported_invoice_adjustments,
     has_unsupported_invoice_payment_shape,
@@ -111,13 +111,6 @@ def _subscription_metadata(obj: Mapping[str, Any]) -> Mapping[str, Any]:
             return metadata
     metadata = obj.get("metadata")
     return metadata if isinstance(metadata, Mapping) else {}
-
-
-def _product_line_matches(
-    metadata: Mapping[str, Any], expected: str, *, allow_missing: bool
-) -> bool:
-    observed = metadata.get("product_line")
-    return observed == expected or (allow_missing and observed is None)
 
 
 def _line_lookup(line: Mapping[str, Any]) -> str | None:
@@ -297,37 +290,35 @@ class EventProcessor:
         )
 
     async def process(self, event: dict[str, Any]) -> ProcessResult:
-        payload_sha256 = event_payload_sha256(event)
         raw_event_id = event.get("id")
-        if _valid_event_identifier(raw_event_id, max_bytes=512):
-            assert isinstance(raw_event_id, str)
-            event_id = raw_event_id
-        else:
-            event_id = f"invalid-event:{payload_sha256}"
+        if not _valid_event_identifier(raw_event_id, max_bytes=512):
+            reason = "Stripe Event requires a stable visible string id"
+            logger.warning("stripe.webhook.invalid_identity", extra={"reason": reason})
+            return ProcessResult("ignored", reason)
         raw_event_type = event.get("type")
-        if _valid_event_identifier(raw_event_type, max_bytes=255):
-            assert isinstance(raw_event_type, str)
-            event_type = raw_event_type
-        else:
-            event_type = "invalid"
-        event["_audit_event_id"] = event_id
+        if not _valid_event_identifier(raw_event_type, max_bytes=255):
+            reason = "Stripe Event requires a stable visible string type"
+            logger.warning(
+                "stripe.webhook.invalid_identity",
+                extra={"stripe_event_id": raw_event_id, "reason": reason},
+            )
+            return ProcessResult("ignored", reason)
+        assert isinstance(raw_event_id, str)
+        assert isinstance(raw_event_type, str)
+        event_id = raw_event_id
+        event_type = raw_event_type
         audit_payload = redacted_event_snapshot(event)
         async with self.pool.acquire() as conn, conn.transaction():
             claimed = await conn.fetchval(
-                """insert into stripe_webhook_events(
-                       id,event_type,livemode,payload,payload_sha256)
-                     values($1,$2,$3,$4::jsonb,$5)
+                """insert into stripe_webhook_events(id,event_type,livemode,payload)
+                     values($1,$2,$3,$4::jsonb)
                      on conflict do nothing returning id""",
                 event_id,
                 event_type,
                 event.get("livemode") if isinstance(event.get("livemode"), bool) else False,
                 audit_payload,
-                payload_sha256,
             )
             if claimed is None:
-                # Stripe Event IDs are the delivery-idempotency key. The payload hash
-                # remains forensic evidence, but it must not turn a duplicate delivery
-                # into a second runtime gate or a new incident path.
                 return ProcessResult("duplicate", "event id already committed")
             shape_error = _event_shape_error(event)
             if shape_error:
@@ -436,7 +427,7 @@ class EventProcessor:
                      last_seen_at=now()""",
             kind,
             dedupe_key,
-            event.get("_audit_event_id") or event.get("id"),
+            event.get("id"),
             invoice_id,
             str(account_id) if account_id else None,
             dict(detail or {}),
@@ -533,19 +524,6 @@ class EventProcessor:
             )
             return ProcessResult(
                 "ignored", "invoice customer identity is missing or conflicting", account_id
-            )
-        if not _product_line_matches(metadata, self.product_line, allow_missing=True):
-            await self._incident(
-                conn,
-                "product_line_identity_conflict",
-                event=event,
-                dedupe_key=f"invoice:{invoice_id}",
-                invoice_id=invoice_id,
-                account_id=account["id"],
-                detail={"observed": metadata.get("product_line")},
-            )
-            return ProcessResult(
-                "ignored", "Invoice is outside the configured product line", account_id
             )
         if invoice.get("billing_reason") not in _PAID_REASONS:
             await self._incident(
@@ -2197,19 +2175,6 @@ class EventProcessor:
             return ProcessResult(
                 "ignored", "failed invoice customer identity is missing or conflicting", account_id
             )
-        if not _product_line_matches(metadata, self.product_line, allow_missing=True):
-            await self._incident(
-                conn,
-                "product_line_identity_conflict",
-                event=event,
-                dedupe_key=f"payment-failed:{invoice.get('id') or event['id']}",
-                invoice_id=_as_id(invoice.get("id")),
-                account_id=account["id"],
-                detail={"observed": metadata.get("product_line")},
-            )
-            return ProcessResult(
-                "ignored", "failed Invoice is outside the configured product line", account_id
-            )
         if not subscription_id or subscription_id != account["stripe_subscription_id"]:
             await self._incident(
                 conn,
@@ -2380,22 +2345,6 @@ class EventProcessor:
             return ProcessResult(
                 "ignored", "subscription customer identity is missing or conflicting", account_id
             )
-        if not _product_line_matches(
-            metadata,
-            self.product_line,
-            allow_missing=current_sub == incoming_sub,
-        ):
-            await self._incident(
-                conn,
-                "product_line_identity_conflict",
-                event=event,
-                dedupe_key=f"subscription:{account_id}:{incoming_sub}",
-                account_id=account["id"],
-                detail={"observed": metadata.get("product_line")},
-            )
-            return ProcessResult(
-                "ignored", "Subscription is outside the configured product line", account_id
-            )
         status = subscription.get("status")
         cancel_at_period_end = subscription.get("cancel_at_period_end")
         period_end = self._subscription_period_end(subscription)
@@ -2510,8 +2459,6 @@ class EventProcessor:
         account_id = str(account["id"])
         incoming_sub = _as_id(subscription.get("id"))
         customer_id = _as_id(subscription.get("customer"))
-        metadata_raw = subscription.get("metadata")
-        metadata = metadata_raw if isinstance(metadata_raw, Mapping) else {}
         if incoming_sub is None or account["stripe_subscription_id"] != incoming_sub:
             await self._incident(
                 conn,
@@ -2546,18 +2493,6 @@ class EventProcessor:
                 "ignored",
                 "deleted subscription customer identity is missing or conflicting",
                 account_id,
-            )
-        if not _product_line_matches(metadata, self.product_line, allow_missing=True):
-            await self._incident(
-                conn,
-                "product_line_identity_conflict",
-                event=event,
-                dedupe_key=f"subscription-deleted:{account_id}:{incoming_sub}",
-                account_id=account["id"],
-                detail={"observed": metadata.get("product_line")},
-            )
-            return ProcessResult(
-                "ignored", "deleted Subscription is outside the configured product line", account_id
             )
         if not self._wins(account, event):
             return ProcessResult("ignored", "older than the applied state", account_id)
@@ -2649,18 +2584,6 @@ class EventProcessor:
             )
             return ProcessResult(
                 "ignored", "Checkout customer identity is missing or conflicting", account_id
-            )
-        if not _product_line_matches(metadata, self.product_line, allow_missing=True):
-            await self._incident(
-                conn,
-                "product_line_identity_conflict",
-                event=event,
-                dedupe_key=f"checkout:{account_id}:{session_id}",
-                account_id=account["id"],
-                detail={"observed": metadata.get("product_line")},
-            )
-            return ProcessResult(
-                "ignored", "Checkout Session is outside the configured product line", account_id
             )
         if claim is None:
             if incoming_sub and incoming_sub == account["stripe_subscription_id"]:

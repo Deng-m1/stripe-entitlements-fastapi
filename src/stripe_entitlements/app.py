@@ -1,4 +1,3 @@
-import hashlib
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -190,7 +189,7 @@ def create_app(
 
     app = FastAPI(
         title="Stripe Entitlements Reference",
-        version="0.2.1",
+        version="0.2.2",
         lifespan=lifespan,
     )
     app.add_middleware(
@@ -518,14 +517,14 @@ def create_app(
         idempotency_key: str = Header(alias="Idempotency-Key"),
     ) -> dict[str, str]:
         require_configured_url(body.return_url, settings.portal_return_url, "return_url")
-        digest = hashlib.sha256(require_idempotency(idempotency_key).encode()).hexdigest()
+        request_key = require_idempotency(idempotency_key)
         account = await database.existing_account_for_external_ref(identity.external_ref)
         if account is None or not account["stripe_customer_id"]:
             raise HTTPException(409, "account has no Stripe customer")
         try:
             _, url = await gateway.create_portal_session(
                 customer_id=str(account["stripe_customer_id"]),
-                idempotency_key=f"portal:{account['id']}:{digest}",
+                idempotency_key=f"portal:{account['id']}:{request_key}",
             )
         except Exception as exc:
             raise HTTPException(502, "Stripe Portal is temporarily unavailable") from exc
@@ -658,7 +657,6 @@ def create_app(
         payload = bytes(body)
         try:
             event = gateway.construct_event(payload, stripe_signature)
-            event["_raw_payload_sha256"] = hashlib.sha256(payload).hexdigest()
         except Exception as exc:
             del exc
             return JSONResponse({"error": "invalid Stripe signature"}, 400)

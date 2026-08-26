@@ -4,15 +4,15 @@ The project separates deterministic local/PostgreSQL tests, opt-in automated Str
 test-mode tests, real-browser signed-delivery tests, manual observations, and live
 production verification. Passing one layer must not be described as passing another.
 
-Current `0.2.1` release-candidate evidence recorded on 2026-08-18:
+Current `0.2.2` release-candidate evidence recorded on 2026-08-18:
 
 | Layer | Current result | Boundary |
 | --- | --- | --- |
-| Local/backend | 701 passed from 710 collected; 9 `real_stripe` cases deselected | Real PostgreSQL, mocked Stripe responses |
+| Local/backend | 702 passed from 711 collected; 9 `real_stripe` cases deselected | Real PostgreSQL, mocked Stripe responses |
 | Frontend | 102 passed; lint, typecheck, production build, production npm audit, and complete npm audit passed | No Stripe network |
 | Real Stripe suite | 9/9 passed with strict cleanup and zero run-owned active inventory | Direct test-mode API/Event polling; not signed delivery |
 | Browser policy gates, CLI transport | 2/2 passed: `full_period_reset` and `prorated_delta`; each reached Pro/1,000 with 7 related, 0 unrelated, and exactly 3 essential Events | Real Checkout/3DS/SCA and signed Stripe CLI forwarding; not endpoint metadata |
-| Wheel/container | Independent Wheel install plus four-migration PostgreSQL run passed; UID/GID 10001 read-only Docker health passed | Built artifacts, not Stripe network |
+| Wheel/container | Independent Wheel install plus five-migration PostgreSQL run passed; UID/GID 10001 read-only Docker health passed | Built artifacts, not Stripe network |
 | Temporary endpoint gates | Latest dual-policy pass remains 2026-08-02 | Version-pinned endpoint metadata and signed Dahlia delivery |
 | Live production payload | **not run** | Test mode never substitutes for live mode |
 
@@ -137,7 +137,7 @@ artifact handling, and evidence boundaries.
 Endpoint metadata, signed transport, database projection and live-production evidence
 requirements are separated in [the webhook verification runbook](WEBHOOK_VERIFICATION.md).
 
-Current `0.2.1` CLI-transport evidence: both policies passed on 2026-08-18. Each
+Current `0.2.2` CLI-transport evidence: both policies passed on 2026-08-18. Each
 projected Starter/Monthly/300 and Pro/Monthly/1,000, observed seven account-related and
 zero unrelated Events, bound exactly three essential signed Events, used signed Clover
 payloads for that test account, had no unresolved identity-related incident, and
@@ -160,7 +160,7 @@ Tests marked `real_stripe` make network calls only when `STRIPE_SECRET_KEY` star
 `sk_test_`. Live keys fail before a network call. Objects are uniquely marked and cleanup
 targets only objects created by that run.
 
-The current nine-case automated suite passed on the `0.2.1` release candidate on
+The current nine-case automated suite passed on the `0.2.2` release candidate on
 2026-08-18 and asserts:
 
 - creation of isolated real test-mode Products, monthly/yearly Prices, Customers and

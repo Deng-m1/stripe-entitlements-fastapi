@@ -246,15 +246,19 @@ async def test_stale_checkout_completion_does_not_bind_subscription(
     assert incident == 1
 
 
-async def test_checkout_completion_allows_legacy_missing_product_line_with_exact_claim(
-    pool: asyncpg.Pool, processor: EventProcessor, make_account
+@pytest.mark.parametrize("observed", [None, "other-product"])
+async def test_checkout_completion_uses_exact_claim_not_advisory_product_line(
+    observed: str | None,
+    pool: asyncpg.Pool,
+    processor: EventProcessor,
+    make_account,
 ) -> None:
     account_id = await make_account(customer=None, subscription=None)
     coordinator = CheckoutCoordinator(pool)
     claim = await coordinator.reserve(
-        account_id, "starter", "month", request_key="legacy-missing-product-line"
+        account_id, "starter", "month", request_key=f"advisory-product-line-{observed}"
     )
-    session_id = "cs_legacy_missing_product_line"
+    session_id = f"cs_advisory_product_line_{observed}"
     assert await coordinator.attach_session(
         claim, session_id, f"https://checkout.test/{session_id}"
     )
@@ -262,10 +266,14 @@ async def test_checkout_completion_allows_legacy_missing_product_line_with_exact
         "checkout.session.completed",
         account_id,
         session_id,
-        subscription="sub_legacy_missing_product_line",
+        subscription=f"sub_advisory_product_line_{observed}",
         claim_token=claim.claim_token,
     )
-    payload["data"]["object"]["metadata"].pop("product_line")
+    metadata = payload["data"]["object"]["metadata"]
+    if observed is None:
+        metadata.pop("product_line")
+    else:
+        metadata["product_line"] = observed
 
     result = await processor.process(payload)
     async with pool.acquire() as conn:
@@ -276,57 +284,13 @@ async def test_checkout_completion_allows_legacy_missing_product_line_with_exact
         active_claim = await conn.fetchval(
             "select session_id from checkout_claims where account_id=$1",
             account_id,
-        )
-        incident = await conn.fetchval(
-            "select count(*) from billing_incidents where kind='product_line_identity_conflict'"
         )
     assert result.outcome == "handled"
     assert account is not None and tuple(account) == (
         "cus_checkout",
-        "sub_legacy_missing_product_line",
+        f"sub_advisory_product_line_{observed}",
     )
     assert active_claim is None
-    assert incident == 0
-
-
-async def test_checkout_completion_rejects_conflicting_product_line(
-    pool: asyncpg.Pool, processor: EventProcessor, make_account
-) -> None:
-    account_id = await make_account(customer=None, subscription=None)
-    coordinator = CheckoutCoordinator(pool)
-    claim = await coordinator.reserve(
-        account_id, "starter", "month", request_key="conflicting-product-line"
-    )
-    session_id = "cs_conflicting_product_line"
-    assert await coordinator.attach_session(
-        claim, session_id, f"https://checkout.test/{session_id}"
-    )
-    payload = checkout_event(
-        "checkout.session.completed",
-        account_id,
-        session_id,
-        subscription="sub_conflicting_product_line",
-        claim_token=claim.claim_token,
-    )
-    payload["data"]["object"]["metadata"]["product_line"] = "other-product"
-
-    result = await processor.process(payload)
-    async with pool.acquire() as conn:
-        account = await conn.fetchrow(
-            "select stripe_customer_id,stripe_subscription_id from billing_accounts where id=$1",
-            account_id,
-        )
-        active_claim = await conn.fetchval(
-            "select session_id from checkout_claims where account_id=$1",
-            account_id,
-        )
-        incident = await conn.fetchval(
-            "select count(*) from billing_incidents where kind='product_line_identity_conflict'"
-        )
-    assert result.outcome == "ignored"
-    assert account is not None and tuple(account) == (None, None)
-    assert active_claim == session_id
-    assert incident == 1
 
 
 async def test_checkout_completion_requires_customer_identity(

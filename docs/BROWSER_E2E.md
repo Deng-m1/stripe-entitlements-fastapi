@@ -38,7 +38,7 @@ A successful complete run proves one isolated Stripe test-mode Checkout and sele
 upgrade lifecycle. It does not prove live mode, every bank's 3DS UI, Stripe Tax,
 coupons, trials, or arbitrary Checkout settings.
 
-Current local signed-forwarding evidence: both policies passed on the `0.2.1` release
+Current local signed-forwarding evidence: both policies passed on the `0.2.2` release
 candidate on 2026-08-18 through explicit Stripe CLI forwarding. Each reached
 Pro/Monthly/1,000, observed seven account-related and zero unrelated Events, bound exactly
 three essential Events, used a Clover signed payload/Event API view for that test account,

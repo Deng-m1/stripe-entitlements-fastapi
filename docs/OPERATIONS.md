@@ -16,8 +16,12 @@ uv run stripe-entitlements migrate
   unique settlement Invoice binding, `billing_funding_allocations`, outstanding
   `billing_clawback_debts`, terminal-closure business idempotency, and reconciliation
   rotation state.
-- `004_event_audit_hardening.sql` adds redacted Event audit snapshots, exact signed-body
-  hashes when available, legacy payload scrubbing, and audit-shape constraints.
+- `004_event_audit_hardening.sql` introduces redacted Event audit snapshots and scrubs
+  legacy full payloads.
+- `005_simplify_event_audit.sql` stops new payload hashing, clears old digest values, and
+  removes hash-based constraints. A nullable compatibility column remains for one rolling-
+  upgrade window; the active inbox contract uses only the redacted snapshot, Event identity,
+  and processing result.
 
 The migration runner serializes changes with a PostgreSQL advisory lock and rejects a
 changed checksum for any bundled migration already applied. A database may contain later
@@ -149,7 +153,7 @@ Track separately:
 - required `STRIPE_WEBHOOK_API_VERSION` for the signed endpoint payload's top-level
   Event `api_version`; there is intentionally no outbound-request-version default.
 
-The current request code targets `2026-06-24.dahlia`. Both `0.2.1` Stripe CLI browser
+The current request code targets `2026-06-24.dahlia`. Both `0.2.2` Stripe CLI browser
 gates on 2026-08-18 observed signed Clover payloads and a Clover Event API view. The
 separate 2026-08-02 temporary endpoints were pinned to Dahlia and delivered real signed
 Dahlia payloads while Event API retrieval remained Clover. Neither CLI forwarding nor an
@@ -176,7 +180,7 @@ Back up all ten correctness tables together:
 
 A restore that omits inbox, invoice, ledger, debit, Checkout or plan-change identity can
 reopen duplicate/unauthorized effects. Perform point-in-time recovery drills, verify all
-four migration versions, then run reconciliation and inspect incidents before reopening
+five migration versions, then run reconciliation and inspect incidents before reopening
 traffic.
 
 ## Production monitoring

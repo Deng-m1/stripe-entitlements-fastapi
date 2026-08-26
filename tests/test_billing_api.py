@@ -596,6 +596,44 @@ async def test_http_contract_catalog_account_checkout_and_portal(
     assert gateway.checkout_kwargs["plan_key"] == "starter"
     assert invalid_redirect.status_code == 400
     assert portal.json() == {"url": "https://billing.stripe.test/session"}
+    assert gateway.portal_keys == [f"portal:{local['id']}:portal-1"]
+
+
+async def test_portal_scoped_idempotency_key_needs_no_hash(
+    postgres_container: None,
+) -> None:
+    gateway = FakeBillingGateway()
+    database = Database(TEST_DSN)
+    app = create_app(
+        _settings(),
+        database=database,
+        gateway=gateway,  # type: ignore[arg-type]
+        auth_adapter=StaticAuth(),
+    )
+    client_key = "x" * 200
+    async with app.router.lifespan_context(app):
+        account = await database.account_for_external_ref("api-user")
+        async with database.require_pool().acquire() as conn:
+            await conn.execute(
+                "update billing_accounts set stripe_customer_id='cus_api' where id=$1",
+                account["id"],
+            )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/billing/portal",
+                headers={
+                    "Authorization": "Bearer ignored",
+                    "Idempotency-Key": client_key,
+                },
+                json={"return_url": "http://localhost:3000/account"},
+            )
+    assert response.status_code == 200
+    assert len(gateway.portal_keys) == 1
+    scoped_key = gateway.portal_keys[0]
+    assert scoped_key == f"portal:{account['id']}:{client_key}"
+    assert len(scoped_key.encode("utf-8")) <= 255
 
 
 async def test_http_rejects_malformed_intent_and_redirect_inputs(

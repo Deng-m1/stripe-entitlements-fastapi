@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -57,31 +55,6 @@ def _sensitive_field(field: str | None) -> bool:
         or "secret" in normalized
         or normalized.endswith(("_address", "_email", "_phone", "_url"))
     )
-
-
-def _strip_internal(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {
-            str(key): _strip_internal(item)
-            for key, item in value.items()
-            if not str(key).startswith("_")
-        }
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [_strip_internal(item) for item in value]
-    return value
-
-
-def event_payload_sha256(event: Mapping[str, Any]) -> str:
-    supplied = event.get("_raw_payload_sha256")
-    if isinstance(supplied, str) and re.fullmatch(r"[0-9a-f]{64}", supplied):
-        return supplied
-    canonical = json.dumps(
-        _strip_internal(event),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
-    return hashlib.sha256(canonical).hexdigest()
 
 
 def _redact(value: Any, *, field: str | None = None) -> Any:

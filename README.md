@@ -141,10 +141,14 @@ behavior are in [Plan transition policies](docs/PLAN_TRANSITIONS.md).
 
 - **At-least-once delivery, effectively-once PostgreSQL effects.** The project
   does not claim impossible end-to-end exactly-once delivery.
-- Stripe Event IDs guard duplicate deliveries; `(stripe_invoice_id, grant_slot)`
+- Stripe signature verification authenticates the exact request body before parsing.
+  Stripe Event IDs guard duplicate deliveries; `(stripe_invoice_id, grant_slot)`
   independently guards the same business grant through another Event or worker.
-  The exact signed request SHA-256 is retained as audit evidence only—it is not a
-  second entitlement authorization rule or a reason to reprocess an existing Event ID.
+  PostgreSQL retains a redacted Event snapshot, not the raw body or a payload digest.
+- Funding attribution uses exact Customer/Subscription identity, Checkout claim/session
+  identity, and server-retrieved Price-to-Product catalog identity. Stripe metadata such
+  as `product_line` remains useful for operations but is not a duplicate authorization
+  gate once those stronger identities match.
 - Account row locks serialize balance, grant, refund, cancellation, and
   plan-change projection.
 - `(event.created, event_rank)` prevents older/weaker subscription projections
@@ -204,7 +208,7 @@ are documented in [web/README.md](web/README.md).
   equal that actual Event value and is a required startup setting; it deliberately
   has no fallback to `STRIPE_API_VERSION`.
 
-The request version does not rewrite webhook payloads. The 2026-08-18 `0.2.1` browser
+The request version does not rewrite webhook payloads. The 2026-08-18 `0.2.2` browser
 reruns used Stripe CLI signed forwarding and observed `2025-12-15.clover`; those runs
 prove raw-signature processing but not endpoint metadata. In the separate 2026-08-02
 endpoint gates, Event API retrievals reported Clover while isolated endpoints pinned to
@@ -309,10 +313,10 @@ privacy rules, and reproducible workflow.
 Evidence is split by execution layer; collecting a test or retaining an older run does
 not prove the current tree against Stripe's network.
 
-Current `0.2.1` release-candidate evidence recorded on 2026-08-18:
+Current `0.2.2` release-candidate evidence recorded on 2026-08-18:
 
-- 701 local/backend tests passed against disposable PostgreSQL 17; the full collection
-  contained 710 cases and 9 `real_stripe` cases were deselected;
+- 702 local/backend tests passed against disposable PostgreSQL 17; the full collection
+  contained 711 cases and 9 `real_stripe` cases were deselected;
 - 102 frontend tests passed with lint, typecheck, production build, production-only npm
   audit, complete npm audit, and Python dependency audit all passing with zero known
   vulnerabilities;
@@ -324,14 +328,14 @@ Current `0.2.1` release-candidate evidence recorded on 2026-08-18:
   explicit Stripe CLI signed forwarding: decline, Checkout 3DS, Starter/300 projection,
   upgrade SCA, Pro/1,000 projection, seven related Events, zero unrelated Events, and
   exact three-essential-Event binding;
-- the `0.2.1` Wheel installed in an independent virtual environment, loaded its packaged
-  catalog and four migrations from an arbitrary working directory, and migrated a fresh
+- the `0.2.2` Wheel installed in an independent virtual environment, loaded its packaged
+  catalog and five migrations from an arbitrary working directory, and migrated a fresh
   PostgreSQL database; the Docker image ran as UID/GID 10001 with a read-only root,
-  completed migration, and returned a healthy `0.2.1` API;
+  completed migration, and returned a healthy `0.2.2` API;
 - the final 48.800-second public demo remains the separately reviewed `0.2.0` visual
   artifact: 1,464 decoded frames, no long black segment, zero forbidden-term OCR matches,
   15/15 semantic scene checks, and 1080p/30 fps H.264 with 48 kHz stereo AAC at -20.0
-  LUFS. It is not relabeled as proof of the changed `0.2.1` code;
+  LUFS. It is not relabeled as proof of the changed `0.2.2` code;
 - no live-production webhook payload verification is claimed.
 
 CLI signed forwarding proves the raw-signature/application/database path but does not
@@ -396,7 +400,7 @@ designed to verify:
   run-marked inventory error;
 - direct Event polling and PostgreSQL projection for those networked API cases.
 
-All nine assertions passed on the `0.2.1` release candidate on 2026-08-18. Future
+All nine assertions passed on the `0.2.2` release candidate on 2026-08-18. Future
 releases must rerun them with an isolated test account rather than treating this result
 as permanent proof.
 
@@ -412,7 +416,7 @@ The current browser verifier binds its final result to one account, Checkout Ses
 initial Invoice, settlement Invoice, and their three essential signed Events. It also
 requires no unresolved incident for that identity and verifies one 700-credit delta
 allocation or no allocation according to policy. The older five-Event observation is
-not a fixed assertion. Both `0.2.1` policies passed on 2026-08-18 through Stripe CLI
+not a fixed assertion. Both `0.2.2` policies passed on 2026-08-18 through Stripe CLI
 signed forwarding; each run observed seven account-related Events, zero unrelated
 Events, exactly three essential Events, and a Clover signed payload/Event API view. CLI
 forwarding does not prove temporary endpoint metadata. The latest separate temporary-
@@ -444,8 +448,11 @@ customer, Event, Invoice, or secret identifiers are committed. See
 3. `003_transition_policies.sql`: persisted policy/preview/remote-call snapshots,
    unique settlement binding, cross-Invoice funding allocations, clawback debt,
    terminal-closure business idempotency, and reconciliation rotation state;
-4. `004_event_audit_hardening.sql`: redacted Event audit snapshots, exact signed-body
-   hashes when available, legacy payload scrubbing, and audit-shape constraints.
+4. `004_event_audit_hardening.sql`: redacted Event audit snapshots, legacy payload
+   scrubbing, and the transitional audit-shape contract;
+5. `005_simplify_event_audit.sql`: stops new payload hashing, clears stored digests,
+   removes hash-based constraints, and retains a nullable compatibility column for a
+   safe rolling upgrade while keeping the redacted audit snapshot.
 
 The runner serializes migration application, verifies the checksum of every bundled
 migration already present in the database, and allows later migration rows so a backward-
