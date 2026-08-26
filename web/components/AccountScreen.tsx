@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ErrorState, LoadingState } from "@/components/AsyncState";
 import {
   completeIdempotentIntent,
@@ -29,38 +29,48 @@ export function AccountScreen({
   const [account, setAccount] = useState<AccountResponse | null>(null);
   const [catalog, setCatalog] = useState<CatalogResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [loadedAt, setLoadedAt] = useState<string | null>(null);
   const [portalBusy, setPortalBusy] = useState(false);
+  const loadSequence = useRef(0);
 
   const load = useCallback(async () => {
+    const sequence = ++loadSequence.current;
     try {
       const [nextAccount, nextCatalog] = await Promise.all([
         api.getAccount(),
         api.getCatalog(),
       ]);
+      if (sequence !== loadSequence.current) return;
       setError(null);
       setAccount(nextAccount);
       setCatalog(nextCatalog);
+      setLoadedAt(new Date().toISOString());
     } catch (caught) {
+      if (sequence !== loadSequence.current) return;
       setError(errorMessage(caught));
     }
   }, [api]);
 
+  // Event-handler wrapper: the busy flag may not be set synchronously inside
+  // the mount effect, and the initial load already renders LoadingState.
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      await load();
+    } finally {
+      setLoading(false);
+    }
+  }, [load]);
+
   useEffect(() => {
-    let active = true;
-    void Promise.all([api.getAccount(), api.getCatalog()])
-      .then(([nextAccount, nextCatalog]) => {
-        if (!active) return;
-        setError(null);
-        setAccount(nextAccount);
-        setCatalog(nextCatalog);
-      })
-      .catch((caught: unknown) => {
-        if (active) setError(errorMessage(caught));
-      });
+    // Deferred to a microtask so the effect body itself never sets state.
+    void Promise.resolve().then(load);
     return () => {
-      active = false;
+      // Invalidate in-flight loads so an unmounted screen never updates state.
+      loadSequence.current += 1;
     };
-  }, [api]);
+  }, [load]);
 
   async function openPortal() {
     setPortalBusy(true);
@@ -89,7 +99,14 @@ export function AccountScreen({
   }
 
   if (error && (!account || !catalog)) {
-    return <ErrorState error={error} retry={() => void load()} />;
+    return (
+      <ErrorState
+        error={error}
+        retry={() => void refresh()}
+        retrying={loading}
+        title="We could not load your account projection."
+      />
+    );
   }
   if (!account || !catalog) return <LoadingState label="Loading account state…" />;
 
@@ -102,9 +119,15 @@ export function AccountScreen({
       )?.name ?? account.pending_change.target_plan_key
     : null;
   const pendingPaymentUrl = account.pending_change?.payment_url;
+  const hasSubscription =
+    account.subscription_status !== "none" &&
+    account.subscription_status !== "canceled";
 
   return (
-    <div>
+    <div
+      aria-busy={loading}
+      style={{ opacity: loading ? 0.7 : 1, transition: "opacity 160ms ease" }}
+    >
       <section className="hero compact">
         <p className="eyebrow">Webhook-authoritative account projection</p>
         <h1>Your billing account</h1>
@@ -113,6 +136,20 @@ export function AccountScreen({
           independently. A price is never used to guess the current tier.
         </p>
       </section>
+
+      {account.subscription_status === "past_due" ? (
+        <section className="pending-banner" aria-labelledby="past-due-title">
+          <p className="eyebrow">Payment attention needed</p>
+          <h2 id="past-due-title">Your latest payment has not settled</h2>
+          <p>
+            {account.entitlements_enforceable
+              ? "Stripe reports this subscription as past due."
+              : "Product access is paused until Stripe reports the invoice as paid."}{" "}
+            Update the payment method in the Stripe Billing Portal below;
+            entitlements resume only after the paid webhook is processed.
+          </p>
+        </section>
+      ) : null}
 
       {account.pending_change ? (
         <section className="pending-banner" aria-labelledby="pending-title">
@@ -128,7 +165,21 @@ export function AccountScreen({
               : `The change is awaiting billing/webhook completion from ${formatDate(
                   account.pending_change.effective_at,
                 )}.`}
+            {account.pending_change.status === "requires_action"
+              ? " Stripe needs one more payment step before this change can settle."
+              : ""}
           </p>
+          {pendingPaymentUrl ? (
+            <div className="account-actions">
+              <button
+                className="button primary"
+                onClick={() => openPendingPayment(pendingPaymentUrl)}
+                type="button"
+              >
+                Continue payment on Stripe
+              </button>
+            </div>
+          ) : null}
         </section>
       ) : null}
 
@@ -145,12 +196,30 @@ export function AccountScreen({
         </section>
       ) : null}
 
-      {error ? <p className="inline-error" role="alert">{error}</p> : null}
+      {error ? (
+        <p className="inline-error" role="alert">
+          <span>{error}</span>
+          <button
+            className="button ghost"
+            onClick={() => setError(null)}
+            type="button"
+          >
+            Dismiss
+          </button>
+        </p>
+      ) : null}
 
       <div className="account-grid">
         <section className="account-card">
           <p className="eyebrow">Subscription</p>
           <h2>{currentName}</h2>
+          {!hasSubscription ? (
+            <p>
+              No Stripe subscription is active for this account. Use “Review plan
+              changes” below to start one — access is granted only after the paid
+              webhook is processed, never by the redirect back to this app.
+            </p>
+          ) : null}
           <dl className="fact-list">
             <div>
               <dt>Plan key</dt>
@@ -183,6 +252,12 @@ export function AccountScreen({
           <p className="eyebrow">Credits</p>
           <p className="credit-balance">{account.credits.balance.toLocaleString()}</p>
           <p>available credits</p>
+          {account.credits.balance === 0 && !account.credits.next_grant_at ? (
+            <p>
+              No grant is scheduled. Credit grants start with a paid subscription
+              period and are recorded with database-enforced idempotency.
+            </p>
+          ) : null}
           <dl className="fact-list">
             <div>
               <dt>Grant amount</dt>
@@ -201,40 +276,65 @@ export function AccountScreen({
           <p className="eyebrow">Structured entitlements</p>
           <h2>What the product may enforce</h2>
         </div>
-        <div className="entitlement-grid">
-          {account.entitlements.map((entitlement) => (
-            <EntitlementCard entitlement={entitlement} key={entitlement.key} />
-          ))}
-        </div>
+        {account.entitlements.length === 0 ? (
+          <div className="entitlement-grid">
+            <article className="entitlement-card">
+              <p>No entitlements granted</p>
+              <strong>Nothing enforceable yet</strong>
+              <span>
+                Structured entitlements appear here after a subscription webhook
+                projects them. The product enforces exactly what is listed —
+                nothing is inferred from prices or redirects.
+              </span>
+            </article>
+          </div>
+        ) : (
+          <div className="entitlement-grid">
+            {account.entitlements.map((entitlement) => (
+              <EntitlementCard entitlement={entitlement} key={entitlement.key} />
+            ))}
+          </div>
+        )}
       </section>
 
-      <div className="account-actions">
-        <Link className="button primary" href="/pricing">
-          Review plan changes
-        </Link>
-        <button
-          aria-busy={portalBusy}
-          className="button secondary"
-          disabled={portalBusy}
-          onClick={() => void openPortal()}
-          type="button"
-        >
-          {portalBusy ? "Opening Portal…" : "Open Stripe Billing Portal"}
-        </button>
-        {pendingPaymentUrl ? (
+      <section aria-labelledby="manage-title" className="account-card" style={{ marginTop: 18 }}>
+        <p className="eyebrow">Manage</p>
+        <h2 id="manage-title">Plan changes and billing management</h2>
+        <p>
+          Plan and interval changes stay in this app so the server can enforce the
+          safe transition matrix. The Stripe Billing Portal handles payment methods,
+          invoices, and cancellation.
+        </p>
+        {loadedAt ? (
+          <p>
+            Projection loaded {formatDate(loadedAt)}. Refreshing re-reads the
+            webhook-backed account API and never mutates billing state.
+          </p>
+        ) : null}
+        <div className="account-actions">
           <button
-            className="button secondary"
-            onClick={() => openPendingPayment(pendingPaymentUrl)}
+            aria-busy={loading}
+            className="button ghost"
+            disabled={loading}
+            onClick={() => void refresh()}
             type="button"
           >
-            Continue payment on Stripe
+            {loading ? "Refreshing…" : "Refresh projection"}
           </button>
-        ) : null}
-      </div>
-      <p className="portal-scope-note">
-        The Portal is for payment methods, invoices, and cancellation. Plan price
-        changes stay in this app so the server can enforce the safe transition matrix.
-      </p>
+          <button
+            aria-busy={portalBusy}
+            className="button secondary"
+            disabled={portalBusy}
+            onClick={() => void openPortal()}
+            type="button"
+          >
+            {portalBusy ? "Opening Portal…" : "Open Stripe Billing Portal"}
+          </button>
+          <Link className="button primary" href="/pricing">
+            Review plan changes
+          </Link>
+        </div>
+      </section>
     </div>
   );
 }

@@ -25,6 +25,19 @@ export function annualSavings(plan: CatalogPlan): number | null {
   return savings > 0 ? savings : null;
 }
 
+/**
+ * Percentage saved by paying the explicit annual catalog price instead of
+ * twelve monthly invoices. This is display math over catalog amounts only;
+ * it never represents a Stripe Coupon or promotion code.
+ */
+export function annualSavingsPercent(plan: CatalogPlan): number | null {
+  const savings = annualSavings(plan);
+  if (savings === null) return null;
+  const monthlyTotal = plan.prices.month.unit_amount * 12;
+  if (monthlyTotal <= 0) return null;
+  return Math.round((savings / monthlyTotal) * 100);
+}
+
 export function formatDate(value: string | null): string {
   if (!value) return "Not scheduled";
   return new Intl.DateTimeFormat("en-US", {

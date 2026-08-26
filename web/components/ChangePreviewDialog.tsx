@@ -4,6 +4,36 @@ import { useEffect, useRef, useState } from "react";
 import { formatDate, formatMoney } from "@/lib/money";
 import type { ChangePreview } from "@/lib/types";
 
+const previewRouteStyles = `
+.dialog-summary {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.preview-route-from,
+.preview-route-to {
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 0.9rem;
+  font-weight: 650;
+  padding: 4px 12px;
+}
+
+.preview-route-to {
+  background: #eef3ff;
+  border-color: #c5d3f4;
+  color: var(--text);
+  font-weight: 740;
+}
+
+.preview-route-arrow {
+  color: var(--muted);
+}
+`;
+
 interface ChangePreviewDialogProps {
   preview: ChangePreview;
   paymentUrl: string | null;
@@ -107,8 +137,16 @@ export function ChangePreviewDialog({
                 : "This change starts at period end"}
         </h2>
         <p className="dialog-summary" id="change-preview-description">
-          {preview.current_plan_key}/{preview.current_interval} → {targetName}/
-          {preview.target_interval}
+          <style>{previewRouteStyles}</style>
+          <span className="preview-route-from">
+            {preview.current_plan_key} / {preview.current_interval}
+          </span>
+          <span aria-hidden="true" className="preview-route-arrow">
+            →
+          </span>
+          <span className="preview-route-to">
+            {targetName} / {preview.target_interval}
+          </span>
         </p>
 
         {paymentUrl ? (

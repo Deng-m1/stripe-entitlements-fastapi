@@ -3,6 +3,7 @@ import Link from "next/link";
 import {
   annualEquivalentMonthly,
   annualSavings,
+  annualSavingsPercent,
   formatMoney,
 } from "@/lib/money";
 import { referencePlans } from "@/lib/reference-catalog";
@@ -222,8 +223,7 @@ export default function HomePage() {
           {referencePlans.map((plan) => {
             const saving = annualSavings(plan);
             const twelveMonthTotal = plan.prices.month.unit_amount * 12;
-            const percent =
-              saving === null ? null : Math.round((saving / twelveMonthTotal) * 100);
+            const percent = annualSavingsPercent(plan);
             return (
               <div className="savings-tile" key={plan.key}>
                 <h3>{plan.name}</h3>

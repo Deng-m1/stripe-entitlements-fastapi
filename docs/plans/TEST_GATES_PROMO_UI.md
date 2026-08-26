@@ -9,6 +9,11 @@ gate. A checked Phase 1 item must not be reported as Phase 2 evidence.
 - `allow_promotion_codes` is prohibited as a standalone Checkout option. Checkout
   Session creation must omit the parameter unconditionally; a configurable default-off
   switch is not acceptable.
+- Standalone enablement of `allow_promotion_codes` is forbidden (单独启用
+  `allow_promotion_codes` = 禁止). No `Settings` field, environment variable, or
+  `StripeGateway` argument may exist that can place the parameter into
+  `stripe.checkout.Session.create`. `tests/test_checkout_promo_prohibition.py` and the
+  gateway payload assertion in `tests/test_gateway.py` enforce this at every layer.
 - Any discounted Invoice fails closed, including a discount object whose computed amount
   is zero. No entitlement is granted for that Invoice.
 - Phase 1 does not test or claim the happy path for enabling promo collection. That
