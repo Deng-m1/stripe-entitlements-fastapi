@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { IBM_Plex_Sans, Space_Grotesk } from "next/font/google";
 import type { ReactNode } from "react";
 import { DemoNotice } from "@/components/DemoNotice";
 import { SiteHeader } from "@/components/SiteHeader";
@@ -11,6 +12,19 @@ import {
   SITE_NAME,
 } from "@/lib/site";
 import "./globals.css";
+
+const bodyFont = IBM_Plex_Sans({
+  display: "swap",
+  subsets: ["latin"],
+  variable: "--font-body",
+  weight: ["400", "500", "600", "700"],
+});
+
+const displayFont = Space_Grotesk({
+  display: "swap",
+  subsets: ["latin"],
+  variable: "--font-display",
+});
 
 export const metadata: Metadata = {
   // The loopback fallback only resolves generated image paths on fail-closed noindex
@@ -73,13 +87,16 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    <html className={`${bodyFont.variable} ${displayFont.variable}`} lang="en">
       <body>
         <SiteHeader />
         <DemoNotice />
         <main className="shell page">{children}</main>
         <footer className="shell footer">
-          Reference UI only. Stripe and webhook state remain server-authoritative.
+          <span className="footer-brand">{SITE_NAME}</span>
+          <span>
+            Reference UI only. Stripe and webhook state remain server-authoritative.
+          </span>
         </footer>
       </body>
     </html>
