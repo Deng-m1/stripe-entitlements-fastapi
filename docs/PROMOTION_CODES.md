@@ -63,6 +63,9 @@ In scope:
   [promo UI test and review gates](plans/TEST_GATES_PROMO_UI.md).
 - Prohibition regression tests: Checkout Session parameter omission and the zero-valued
   discount/tax shape rejections in `tests/test_invoice_policy.py`.
+- No discount shape is collected or accepted in Phase 1 — not `percent_off`, not
+  `amount_off`, and not 100%-off. Those shapes appear below only as Phase-2 design
+  material behind the full attribution gate.
 
 Hard rule (integration-branch override decision, 2026-08-26):
 
@@ -86,9 +89,10 @@ or Checkout Session parameters.
 ## Phase 2 — full Coupon / Promotion Code support
 
 Phase 2 is the first change allowed to collect promotion codes and accept a
-discount-bearing Invoice. It ships only as a complete unit: the configuration flag, the
-restricted acceptance contract, schema, attribution decisions, and the full test matrix
-below in the same release. A flag wired before its acceptance contract is a §16
+discount-bearing Invoice. It ships only as a complete unit: the durable promo-collection
+authorization (a persisted, auditable record of scope, operator, and activation time —
+never a bare environment switch alone), the restricted acceptance contract, schema,
+attribution decisions, and the full test matrix below in the same release. A flag wired before its acceptance contract is a §16
 violation, not a head start.
 
 ### Attribution decisions
@@ -122,7 +126,10 @@ These decisions are fixed now so implementation lanes cannot reinterpret them:
   `percent_off`/`amount_off` snapshot, the summed discount total, and `amount_paid`
   commit in the same PostgreSQL transaction as the grant they fund, keyed to the
   immutable Invoice (extend `stripe_invoice_state` or add `billing_invoice_discounts`).
-  Refund processing reads these facts instead of re-deriving from mutable objects.
+  Refund processing reads these facts instead of re-deriving from mutable objects. The
+  raw customer-entered promotion code string is never persisted — not in the database,
+  logs, incidents, or metadata; redemptions are identified by Stripe object IDs
+  (Coupon and Promotion Code IDs) only.
 - **D7 — Annual Invoices stay out of slice 1.** The promotion-code field is enabled
   only for monthly Checkout Sessions. An annual Invoice funds up to 12 monthly slots
   and refunds monotonically reduce future slots (invariant 6), so discounts touch that
@@ -153,7 +160,7 @@ other discount participation keeps today's fail-closed behavior:
 | `src/stripe_entitlements/stripe_gateway.py` | Introduce the flag-conditional `allow_promotion_codes` parameter for monthly Sessions in the same merge unit as acceptance; snapshot discount facts from paid-Invoice payloads; keep the preview `discount_amount` sentinel untouched (D4) |
 | `src/stripe_entitlements/processor.py` | Accept slice-1 first-purchase Invoices, persist D6 facts with the grant, compute refund ratios from `amount_paid` (D2) |
 | `src/stripe_entitlements/plan_changes.py` | No behavior change; add explicit tests proving the flag cannot leak discounts into either policy (D4) |
-| `src/stripe_entitlements/config.py`, `app.py`, health surface | Add the promo-collection flag (default off) and expose its state; the flag lands only with acceptance |
+| `src/stripe_entitlements/config.py`, `app.py`, health surface | Add the promo-collection authorization surface (default off, backed by the durable persisted record above) and expose its state; it lands only with acceptance |
 | `migrations/` | Durable discount-fact storage keyed to the Invoice, with constraints preventing a second conflicting fact row |
 | `scripts/bootstrap_stripe.py` | Validate that the account's active Coupons/Promotion Codes match the slice-1 shape (D3) |
 | `docs/OPERATIONS.md` | Operational constraint: Dashboard promo inventory must stay within slice-1 shapes; out-of-band coupons remain incident material |

@@ -90,7 +90,11 @@ Credits on a yearly subscription still arrive in monthly slots.
 
 The bundled annual totals are approximately 40% lower than twelve monthly payments.
 That is an explicit annual-price design, not a Stripe Coupon or Promotion Code. Coupons,
-trials, and time-limited campaigns remain outside this reference's implemented scope.
+trials, and time-limited campaigns remain outside this reference's implemented scope:
+Checkout Session creation omits `allow_promotion_codes` unconditionally, so hosted
+Checkout never shows a promotion-code field. The gates any future promotion-code
+support must clear first are documented in
+[Promotion codes and coupons](docs/PROMOTION_CODES.md).
 
 | Entitlement | Starter | Pro | Ultra |
 | --- | ---: | ---: | ---: |
@@ -525,6 +529,9 @@ period changes money due, not the fixed tier entitlement difference.
 
 No. Those features introduce additional invoice shapes and policy decisions. They are
 listed as non-goals rather than advertised without implementation and race tests.
+Discounted Invoices fail closed, and Checkout omits `allow_promotion_codes`
+unconditionally. [Promotion codes and coupons](docs/PROMOTION_CODES.md) records the
+gates that must ship before this answer changes.
 
 ### Can multiple API and worker instances share it?
 
