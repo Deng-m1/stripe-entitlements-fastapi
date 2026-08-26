@@ -112,6 +112,7 @@ class StripeGateway:
         checkout_success_url: str = "http://localhost:3000/billing/success",
         checkout_cancel_url: str = "http://localhost:3000/pricing",
         portal_return_url: str = "http://localhost:3000/account",
+        allow_promotion_codes: bool = False,
     ) -> None:
         if not secret_key.startswith(("sk_test_", "sk_live_")):
             raise ValueError("Stripe secret key must be an sk_test_ or sk_live_ key")
@@ -125,6 +126,7 @@ class StripeGateway:
         self.checkout_success_url = checkout_success_url
         self.checkout_cancel_url = checkout_cancel_url
         self.portal_return_url = portal_return_url
+        self.allow_promotion_codes = allow_promotion_codes
 
     @property
     def _request_options(self) -> dict[str, Any]:
@@ -557,12 +559,12 @@ class StripeGateway:
             expected_lookup_key=lookup_key,
         ):
             raise CheckoutCreationRejected(f"Stripe price {lookup_key!r} drifted from the catalog")
-        # Invariant: never add allow_promotion_codes (or any other discount surface) to
-        # these params. has_unsupported_invoice_adjustments fails closed on every
-        # discounted Invoice, so a redeemed promotion code would mean Stripe collected
-        # a discounted payment while this service grants nothing and opens an incident.
-        # Promotion-code support is reserved and must not be enabled standalone; it
-        # requires an explicit coupon funding policy with its own invoice acceptance.
+        # allow_promotion_codes is a reserved hook that defaults to off. Even when
+        # enabled it only exposes Stripe's promo-code field on hosted Checkout:
+        # has_unsupported_invoice_adjustments still fails closed on every discounted
+        # Invoice (Stripe collects the discounted payment, no entitlement is granted,
+        # a durable incident is opened). This is not full coupon support; keep the
+        # flag off until an explicit coupon funding policy ships its own acceptance.
         params: dict[str, Any] = {
             "mode": "subscription",
             "client_reference_id": account_id,
@@ -583,6 +585,8 @@ class StripeGateway:
                 "product_line": self.product_line,
             },
         }
+        if self.allow_promotion_codes:
+            params["allow_promotion_codes"] = True
         if customer_id:
             params["customer"] = customer_id
         elif customer_email:

@@ -36,6 +36,7 @@ def _valid(**overrides: object) -> dict[str, object]:
         ("demo_bearer_token", "token\x7f", "visible string"),
         ("demo_bearer_email", "missing-at.example.test", "one @"),
         ("demo_bearer_email", "has space@example.test", "no whitespace"),
+        ("checkout_allow_promotion_codes", "maybe", "Input should be"),
     ],
 )
 def test_settings_fail_early_on_ambiguous_or_unsafe_values(
@@ -51,3 +52,12 @@ def test_settings_accept_explicit_test_and_live_secret_modes(secret_key: str) ->
     assert settings.stripe_secret_key == secret_key
     assert settings.product_line == "example-entitlements"
     assert settings.log_level == "INFO"
+    assert settings.checkout_allow_promotion_codes is False
+
+
+def test_checkout_promotion_codes_default_false_and_explicit_opt_in() -> None:
+    assert Settings(**_valid()).checkout_allow_promotion_codes is False  # type: ignore[arg-type]
+    enabled = Settings(
+        **_valid(checkout_allow_promotion_codes=True)  # type: ignore[arg-type]
+    )
+    assert enabled.checkout_allow_promotion_codes is True

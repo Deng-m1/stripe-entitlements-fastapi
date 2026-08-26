@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     plan_catalog_path: str = default_plan_catalog_path()
     checkout_success_url: str = "http://localhost:3000/billing/success"
     checkout_cancel_url: str = "http://localhost:3000/pricing"
+    # Reserved hook (CHECKOUT_ALLOW_PROMOTION_CODES), default off. When true, hosted
+    # Checkout shows Stripe's promotion-code field. The paid-Invoice policy is
+    # unchanged: a redeemed promo produces a discounted Invoice that still fails
+    # closed (no entitlement grant, durable incident). This is a display hook only,
+    # not full coupon support; keep it off until a coupon funding policy ships.
+    checkout_allow_promotion_codes: bool = False
     portal_return_url: str = "http://localhost:3000/account"
     frontend_origins: str = "http://localhost:3000"
     log_level: Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"] = "INFO"

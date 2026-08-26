@@ -97,6 +97,7 @@ def create_app(
         checkout_success_url=settings.checkout_success_url,
         checkout_cancel_url=settings.checkout_cancel_url,
         portal_return_url=settings.portal_return_url,
+        allow_promotion_codes=settings.checkout_allow_promotion_codes,
     )
     gateway_secret_key = getattr(gateway, "secret_key", "")
     if not isinstance(gateway_secret_key, str) or not gateway_secret_key.startswith(
