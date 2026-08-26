@@ -4,14 +4,31 @@
 
 ## 结论
 
-**阻塞，当前不能批准执行。** 复核时
-`docs/plans/LOCAL_STRIPE_REAL_REGRESSION.md` 不存在，`docs/plans/` 下也没有可替代的
-LOCAL_STRIPE 草稿或 PRECHECK。因而无法把仓库已有 runbook 当成待审计划，也不能声称
-计划已经覆盖下列门禁。
+**阻塞，当前不能批准执行。** `docs/plans/LOCAL_STRIPE_REAL_REGRESSION.md` 仍不存在；本次实际
+复核输入是并行代理随后提交的
+[`LOCAL_STRIPE_PRECHECK.md`](LOCAL_STRIPE_PRECHECK.md)（commit `1911eb2`）。PRECHECK 是可靠的
+无密钥环境盘点和用例收集记录，但不是包含命令顺序、成功判据、分层证据和失败恢复的真实
+回归执行计划。
 
-本轮只做文档复核；没有读取、打印或探测任何密钥，也没有运行真实 Stripe 网络。
+本复核没有运行真实 Stripe 网络，也没有自行读取或打印密钥值。PRECHECK 仅检查存在性与
+前缀，并报告 `STRIPE_SECRET_KEY`、`STRIPE_PUBLISHABLE_KEY` 均未设置。
 
-计划落盘后，至少必须逐项满足下面的覆盖矩阵。依据是现行
+### PRECHECK 覆盖判定
+
+| 必审项 | 判定 | 说明 |
+| --- | --- | --- |
+| `real_stripe` 九用例 | **已覆盖（仅收集）** | 无网络 `--collect-only` 确认 9 个 node id，含 2 × 2 失败付款矩阵；尚未执行 |
+| Test Clock 时光跳跃 | **部分覆盖** | 记录 wrapper、key guard 和 recovery manifest，但未写 `+32d`、约 `+190d`、`period_end + 1h` 及逐阶段断言 |
+| browser 双策略 | **部分覆盖** | 列出两个允许值，但未要求两次独立运行及各自成功判据；也未明确 policy 与 transport 是两个维度 |
+| 清理 `inventory=0` | **未充分覆盖** | 只概述“全量清理”，没有 run-owned 六类库存、完整分页、unknown-create sweep 与 cleanup-failure 判负矩阵 |
+| 分层证据 | **未覆盖** | 没有规定 local、real API polling、browser signed transport、endpoint metadata、manual/live 的独立结论与版本字段 |
+| 禁止促销码 | **部分覆盖** | 只声明预检未触碰 `allow_promotion_codes`，没有把省略参数、不得创建/兑换 Coupon/Promotion Code 写成执行不变量 |
+
+此外，PRECHECK 已确认三个实际执行阻塞：缺少 `sk_test_` secret、缺少 `pk_test_`
+publishable key、缺少 `uv`。因此即使补齐计划，也必须先以不泄密方式解除这些条件；在此之前
+不得尝试网络门禁。
+
+未来计划或扩充后的 PRECHECK 至少必须逐项满足下面的覆盖矩阵。依据是现行
 [`docs/TESTING.md`](../TESTING.md)、[`docs/STRIPE_CLI.md`](../STRIPE_CLI.md)、
 [`docs/BROWSER_E2E.md`](../BROWSER_E2E.md) 与
 [`tests/real/test_stripe_test_mode.py`](../../tests/real/test_stripe_test_mode.py)。
@@ -127,30 +144,33 @@ fail closed、保留可恢复证据并停止该场景，不能为了完成回归
 
 ## 缺口与风险
 
-1. **P0：复核对象缺失。** 没有目标计划、草稿或 PRECHECK，无法判断命令顺序、先决条件、
-   超时、证据目录、失败恢复和负责人是否可执行；补齐计划后必须重新复核。
-2. **九用例计数歧义。** 六个函数容易被误报为六个 case，或漏掉 failed-payment 的四格
+1. **P0：执行计划缺失。** 已有 PRECHECK，但目标计划不存在；PRECHECK 没有给出完整命令顺序、
+   超时、证据目录、逐阶段成功判据和失败恢复编排。补齐计划或扩充 PRECHECK 后必须重新复核。
+2. **P0：当前环境不可执行。** PRECHECK 明确报告两类测试密钥未设置且 `uv` 缺失；直接运行
+   wrapper 会在入口退出，直接跑 pytest 则可能因无 secret 全部 skip，不能记成通过。
+3. **九用例计数歧义。** 六个函数容易被误报为六个 case，或漏掉 failed-payment 的四格
    参数矩阵；应以 pytest collected node ids 和 9/9 结果为准。
-3. **时钟推进假阳性。** 未等待 `ready`、把约 +190 天拆成逐月 advance，或不检查
+4. **时钟推进假阳性。** 未等待 `ready`、把约 +190 天拆成逐月 advance，或不检查
    “current slot only” 都无法证明停机无回填语义。
-4. **browser 双策略与双传输混淆。** 两种 policy 都必须跑；endpoint 与 CLI 是另一维度。
+5. **browser 双策略与双传输混淆。** 两种 policy 都必须跑；endpoint 与 CLI 是另一维度。
    用 CLI 结果声称 endpoint metadata 已验证属于证据越界。
-5. **清理范围错误。** 把 `inventory=0` 理解为共享账户全局为零会误删他人对象；只检查
+6. **清理范围错误。** 把 `inventory=0` 理解为共享账户全局为零会误删他人对象；只检查
    已记录 ID 又会漏掉 unknown-create outcome。必须完整分页后按唯一 run marker 归属。
-6. **历史结果冒充当前结果。** 文档里的 2026-08-18/2026-08-02 只可作为基线，不可替代
+7. **历史结果冒充当前结果。** 文档里的 2026-08-18/2026-08-02 只可作为基线，不可替代
    当前 checkout、test clock 或 payload shape 的实际运行。
-7. **API 版本混写。** Dahlia outbound pin、endpoint signed snapshot 与 Clover Event API
+8. **API 版本混写。** Dahlia outbound pin、endpoint signed snapshot 与 Clover Event API
    retrieval view 是三个独立字段；合并成一个 `stripe_api_version` 会产生错误结论。
-8. **促销能力意外扩张。** browser 测试若为了“覆盖 Checkout”开启促销码，会改变当前产品
+9. **促销能力意外扩张。** browser 测试若为了“覆盖 Checkout”开启促销码，会改变当前产品
    契约，并可能触发“已收款但 discount shape fail-closed、零权益”的高风险路径。
-9. **秘密与对象标识泄漏。** `-v` 输出、Stripe CLI 日志、Playwright trace 和恢复文件的
+10. **秘密与对象标识泄漏。** `-v` 输出、Stripe CLI 日志、Playwright trace 和恢复文件的
    处理规则若不明确，可能把测试密钥、签名 secret、client secret 或可复用 URL 带入提交。
-10. **环境隔离不足。** real suite 与 browser suite 必须使用 disposable PostgreSQL、唯一
+11. **环境隔离不足。** real suite 与 browser suite 必须使用 disposable PostgreSQL、唯一
     account subject/run ID；并行运行或复用已有 entitlement/Checkout claim 会导致污染和
     错误归因。
 
 ## 重新复核准入条件
 
-`docs/plans/LOCAL_STRIPE_REAL_REGRESSION.md` 落盘后，应至少包含：上述六类门禁的逐项命令、
-先决条件、fail-fast guard、串行/隔离策略、有限超时、证据输出位置、严格清理与恢复流程、
-成功判据及明确的未覆盖声明。在重新复核通过前，不应启动任何真实 Stripe 网络运行。
+`docs/plans/LOCAL_STRIPE_REAL_REGRESSION.md` 落盘或 PRECHECK 扩充为完整执行计划后，应至少
+包含：上述六类门禁的逐项命令、先决条件、fail-fast guard、串行/隔离策略、有限超时、证据
+输出位置、严格清理与恢复流程、成功判据及明确的未覆盖声明。在重新复核通过且三项环境阻塞
+解除前，不应启动任何真实 Stripe 网络运行。
