@@ -175,9 +175,9 @@ Code, or discount participation on an Invoice, including zero-valued shapes, fai
 closed with no entitlement effect: the paid path rolls back for retry or records a
 durable incident, and both transition policies symmetrically reject discount drift in
 preview and paid settlement. The annual saving is explicit yearly pricing in
-`plans.toml`, not a discount object. `CHECKOUT_ALLOW_PROMOTION_CODES` is a reserved
-display hook, defaults to off, and must not be enabled on a production path while this
-section stands, because a redeemed code would charge the customer without granting
+`plans.toml`, not a discount object. Checkout Session creation must never send
+`allow_promotion_codes` (including via a default-off feature flag) while this section
+stands, because a redeemed code would charge the customer without granting
 entitlement.
 
 A future change may accept a discount-bearing Invoice only when all of these gates hold
@@ -192,7 +192,7 @@ A future change may accept a discount-bearing Invoice only when all of these gat
 4. Both transition policies keep symmetric preview and paid rejection of discount
    drift; discounts never enter `prorated_delta` or `full_period_reset` settlement math.
 5. The promo test matrix in [Promotion codes and coupons](PROMOTION_CODES.md) and the
-   promo future gates in [Testing](TESTING.md) pass, including flag-off regression
-   equivalence.
+   promo UI test gates in [TEST_GATES_PROMO_UI.md](plans/TEST_GATES_PROMO_UI.md) pass,
+   including Session-parameter omission regression.
 
 Until every gate is met, the fail-closed behavior above is the invariant.
