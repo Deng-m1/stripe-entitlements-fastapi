@@ -94,12 +94,24 @@ describe("public SEO surface", () => {
     const script = container.querySelector('script[type="application/ld+json"]');
     expect(script).not.toBeNull();
     const json = JSON.parse(script?.textContent ?? "{}") as {
-      "@graph"?: Array<{ "@type"?: string }>;
+      "@graph"?: Array<{ "@type"?: string; codeRepository?: string }>;
     };
     expect(json["@graph"]?.map((item) => item["@type"])).toEqual([
       "SoftwareApplication",
       "FAQPage",
     ]);
+    expect(json["@graph"]?.[0]?.codeRepository).toBe(
+      "https://github.com/Deng-m1/stripe-entitlements-fastapi",
+    );
+    expect(
+      screen.getAllByRole("link", { name: /GitHub|source/i }).map((link) =>
+        link.getAttribute("href"),
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        "https://github.com/Deng-m1/stripe-entitlements-fastapi",
+      ]),
+    );
   });
 
   it("fails closed when indexing is not explicitly configured", () => {

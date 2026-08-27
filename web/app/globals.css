@@ -1714,6 +1714,11 @@ h2 {
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card);
+  /* Chromium otherwise includes the table's 640px visual overflow in the root
+     scroll width on narrow app routes, even though this element owns the
+     horizontal scroll port. Keep the overflow local without hiding the table's
+     reachable columns. */
+  contain: paint;
   max-width: 100%;
   min-width: 0;
   overflow-x: auto;

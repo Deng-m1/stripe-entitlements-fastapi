@@ -193,7 +193,7 @@ ffmpeg -hide_banner -y \
       format=yuv420p,setpts=PTS-STARTPTS[v13];
 
     [14:v]drawbox=x=190:y=210:w=1540:h=660:color=0x2055D6@0.16:t=fill,
-      drawtext=fontfile=${font_bold}:text='FromCSUZhou/stripe-entitlements-fastapi':fontcolor=white:fontsize=64:x=(w-text_w)/2:y=374,
+      drawtext=fontfile=${font_bold}:text='Deng-m1/stripe-entitlements-fastapi':fontcolor=white:fontsize=64:x=(w-text_w)/2:y=374,
       drawtext=fontfile=${font_regular}:text='Two complete billing policies - race-safe webhook projection':fontcolor=0xE7EEFF:fontsize=38:x=(w-text_w)/2:y=486,
       drawtext=fontfile=${font_bold}:text='Independent community project - Stripe test mode shown':fontcolor=0x9FC0FF:fontsize=29:x=(w-text_w)/2:y=610,
       format=yuv420p,setpts=PTS-STARTPTS[v14];

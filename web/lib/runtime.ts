@@ -1,4 +1,8 @@
-import { createDemoBearerAuth, noAuthAdapter } from "@/lib/auth";
+import {
+  createDemoBearerAuth,
+  createE2ERouteAuth,
+  noAuthAdapter,
+} from "@/lib/auth";
 import { createHttpBillingApi } from "@/lib/http-api";
 import { createMockBillingApi } from "@/lib/mock-api";
 import type { BillingApi, Redirect } from "@/lib/types";
@@ -12,8 +16,12 @@ export const billingApiMode =
       : "mock";
 
 const demoToken = process.env.NEXT_PUBLIC_DEMO_BEARER_TOKEN;
+const e2eRouteAuthSentinel =
+  process.env.NEXT_PUBLIC_E2E_ROUTE_AUTH_SENTINEL;
 export const usesDemoConfiguration =
-  billingApiMode === "mock" || Boolean(demoToken);
+  billingApiMode === "mock" ||
+  Boolean(demoToken) ||
+  Boolean(e2eRouteAuthSentinel);
 
 export function isUnsafeProductionDemoConfiguration(
   environment: string | undefined,
@@ -44,7 +52,11 @@ export function getBillingApi(): BillingApi {
       ? createMockBillingApi()
       : createHttpBillingApi({
           baseUrl: process.env.NEXT_PUBLIC_BILLING_API_BASE_URL ?? "",
-          auth: demoToken ? createDemoBearerAuth(demoToken) : noAuthAdapter,
+          auth: demoToken
+            ? createDemoBearerAuth(demoToken)
+            : e2eRouteAuthSentinel
+              ? createE2ERouteAuth(e2eRouteAuthSentinel)
+              : noAuthAdapter,
         });
   return runtimeApi;
 }

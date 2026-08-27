@@ -60,6 +60,7 @@ Requirements:
 
 - Docker with the `postgres:17-alpine` image available;
 - Python 3.12+, `uv`, Node.js 22+, and npm;
+- OpenSSL for the runner-owned one-day loopback certificate;
 - `cloudflared` for the default temporary-endpoint transport, or Stripe CLI for the
   explicit local signed-forwarding transport;
 - Chromium for Playwright (`cd web && npx playwright install chromium` once);
@@ -136,7 +137,9 @@ The runner:
 - in explicit CLI mode, starts a locally authenticated listener for only the supported
   Event set and redacts its signing secret from the retained private log;
 - keeps any endpoint-returned signing secret in a mode-`0600` temporary file;
-- starts the FastAPI and Next.js development servers on random loopback ports;
+- starts FastAPI over runner-owned loopback HTTPS, builds Next.js with only the
+  public backend URL and test publishable key, and serves that production bundle
+  through a minimal Node HTTPS/Next production server on a random loopback port;
 - runs `npm --prefix web run test:e2e:stripe`;
 - switches only the run-owned Subscription to an allowlisted test Payment Method before
   the upgrade step, after checking test mode, customer identity, account metadata, and
@@ -153,26 +156,46 @@ The runner:
 - writes a mode-`0600`, secret-free cleanup manifest before deletion, falls back to the
   run's unique endpoint description/URL after an unknown create outcome, and fails the
   overall run if any cleanup step fails;
+- treats `E2E_OUTPUT_DIR` as an artifact root, creates and prints a unique child for
+  every run, and never recursively deletes the caller-supplied root;
 - removes the disposable database and local processes.
 
-The frontend is launched as the directly tracked Next.js process rather than through an
-npm parent/child chain, so cleanup waits for the process that owns `.next/dev/lock`.
-It starts under an `env -i` allowlist and receives only public frontend settings; it
-does not receive the Stripe secret key or database DSN. The Playwright Node helper does
-hold the test key and uses the database DSN only for its server-side ownership and
-stability checks. Chromium is launched with a separate runtime-only
-environment allowlist, so neither value is inherited by the browser process or page.
-The publishable key still reaches browser JavaScript through the normal public Next.js
-bundle, as intended.
+The runner builds and launches the directly tracked Next.js production process rather
+than using `next dev` or an npm parent/child chain. Both build and HTTPS start run under
+separate `env -i` allowlists. The build sees only public frontend settings plus a fixed
+non-secret, non-public-name acknowledgement that enables its E2E-only route-auth mode;
+neither process receives the Stripe secret key, webhook secret, database DSN, or demo
+Bearer token. This mode is accepted only for a production HTTP-mode build whose backend
+is an HTTPS loopback origin, whose indexing flag is explicitly `false`, and which has no
+browser demo token. It compiles one fixed, deliberately invalid public sentinel into the
+page. The Playwright Node helper holds the test key and database DSN for server-side
+ownership/stability checks, and holds the one-run demo Bearer token solely to replace
+that exact sentinel on the attested backend origin's `/api/` requests. It fetches without
+following redirects and fulfills the 30x back to Chromium, so a redirected request is
+new and never inherits the real token. The helper never adds that token to Stripe,
+another origin, the frontend document, or a response. Without Playwright interception,
+the backend sees only the known-invalid sentinel and returns `401`.
+Chromium is launched with a separate runtime-only environment allowlist, so these
+values are not inherited by the browser process or bundled page. The publishable key
+still reaches browser JavaScript through the normal public Next.js bundle, as intended.
+The browser does not globally ignore HTTPS errors: the runner derives a SHA-256 SPKI
+pin from its one-day loopback certificate and allows only that certificate for the
+frontend and backend origins. Stripe Hosted Checkout retains normal certificate
+validation. Playwright's Node-only `route.fetch()` process separately trusts that same
+one-run certificate through `NODE_EXTRA_CA_CERTS`; the browser environment allowlist
+does not pass this variable into Chromium.
 
-On success the temporary directory is removed. On failure, the runner removes the
+The runner reports `E2E passed` only after the final database verifier and every cleanup
+step succeed. On success the private temporary directory is removed and the unique
+artifact child remains at the printed path. On failure, the runner removes the
 signing-secret state file but retains private service logs and a secret-free cleanup
 manifest with exact recovery IDs when available. It never prints Stripe API keys,
 signing secrets, database credentials, or card input.
 
 ## Running Playwright against an existing staging stack
 
-The stack must use a fresh account (or unique verified subject) with no active or
+The stack must serve a production Next.js build carrying the
+`X-Frontend-Build-Mode: production` response header and use a fresh account (or unique verified subject) with no active or
 unexpired Checkout claim, a Stripe test key, a test publishable key, signed webhook
 delivery, and an empty test database projection. Its backend allowlisted Checkout URLs
 must exactly match the frontend origin and paths used by the browser. The Playwright
@@ -187,13 +210,20 @@ cd web
 STRIPE_SECRET_KEY="$TEST_STRIPE_SECRET_KEY" \
 E2E_RUN_REAL_STRIPE=1 \
 E2E_STRIPE_MODE=test \
+E2E_FRONTEND_BUILD_MODE=production \
 E2E_TRANSITION_POLICY=prorated_delta \
-E2E_BASE_URL=http://127.0.0.1:3000 \
-E2E_BACKEND_URL=http://127.0.0.1:8000 \
+E2E_BASE_URL=https://127.0.0.1:3000 \
+E2E_BACKEND_URL=https://127.0.0.1:8000 \
 E2E_DATABASE_URL="$TEST_DATABASE_READ_ONLY_URL" \
 E2E_EXTERNAL_REF=browser-e2e-subject \
 npm run test:e2e:stripe
 ```
+
+The repository's full runner supplies an exact SHA-256 SPKI pin for its self-signed
+loopback certificate. If an independently managed loopback stack also uses a
+self-signed certificate, derive its pin and pass it as `E2E_LOOPBACK_TLS_SPKI`; omit
+the value when the certificate is normally trusted. The harness accepts one pin only
+and never enables Chromium's global `--ignore-certificate-errors` switch.
 
 For a non-loopback HTTPS staging origin, a second acknowledgement is mandatory:
 
@@ -201,6 +231,7 @@ For a non-loopback HTTPS staging origin, a second acknowledgement is mandatory:
 STRIPE_SECRET_KEY="$TEST_STRIPE_SECRET_KEY" \
 E2E_RUN_REAL_STRIPE=1 \
 E2E_STRIPE_MODE=test \
+E2E_FRONTEND_BUILD_MODE=production \
 E2E_TRANSITION_POLICY=prorated_delta \
 E2E_ALLOW_REMOTE_BASE_URL=1 \
 E2E_BASE_URL=https://billing-staging.example.test \
@@ -238,7 +269,7 @@ Optional variables:
 | `E2E_WEBHOOK_TRANSPORT` | `endpoint` | `endpoint` for release evidence or explicit `stripe_cli` signed forwarding for local diagnosis/recording |
 | `E2E_RECORD_VIDEO` | `0` | Set to `1` to retain one Playwright video per page |
 | `E2E_DEMO_PAUSE_MS` | `0` | Recording-only scene hold, 0–5,000 ms; assertions do not depend on it |
-| `E2E_OUTPUT_DIR` | policy-specific ignored directory | Explicit Playwright artifact destination |
+| `E2E_OUTPUT_DIR` | policy-specific ignored root | Artifact root; the runner creates and prints a unique per-run child and never deletes the root |
 
 The Playwright Node harness requires a test secret and database DSN for server-side
 Checkout ownership, decline stability, and upgrade-payment preparation checks; it
@@ -296,16 +327,24 @@ Frontend process environment:
   NEXT_PUBLIC_BILLING_API_MODE=http
   NEXT_PUBLIC_BILLING_API_BASE_URL=<backend origin>
   NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_...
-  NEXT_PUBLIC_DEMO_BEARER_TOKEN=<same random local value>
+  NEXT_PUBLIC_ALLOW_INDEXING=false                 # full runner build only
+  E2E_ALLOW_PRODUCTION_ROUTE_AUTH=1                # full runner build/start only
 
 Playwright process:
   E2E_TRANSITION_POLICY=<same backend value>
   E2E_EXTERNAL_REF=<the authenticated one-run subject>
+  E2E_FRONTEND_BUILD_MODE=production
+  E2E_LOOPBACK_TLS_SPKI=<optional one-certificate SHA-256 SPKI pin>
+  E2E_DEMO_BEARER_TOKEN=<same random local value; full runner only>
   E2E_STORAGE_STATE=<private mode-0600 file; required for a remote origin>
 ```
 
-The demo token is browser-visible by design and is allowed only in development with an
-`sk_test_` backend. Do not deploy this adapter as production authentication.
+The demo token remains a development-only backend adapter credential. The full runner
+does not compile it into the production frontend: the page carries only the fixed
+invalid route-auth sentinel, and Playwright replaces that value only on exact loopback
+backend API requests. The acknowledgement is rejected for remote, HTTP, mock, indexable,
+demo-token, or custom-sentinel builds. Do not deploy this adapter as production
+authentication.
 
 ## Failure diagnosis
 

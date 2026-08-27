@@ -4,23 +4,26 @@ The project separates deterministic local/PostgreSQL tests, opt-in automated Str
 test-mode tests, real-browser signed-delivery tests, manual observations, and live
 production verification. Passing one layer must not be described as passing another.
 
-Current `0.2.2` release-candidate evidence recorded on 2026-08-18:
+Local review-candidate evidence was rerun on 2026-08-28 from a branch based on
+`main@75070ef`; it is not evidence for that base commit and must be rebound to
+the exact final commit before release. Networked `0.2.2` evidence remains the separate
+run recorded on 2026-08-18:
 
 | Layer | Current result | Boundary |
 | --- | --- | --- |
-| Local/backend | 702 passed from 711 collected; 9 `real_stripe` cases deselected | Real PostgreSQL, mocked Stripe responses |
-| Frontend | 102 passed; lint, typecheck, production build, production npm audit, and complete npm audit passed | No Stripe network |
-| Real Stripe suite | 9/9 passed with strict cleanup and zero run-owned active inventory | Direct test-mode API/Event polling; not signed delivery |
-| Browser policy gates, CLI transport | 2/2 passed: `full_period_reset` and `prorated_delta`; each reached Pro/1,000 with 7 related, 0 unrelated, and exactly 3 essential Events | Real Checkout/3DS/SCA and signed Stripe CLI forwarding; not endpoint metadata |
-| Wheel/container | Independent Wheel install plus five-migration PostgreSQL run passed; UID/GID 10001 read-only Docker health passed | Built artifacts, not Stripe network |
+| Local/backend | Candidate: 743 passed from 752 collected; 9 `real_stripe` cases deselected | Real PostgreSQL, mocked Stripe responses; not yet final-commit-bound |
+| Frontend | Candidate: 153 passed; lint, typecheck, and production build passed | No Stripe network; not yet final-commit-bound |
+| Real Stripe suite | Retained `0.2.2`: 9/9 passed with strict cleanup and zero run-owned active inventory | Direct test-mode API/Event polling; predates current changes |
+| Browser policy gates, CLI transport | Retained `0.2.2`: 2/2 passed; each policy reached Pro/1,000 with 7 related, 0 unrelated, and exactly 3 essential Events | Real Checkout/3DS/SCA and signed Stripe CLI forwarding; predates the current runner |
+| Wheel/container | Candidate Wheel and image each applied all six migrations to fresh PostgreSQL; image then returned `ok=true`/`database=true` as UID/GID 10001 with a read-only root and internal-only network | Built artifacts, not Stripe network; not yet final-commit-bound |
 | Temporary endpoint gates | Latest dual-policy pass remains 2026-08-02 | Version-pinned endpoint metadata and signed Dahlia delivery |
 | Live production payload | **not run** | Test mode never substitutes for live mode |
 
 The earlier 2026-08-01 pre-hardening baseline—239 local/backend, 7 real Stripe,
 60 frontend, and 2 browser policy runs—is retained only as historical regression
-evidence. It must not be cited as proof of the current tree. The current Python,
-production npm, and complete npm audits all report zero known vulnerabilities; future
-advisories still require a fresh release run.
+evidence. It must not be cited as proof of the current tree. Earlier dependency-audit
+results likewise do not prove the changed dependency tree; rerun both Python and npm
+audits on the final commit.
 
 ## Default backend suite
 
@@ -39,9 +42,13 @@ Coverage includes:
 - fail-closed production auth and explicit test-only demo auth;
 - transaction rollback followed by successful retry;
 - concurrent same-Event delivery and different Events targeting one grant;
+- concurrent first ownership of one Invoice across accounts, including paid versus
+  clawback and prorated-delta settlement, with loser facts proven absent;
 - same-second paid/failed/updated/deleted ordering;
 - refund/dispute before/after paid convergence and cumulative refund races;
 - Checkout reservation, same-request replay, attach, expiration and stale Events;
+- Subscription-update claim consumption plus terminal delete versus delayed/concurrent
+  paid permutations;
 - annual multi-worker grants, downtime slot jumps, mismatch and refund reduction;
 - plan-change request replay, leases, preview fallback, Schedule and pending payment;
 - atomic `previewed → applying`, `remote_started_at`, same-key recovery below 23
@@ -53,6 +60,7 @@ Coverage includes:
   old failures that create an incident without changing the new intent or source access;
 - exact-ID incident resolution on coordinator binding and later paid settlement, without
   clearing delayed failures for another Invoice or account;
+- paid-before-failed, failed-before-paid, and concurrent settlement-Invoice convergence;
 - paid-webhook-before-coordinator-finish races, including atomic same-ID binding,
   blocked-paid failure, and confirm conflict instead of false synchronous success;
 - full-period reset and prorated-delta preview/apply parameter contracts;
@@ -72,6 +80,8 @@ Coverage includes:
 - product credit charges/refunds across entitlement epochs and revocation;
 - bounded reconciliation rotation across `applying`, `applied`, `requires_action`, and
   expired-entitlement candidates;
+- ignored synthetic-Event retry, per-attempt cancellation identity, long-transaction
+  incident observation, and strict/equal-time causal cleanup barriers;
 - incident deduplication and database constraints.
 
 These tests use real PostgreSQL transactions and constraints but mocked Stripe responses.
@@ -92,7 +102,7 @@ npm test
 npm run build
 ```
 
-The 102-test suite covers annual total/equivalent/savings display, full-period and
+The frontend component suite covers annual total/equivalent/savings display, full-period and
 prorated-delta immediate copy, explicit period-end copy, all annual-origin policy cases
 (including `SY → PY/UY`), reusable Checkout/preview/Portal idempotency intents, pending
 state, hosted-invoice recovery, strict Stripe.js confirmation methods/statuses, and

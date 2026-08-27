@@ -41,6 +41,7 @@ async def test_migration_runner_serializes_and_records_checksums(
         "003_transition_policies.sql",
         "004_event_audit_hardening.sql",
         "005_simplify_event_audit.sql",
+        "006_invoice_ownership_and_incident_causality.sql",
     ]
     assert all(len(row["sha256"]) == 64 for row in rows)
     assert await database.schema_ready()
@@ -64,7 +65,7 @@ async def test_schema_ready_requires_known_versions_without_rehashing_files(
 ) -> None:
     database = Database(TEST_DSN)
     database.pool = pool
-    filename = "005_simplify_event_audit.sql"
+    filename = "006_invoice_ownership_and_incident_causality.sql"
     async with pool.acquire() as conn:
         original = await conn.fetchval(
             "select sha256 from schema_migrations where filename=$1", filename
@@ -94,7 +95,7 @@ async def test_migration_runner_rejects_changed_applied_file(
 ) -> None:
     migration_dir = tmp_path / "migrations"
     shutil.copytree(ROOT / "migrations", migration_dir)
-    filename = "006_checksum_probe.sql"
+    filename = "007_checksum_probe.sql"
     migration = migration_dir / filename
     migration.write_text("select 1;\n", encoding="utf-8")
     database = Database(TEST_DSN)
@@ -148,12 +149,12 @@ async def test_schema_ready_allows_extra_forward_migration_history(
     database.pool = pool
     async with pool.acquire() as conn:
         await conn.execute(
-            "insert into schema_migrations(filename,sha256) values('006_removed.sql',$1)",
+            "insert into schema_migrations(filename,sha256) values('007_removed.sql',$1)",
             "a" * 64,
         )
     assert await database.schema_ready()
     async with pool.acquire() as conn:
-        await conn.execute("delete from schema_migrations where filename='006_removed.sql'")
+        await conn.execute("delete from schema_migrations where filename='007_removed.sql'")
     assert await database.schema_ready()
 
 
@@ -170,6 +171,151 @@ async def test_schema_ready_requires_every_correctness_table(
         async with pool.acquire() as conn:
             await conn.execute("alter table credit_debits_missing rename to credit_debits")
     assert await database.schema_ready()
+
+
+async def test_invoice_owner_migration_explicitly_restricts_account_deletion_and_rebind(
+    pool: asyncpg.Pool,
+) -> None:
+    owner_id = uuid.uuid4()
+    other_id = uuid.uuid4()
+    async with pool.acquire() as conn:
+        await conn.executemany(
+            "insert into billing_accounts(id,external_ref) values($1,$2)",
+            [(owner_id, f"owner-{owner_id}"), (other_id, f"other-{other_id}")],
+        )
+        await conn.execute(
+            """insert into stripe_invoice_state(invoice_id,account_id,amount_total)
+                 values('in_retained_owner',$1,1900)""",
+            owner_id,
+        )
+        with pytest.raises(asyncpg.ForeignKeyViolationError):
+            async with conn.transaction():
+                await conn.execute("delete from billing_accounts where id=$1", owner_id)
+        with pytest.raises(asyncpg.RaiseError, match="immutable once assigned"):
+            async with conn.transaction():
+                await conn.execute(
+                    """update stripe_invoice_state set account_id=$2
+                         where invoice_id='in_retained_owner' and account_id=$1""",
+                    owner_id,
+                    other_id,
+                )
+        retained = await conn.fetchval(
+            "select account_id from stripe_invoice_state where invoice_id='in_retained_owner'"
+        )
+        causal_index = await conn.fetchval(
+            "select to_regclass('billing_incidents_unresolved_account_kind_seen') is not null"
+        )
+    assert retained == owner_id
+    assert causal_index is True
+
+
+async def test_existing_five_migration_schema_upgrades_to_invoice_owner_hardening(
+    tmp_path: Path,
+) -> None:
+    database_name = f"migration_invoice_owner_{uuid.uuid4().hex}"
+    upgrade_dsn = f"{TEST_DSN.rsplit('/', 1)[0]}/{database_name}"
+    first_five = tmp_path / "first-five-migrations"
+    first_five.mkdir()
+    for path in sorted((ROOT / "migrations").glob("*.sql"))[:5]:
+        shutil.copy2(path, first_five / path.name)
+
+    admin = await asyncpg.connect(TEST_DSN)
+    try:
+        await admin.execute(f'create database "{database_name}"')
+    finally:
+        await admin.close()
+
+    owner_id = uuid.uuid4()
+    other_id = uuid.uuid4()
+    database = Database(upgrade_dsn)
+    try:
+        await database.connect()
+        await database.apply_migrations(first_five)
+        async with database.require_pool().acquire() as conn:
+            await conn.executemany(
+                "insert into billing_accounts(id,external_ref) values($1,$2)",
+                [
+                    (owner_id, f"upgrade-owner-{owner_id}"),
+                    (other_id, f"upgrade-other-{other_id}"),
+                ],
+            )
+            await conn.execute(
+                """insert into stripe_invoice_state(
+                       invoice_id,account_id,amount_total,amount_refunded)
+                     values('in_upgrade_retained',$1,1900,475)""",
+                owner_id,
+            )
+            await conn.execute(
+                """insert into billing_incidents(kind,dedupe_key,account_id,detail)
+                     values('reconciliation_failed','upgrade-incident',$1,'{}'::jsonb)""",
+                owner_id,
+            )
+
+        await database.apply_migrations(ROOT / "migrations")
+        await database.apply_migrations(ROOT / "migrations")
+        # A draining older binary with only migrations 001-005 must accept a database
+        # that is ahead by this backward-compatible migration.
+        await database.apply_migrations(first_five)
+
+        async with database.require_pool().acquire() as conn:
+            retained = await conn.fetchrow(
+                """select account_id,amount_total,amount_refunded
+                     from stripe_invoice_state where invoice_id='in_upgrade_retained'"""
+            )
+            migration_rows = await conn.fetch(
+                "select filename,sha256 from schema_migrations order by filename"
+            )
+            constraint = await conn.fetchval(
+                """select pg_get_constraintdef(c.oid)
+                     from pg_constraint c
+                     join pg_class t on t.oid=c.conrelid
+                     join pg_namespace n on n.oid=t.relnamespace
+                    where n.nspname='public' and t.relname='stripe_invoice_state'
+                      and c.conname='stripe_invoice_state_account_id_fkey'"""
+            )
+            causal_index = await conn.fetchval(
+                """select indexdef from pg_indexes
+                    where schemaname='public'
+                      and indexname='billing_incidents_unresolved_account_kind_seen'"""
+            )
+            last_seen_default = await conn.fetchval(
+                """select column_default from information_schema.columns
+                    where table_schema='public' and table_name='billing_incidents'
+                      and column_name='last_seen_at'"""
+            )
+            with pytest.raises(asyncpg.ForeignKeyViolationError):
+                async with conn.transaction():
+                    await conn.execute("delete from billing_accounts where id=$1", owner_id)
+            with pytest.raises(asyncpg.RaiseError, match="immutable once assigned"):
+                async with conn.transaction():
+                    await conn.execute(
+                        """update stripe_invoice_state set account_id=$2
+                             where invoice_id='in_upgrade_retained' and account_id=$1""",
+                        owner_id,
+                        other_id,
+                    )
+
+        assert retained is not None and tuple(retained) == (owner_id, 1900, 475)
+        assert [row["filename"] for row in migration_rows] == [
+            "001_schema.sql",
+            "002_plan_transitions.sql",
+            "003_transition_policies.sql",
+            "004_event_audit_hardening.sql",
+            "005_simplify_event_audit.sql",
+            "006_invoice_ownership_and_incident_causality.sql",
+        ]
+        assert all(len(row["sha256"]) == 64 for row in migration_rows)
+        assert constraint is not None and "ON DELETE RESTRICT" in constraint
+        assert causal_index is not None
+        assert "WHERE (resolved_at IS NULL)" in causal_index
+        assert last_seen_default == "clock_timestamp()"
+    finally:
+        await database.close()
+        admin = await asyncpg.connect(TEST_DSN)
+        try:
+            await admin.execute(f'drop database if exists "{database_name}" with (force)')
+        finally:
+            await admin.close()
 
 
 async def test_event_audit_migration_scrubs_legacy_full_payloads(

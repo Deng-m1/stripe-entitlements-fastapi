@@ -22,6 +22,19 @@ uv run stripe-entitlements migrate
   removes hash-based constraints. A nullable compatibility column remains for one rolling-
   upgrade window; the active inbox contract uses only the redacted snapshot, Event identity,
   and processing result.
+- `006_invoice_ownership_and_incident_causality.sql` makes the existing retained-audit
+  behavior explicit: an account with Invoice history cannot be deleted independently,
+  stamps incident observations with the statement wall clock, and gives strictly causal
+  reconciliation cleanup a bounded account/kind/time index.
+
+Migration `006` drops and recreates the Invoice-owner foreign key and builds an ordinary
+index on unresolved incidents. Those statements acquire PostgreSQL table locks and the
+index is not created concurrently, so this migration is not a zero-downtime operation.
+Schedule a maintenance window, stop authenticated billing writes and workers, set and
+exercise an appropriate `lock_timeout`, and rehearse duration and lock waiting against a
+production-scale restored copy before production. Monitor `pg_stat_activity` and
+`pg_locks`; if the migration times out, leave traffic stopped, resolve the blocker, and
+rerun the same migration command rather than editing the migration history.
 
 The migration runner serializes changes with a PostgreSQL advisory lock and rejects a
 changed checksum for any bundled migration already applied. A database may contain later
@@ -180,7 +193,7 @@ Back up all ten correctness tables together:
 
 A restore that omits inbox, invoice, ledger, debit, Checkout or plan-change identity can
 reopen duplicate/unauthorized effects. Perform point-in-time recovery drills, verify all
-five migration versions, then run reconciliation and inspect incidents before reopening
+six migration versions, then run reconciliation and inspect incidents before reopening
 traffic.
 
 ## Production monitoring

@@ -2,6 +2,7 @@ import { defineConfig } from "@playwright/test";
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import { browserProcessEnvironment } from "./lib/browser-process-environment";
+import { optionalLoopbackCertificateSpki } from "./lib/e2e-tls";
 
 function requiredEnvironment(name: string, expected?: string): string {
   const value = process.env[name]?.trim();
@@ -36,6 +37,7 @@ function integerInRange(name: string, fallback: number, min: number, max: number
 
 requiredEnvironment("E2E_RUN_REAL_STRIPE", "1");
 requiredEnvironment("E2E_STRIPE_MODE", "test");
+requiredEnvironment("E2E_FRONTEND_BUILD_MODE", "production");
 const transitionPolicy = requiredEnvironment("E2E_TRANSITION_POLICY");
 if (!["full_period_reset", "prorated_delta"].includes(transitionPolicy)) {
   throw new Error(
@@ -102,6 +104,9 @@ integerInRange("E2E_DECLINE_STABILITY_SECONDS", 10, 10, 60);
 const demoPauseMs = integerInRange("E2E_DEMO_PAUSE_MS", 0, 0, 5_000);
 const storageState = validatedStorageState();
 const recordVideo = process.env.E2E_RECORD_VIDEO === "1";
+const loopbackCertificateSpki = optionalLoopbackCertificateSpki(
+  process.env.E2E_LOOPBACK_TLS_SPKI,
+);
 const outputDir = resolve(
   process.env.E2E_OUTPUT_DIR?.trim() ||
     `test-results/playwright-stripe-${transitionPolicy}`,
@@ -140,6 +145,9 @@ export default defineConfig({
       : "off",
     launchOptions: {
       env: browserProcessEnvironment(process.env),
+      args: loopbackCertificateSpki
+        ? [`--ignore-certificate-errors-spki-list=${loopbackCertificateSpki}`]
+        : [],
     },
   },
   metadata: { demoPauseMs, recordVideo },

@@ -26,7 +26,9 @@ test("normal motion settles every terminal line on desktop", async ({
 
   // A capture forces an initial compositor frame in headless Chromium. The
   // following assertion then exercises the same normal-motion reveal a visitor sees.
-  await terminal.screenshot({ animations: "allow" });
+  // Capture the page rather than the animated element. Locator screenshots wait
+  // for element stability and can time out while the terminal reveal is moving.
+  await page.screenshot({ animations: "allow" });
   await expect
     .poll(() => terminalOpacities(page), { timeout: 7_000 })
     .toEqual(Array(8).fill("1"));
@@ -42,7 +44,7 @@ test("390px layout contains the ledger and exposes the matrix overflow", async (
 
   const terminal = page.locator(".hero-terminal");
   await terminal.scrollIntoViewIfNeeded();
-  await terminal.screenshot({ animations: "allow" });
+  await page.screenshot({ animations: "allow" });
   await expect
     .poll(() => terminalOpacities(page), { timeout: 7_000 })
     .toEqual(Array(8).fill("1"));
@@ -97,6 +99,53 @@ test("390px layout contains the ledger and exposes the matrix overflow", async (
   expect(finalColumnIsVisible).toBe(true);
 });
 
+test("390px pricing hydrates and contains its comparison table", async ({
+  page,
+  baseURL,
+}) => {
+  if (!baseURL) throw new Error("PROMO_BASE_URL is missing.");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(new URL("/pricing", baseURL).toString(), {
+    waitUntil: "networkidle",
+  });
+
+  await expect(
+    page.getByRole("heading", {
+      name: "Choose a plan without hiding the billing consequences.",
+    }),
+  ).toBeVisible();
+  await expect(page.locator(".account-loading")).toBeHidden();
+  await expect(page.getByRole("button", { name: "Choose Pro month" })).toBeEnabled();
+  expect(
+    await page.evaluate(
+      () =>
+        document.documentElement.scrollWidth -
+        document.documentElement.clientWidth,
+    ),
+  ).toBe(0);
+
+  await page.getByRole("button", { name: "Yearly" }).click();
+  await expect(page.getByText("$353.00 billed yearly", { exact: true })).toBeVisible();
+  await expect(page.getByText("Save $235.00/year", { exact: true })).toBeVisible();
+
+  const comparison = page.locator(".comparison-table-wrap");
+  await comparison.scrollIntoViewIfNeeded();
+  expect(
+    await comparison.evaluate((element) => element.scrollWidth > element.clientWidth),
+  ).toBe(true);
+  await comparison.evaluate((element) => {
+    element.scrollLeft = element.scrollWidth;
+  });
+  const finalColumnIsVisible = await comparison.evaluate((element) => {
+    const boundary = element.getBoundingClientRect();
+    const finalHeader = element.querySelector("thead th:last-child");
+    if (!finalHeader) return false;
+    const rect = finalHeader.getBoundingClientRect();
+    return rect.left >= boundary.left - 1 && rect.right <= boundary.right + 1;
+  });
+  expect(finalColumnIsVisible).toBe(true);
+});
+
 test("reduced motion renders the settled terminal and ledger state", async ({
   page,
   baseURL,
@@ -107,7 +156,7 @@ test("reduced motion renders the settled terminal and ledger state", async ({
 
   const terminal = page.locator(".hero-terminal");
   await terminal.scrollIntoViewIfNeeded();
-  await terminal.screenshot({ animations: "allow" });
+  await page.screenshot({ animations: "allow" });
   await expect
     .poll(() => terminalOpacities(page), { timeout: 2_000 })
     .toEqual(Array(8).fill("1"));

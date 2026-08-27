@@ -795,7 +795,8 @@ class PlanChangeCoordinator:
                 and row["settlement_invoice_id"] == settlement_invoice_id
             ):
                 await conn.execute(
-                    """update billing_incidents set resolved_at=now(),last_seen_at=now()
+                    """update billing_incidents set resolved_at=clock_timestamp(),
+                           last_seen_at=clock_timestamp()
                          where account_id=$1 and invoice_id=$2 and resolved_at is null
                            and kind='unbound_plan_change_payment_failed'""",
                     row["account_id"],
@@ -877,7 +878,7 @@ class PlanChangeCoordinator:
                      values('plan_change_account_race',$1,$2,$3::jsonb)
                      on conflict(kind,dedupe_key) where resolved_at is null do update set
                        detail=excluded.detail,seen_count=billing_incidents.seen_count+1,
-                       last_seen_at=now()""",
+                       last_seen_at=clock_timestamp()""",
                 str(reserved["id"]),
                 account["id"],
                 {"expected_subscription": reserved["stripe_subscription_id"]},

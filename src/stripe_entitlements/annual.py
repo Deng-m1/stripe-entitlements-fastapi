@@ -30,7 +30,7 @@ class AnnualGrantService:
                      values('annual_grant_failed',$1,$2::uuid,$3::jsonb)
                      on conflict(kind,dedupe_key) where resolved_at is null do update set
                        detail=excluded.detail,seen_count=billing_incidents.seen_count+1,
-                       last_seen_at=now()""",
+                       last_seen_at=clock_timestamp()""",
                 f"{account_id}:{subscription_id}",
                 account_id,
                 {"subscription_id": subscription_id, "reason": reason},
@@ -133,7 +133,7 @@ class AnnualGrantService:
                        values('annual_plan_mismatch',$1,$2,$3,$4::jsonb)
                        on conflict(kind,dedupe_key) where resolved_at is null do update set
                          detail=excluded.detail,seen_count=billing_incidents.seen_count+1,
-                         last_seen_at=now()""",
+                         last_seen_at=clock_timestamp()""",
                     f"{account_id}:{account['stripe_subscription_id']}",
                     account["id"],
                     account["funding_invoice_id"],
@@ -159,7 +159,8 @@ class AnnualGrantService:
                 )
                 return ProcessResult("ignored", "remote and local annual plans differ", account_id)
             await conn.execute(
-                """update billing_incidents set resolved_at=now(),last_seen_at=now()
+                """update billing_incidents set resolved_at=clock_timestamp(),
+                       last_seen_at=clock_timestamp()
                      where kind='annual_plan_mismatch'
                        and dedupe_key=$1 and resolved_at is null""",
                 f"{account_id}:{account['stripe_subscription_id']}",
@@ -238,7 +239,8 @@ class AnnualGrantService:
     @staticmethod
     async def _resolve_failure(conn: asyncpg.Connection, account_id: str) -> None:
         await conn.execute(
-            """update billing_incidents set resolved_at=now(),last_seen_at=now()
+            """update billing_incidents set resolved_at=clock_timestamp(),
+                   last_seen_at=clock_timestamp()
                  where account_id=$1::uuid and resolved_at is null
                    and kind='annual_grant_failed'""",
             account_id,

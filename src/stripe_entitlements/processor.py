@@ -424,7 +424,7 @@ class EventProcessor:
                      account_id=coalesce(excluded.account_id,billing_incidents.account_id),
                      detail=excluded.detail,
                      seen_count=billing_incidents.seen_count+1,
-                     last_seen_at=now()""",
+                     last_seen_at=clock_timestamp()""",
             kind,
             dedupe_key,
             event.get("id"),
@@ -942,20 +942,29 @@ class EventProcessor:
                 account_id=account["id"],
             )
             return ProcessResult("ignored", "invoice is owned by another account", account_id)
-        await conn.execute(
+        state = await conn.fetchrow(
             """insert into stripe_invoice_state(invoice_id,account_id,amount_total)
                  values($1,$2,$3) on conflict(invoice_id) do update set
                    account_id=coalesce(stripe_invoice_state.account_id,excluded.account_id),
                    amount_total=greatest(stripe_invoice_state.amount_total,excluded.amount_total),
-                   updated_at=now()""",
+                   updated_at=now()
+                 where stripe_invoice_state.account_id is null
+                    or stripe_invoice_state.account_id=excluded.account_id
+                 returning stripe_invoice_state.*""",
             invoice_id,
             account["id"],
             amount_total,
         )
-        state = await conn.fetchrow(
-            "select * from stripe_invoice_state where invoice_id=$1 for update", invoice_id
-        )
-        assert state is not None
+        if state is None:
+            await self._incident(
+                conn,
+                "invoice_account_identity_conflict",
+                event=event,
+                dedupe_key=invoice_id,
+                invoice_id=invoice_id,
+                account_id=account["id"],
+            )
+            return ProcessResult("ignored", "invoice is owned by another account", account_id)
         closed = bool(state["fully_refunded"] or state["disputed"])
         old_balance = int(account["credits_balance"])
         credits = plan.monthly_credits
@@ -1118,7 +1127,8 @@ class EventProcessor:
             if bound is None:
                 raise RuntimeError("plan-change settlement Invoice binding changed")
             await conn.execute(
-                """update billing_incidents set resolved_at=now(),last_seen_at=now()
+                """update billing_incidents set resolved_at=clock_timestamp(),
+                       last_seen_at=clock_timestamp()
                      where account_id=$1 and resolved_at is null and (
                        (invoice_id=$2 and kind in ('plan_change_payment_failed',
                                                   'unbound_plan_change_payment_failed'))
@@ -1234,20 +1244,29 @@ class EventProcessor:
                 account_id=account["id"],
             )
             return ProcessResult("ignored", "invoice is owned by another account", account_id)
-        await conn.execute(
+        state = await conn.fetchrow(
             """insert into stripe_invoice_state(invoice_id,account_id,amount_total)
                  values($1,$2,$3) on conflict(invoice_id) do update set
                    account_id=coalesce(stripe_invoice_state.account_id,excluded.account_id),
                    amount_total=greatest(stripe_invoice_state.amount_total,excluded.amount_total),
-                   updated_at=now()""",
+                   updated_at=now()
+                 where stripe_invoice_state.account_id is null
+                    or stripe_invoice_state.account_id=excluded.account_id
+                 returning stripe_invoice_state.*""",
             invoice_id,
             account["id"],
             shape.amount_paid,
         )
-        state = await conn.fetchrow(
-            "select * from stripe_invoice_state where invoice_id=$1 for update", invoice_id
-        )
-        assert state is not None
+        if state is None:
+            await self._incident(
+                conn,
+                "invoice_account_identity_conflict",
+                event=event,
+                dedupe_key=invoice_id,
+                invoice_id=invoice_id,
+                account_id=account["id"],
+            )
+            return ProcessResult("ignored", "invoice is owned by another account", account_id)
         closed = bool(state["fully_refunded"] or state["disputed"])
         refund_units = (
             expected_delta
@@ -1418,7 +1437,8 @@ class EventProcessor:
             invoice_id,
         )
         await conn.execute(
-            """update billing_incidents set resolved_at=now(),last_seen_at=now()
+            """update billing_incidents set resolved_at=clock_timestamp(),
+                   last_seen_at=clock_timestamp()
                  where account_id=$1 and resolved_at is null and (
                    (invoice_id=$2 and kind in ('plan_change_payment_failed',
                                               'unbound_plan_change_payment_failed'))
@@ -1804,7 +1824,7 @@ class EventProcessor:
                 detail={"invoice_account_id": str(known_state["account_id"])},
             )
             return ProcessResult("ignored", "invoice belongs to a different account", account_id)
-        await conn.execute(
+        state = await conn.fetchrow(
             """insert into stripe_invoice_state
                    (invoice_id,account_id,amount_total,amount_refunded,fully_refunded,disputed)
                  values($1,$2,$3,$4,$5,$6) on conflict(invoice_id) do update set
@@ -1814,7 +1834,10 @@ class EventProcessor:
                                             excluded.amount_refunded),
                    fully_refunded=stripe_invoice_state.fully_refunded or excluded.fully_refunded,
                    disputed=stripe_invoice_state.disputed or excluded.disputed,
-                   updated_at=now()""",
+                   updated_at=now()
+                 where stripe_invoice_state.account_id is null
+                    or stripe_invoice_state.account_id=excluded.account_id
+                 returning stripe_invoice_state.*""",
             invoice_id,
             account["id"],
             amount,
@@ -1822,11 +1845,10 @@ class EventProcessor:
             full,
             dispute,
         )
-        state = await conn.fetchrow(
-            "select * from stripe_invoice_state where invoice_id=$1 for update", invoice_id
-        )
-        assert state is not None
-        if state["account_id"] is not None and state["account_id"] != account["id"]:
+        if state is None:
+            invoice_account_id = await conn.fetchval(
+                "select account_id from stripe_invoice_state where invoice_id=$1", invoice_id
+            )
             await self._incident(
                 conn,
                 "clawback_invoice_identity_conflict",
@@ -1834,7 +1856,7 @@ class EventProcessor:
                 dedupe_key=f"{account_id}:{invoice_id}",
                 invoice_id=invoice_id,
                 account_id=account["id"],
-                detail={"invoice_account_id": str(state["account_id"])},
+                detail={"invoice_account_id": str(invoice_account_id)},
             )
             return ProcessResult("ignored", "invoice belongs to a different account", account_id)
         closed = bool(state["fully_refunded"] or state["disputed"])
@@ -2215,13 +2237,30 @@ class EventProcessor:
                      where account_id=$1 and stripe_subscription_id=$2
                        and settlement_invoice_id=$3
                        and effective_mode='immediate'
-                       and status in ('applying','applied','requires_action')
+                       and status in ('applying','applied','requires_action','completed')
                      order by created_at desc limit 1 for update""",
                 account["id"],
                 subscription_id,
                 invoice_id,
             )
-            if pending is not None:
+            if pending is not None and pending["status"] == "completed":
+                grant_committed = await conn.fetchval(
+                    """select exists(
+                         select 1 from credit_ledger
+                          where account_id=$1 and stripe_invoice_id=$2
+                            and grant_slot=1
+                       )""",
+                    account["id"],
+                    invoice_id,
+                )
+                if grant_committed:
+                    # The matching paid Invoice already completed the business
+                    # effect. A late failure snapshot must converge to that fact
+                    # instead of opening an order-dependent incident.
+                    return ProcessResult(
+                        "replayed", "settlement invoice already granted", account_id
+                    )
+            if pending is not None and pending["status"] != "completed":
                 await conn.execute(
                     """update billing_plan_changes set status='requires_action',updated_at=now()
                          where id=$1""",
@@ -2447,6 +2486,18 @@ class EventProcessor:
             projected_created,
             projected_rank,
         )
+        if current_sub is None:
+            # A Subscription update may beat checkout.session.completed. Once the
+            # claim has authorized and bound that exact Subscription, consume it in
+            # the same account-locked transaction so a later terminal deletion
+            # cannot leave reusable authority for a delayed paid Invoice.
+            assert claim is not None
+            await conn.execute(
+                """delete from checkout_claims
+                     where account_id=$1 and claim_token=$2""",
+                account["id"],
+                claim["claim_token"],
+            )
         return ProcessResult("handled", account_id=account_id)
 
     async def _subscription_deleted(
@@ -2499,6 +2550,10 @@ class EventProcessor:
         old_balance = int(account["credits_balance"])
         new_epoch = int(account["grant_epoch"]) + 1
         projected_created, projected_rank = _projection_order(account, event)
+        # Account locking serializes this deletion with Checkout reservation. It
+        # removes only authority that existed before this terminal projection; a
+        # fresh Checkout created after commit remains valid.
+        await conn.execute("delete from checkout_claims where account_id=$1", account["id"])
         await conn.execute(
             """update billing_accounts set stripe_subscription_id=null,plan_key='free',
                  plan_interval=null,subscription_status='canceled',credits_balance=0,
@@ -2533,7 +2588,8 @@ class EventProcessor:
             incoming_sub,
         )
         await conn.execute(
-            """update billing_incidents set resolved_at=now(),last_seen_at=now()
+            """update billing_incidents set resolved_at=clock_timestamp(),
+                   last_seen_at=clock_timestamp()
                  where account_id=$1 and resolved_at is null
                    and kind in ('plan_change_payment_failed',
                                 'unbound_plan_change_payment_failed',

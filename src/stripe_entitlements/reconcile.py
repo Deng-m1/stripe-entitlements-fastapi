@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timedelta
 from typing import Any, Protocol
 
@@ -16,10 +17,24 @@ class ReconciliationGateway(Protocol):
 
 
 def _projection_committed(result: ProcessResult) -> bool:
-    return bool(
-        result.outcome in {"handled", "replayed"}
-        or (result.outcome == "duplicate" and result.reason == "event id already committed")
-    )
+    return result.outcome in {"handled", "replayed"}
+
+
+def _customer_fact_fingerprint(subscription: dict[str, Any]) -> str:
+    """Hash only the customer identity fact used by cancellation projection.
+
+    A remote correction from a missing/conflicting customer must produce a new
+    deterministic synthetic Event ID. The raw Stripe identity is deliberately not
+    copied into that ID or logs.
+    """
+
+    customer: object = subscription.get("customer")
+    if isinstance(customer, dict):
+        customer = customer.get("id")
+    if not isinstance(customer, (str, int, bool, type(None))):
+        customer = type(customer).__name__
+    payload = f"{type(customer).__name__}:{customer}".encode()
+    return hashlib.sha256(payload).hexdigest()[:16]
 
 
 class ReconciliationService:
@@ -117,14 +132,23 @@ class ReconciliationService:
         if account is None or not account["stripe_subscription_id"]:
             return ProcessResult("ignored", "account has no subscription", account_id)
         async with self.pool.acquire() as conn:
-            database_epoch = await conn.fetchval(
-                """update billing_accounts set last_reconciled_at=now()
+            attempt = await conn.fetchrow(
+                """update billing_accounts set last_reconciled_at=clock_timestamp()
                      where id=$1::uuid
-                     returning extract(epoch from now())::bigint""",
+                     returning last_reconciled_at as started_at,
+                               extract(epoch from last_reconciled_at)::bigint as database_epoch,
+                               txid_current() as transaction_id""",
                 account_id,
             )
-        assert database_epoch is not None
-        database_epoch = int(database_epoch)
+        assert attempt is not None
+        attempt_started_at = attempt["started_at"]
+        database_epoch = int(attempt["database_epoch"])
+        attempt_fingerprint = hashlib.sha256(
+            (
+                f"{attempt_started_at.isoformat(timespec='microseconds')}:"
+                f"{attempt['transaction_id']}"
+            ).encode()
+        ).hexdigest()[:16]
         expected_subscription = str(account["stripe_subscription_id"])
         expected_account = {
             "stripe_subscription_id": expected_subscription,
@@ -180,10 +204,12 @@ class ReconciliationService:
                     "ignored", "Stripe returned an invalid cancellation timestamp", account_id
                 )
             deleted_created = canceled_at if canceled_at is not None else database_epoch
+            customer_fingerprint = _customer_fact_fingerprint(subscription)
             event = {
                 "id": (
                     f"reconcile:{expected_subscription}:deleted:{deleted_created}:"
-                    f"{expected_account['event_created']}:{expected_account['event_rank']}"
+                    f"{expected_account['event_created']}:{expected_account['event_rank']}:"
+                    f"{attempt_fingerprint}:{customer_fingerprint}"
                 ),
                 "object": "event",
                 "type": "customer.subscription.deleted",
@@ -207,13 +233,14 @@ class ReconciliationService:
                         "id": (
                             f"reconcile:{expected_subscription}:deleted:{deleted_created}:"
                             f"{refreshed_snapshot['event_created']}:"
-                            f"{refreshed_snapshot['event_rank']}"
+                            f"{refreshed_snapshot['event_rank']}:{attempt_fingerprint}:"
+                            f"{customer_fingerprint}"
                         ),
                         "_expected_account": refreshed_snapshot,
                     }
                     result = await self._process(event, account_id, expected_subscription)
             if _projection_committed(result):
-                await self._resolve_incidents(account_id)
+                await self._resolve_incidents(account_id, attempt_started_at)
             else:
                 await self._incident(
                     account_id,
@@ -264,7 +291,7 @@ class ReconciliationService:
                 ),
             )
             return status_result
-        await self._resolve_status_incidents(account_id)
+        await self._resolve_status_incidents(account_id, attempt_started_at)
 
         if status in {"active", "trialing"}:
             refreshed_snapshot = await self._account_projection_snapshot(
@@ -313,7 +340,7 @@ class ReconciliationService:
                     account_id, expected_subscription, pending
                 )
             elif _projection_committed(result):
-                await self._resolve_incidents(account_id)
+                await self._resolve_incidents(account_id, attempt_started_at)
             else:
                 await self._incident(
                     account_id,
@@ -330,7 +357,31 @@ class ReconciliationService:
         subscription_id: str,
     ) -> ProcessResult:
         try:
-            return await self.processor.process(event)
+            result = await self.processor.process(event)
+            if not (
+                result.outcome == "duplicate" and result.reason == "event id already committed"
+            ):
+                return result
+            event_id = event.get("id")
+            async with self.pool.acquire() as conn:
+                committed = await conn.fetchrow(
+                    "select outcome,reason from stripe_webhook_events where id=$1",
+                    event_id,
+                )
+            if committed is None:
+                raise RuntimeError("committed reconciliation Event audit row disappeared")
+            if committed["outcome"] in {"handled", "replayed"}:
+                return ProcessResult(
+                    "replayed",
+                    "synthetic Event already committed a projection",
+                    account_id,
+                )
+            prior_reason = str(committed["reason"] or committed["outcome"] or "incomplete")
+            return ProcessResult(
+                "ignored",
+                prior_reason,
+                account_id,
+            )
         except Exception as exc:
             await self._incident(
                 account_id,
@@ -363,7 +414,7 @@ class ReconciliationService:
                      on conflict(kind,dedupe_key) where resolved_at is null do update set
                        invoice_id=coalesce(excluded.invoice_id,billing_incidents.invoice_id),
                        detail=excluded.detail,seen_count=billing_incidents.seen_count+1,
-                       last_seen_at=now()""",
+                       last_seen_at=clock_timestamp()""",
                 f"{account_id}:{change['id']}",
                 account_id,
                 change["settlement_invoice_id"],
@@ -383,28 +434,34 @@ class ReconciliationService:
                      values('reconciliation_failed',$1,$2::uuid,$3::jsonb)
                      on conflict(kind,dedupe_key) where resolved_at is null do update set
                        detail=excluded.detail,seen_count=billing_incidents.seen_count+1,
-                       last_seen_at=now()""",
+                       last_seen_at=clock_timestamp()""",
                 f"{account_id}:{subscription_id}",
                 account_id,
                 {"reason": reason},
             )
 
-    async def _resolve_status_incidents(self, account_id: str) -> None:
+    async def _resolve_status_incidents(
+        self, account_id: str, attempt_started_at: datetime
+    ) -> None:
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """update billing_incidents set resolved_at=now()
                      where account_id=$1::uuid and resolved_at is null
+                       and last_seen_at < $2
                        and kind in ('reconciliation_failed','event_order_tie')""",
                 account_id,
+                attempt_started_at,
             )
 
-    async def _resolve_incidents(self, account_id: str) -> None:
+    async def _resolve_incidents(self, account_id: str, attempt_started_at: datetime) -> None:
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """update billing_incidents set resolved_at=now()
                      where account_id=$1::uuid and resolved_at is null
+                       and last_seen_at < $2
                        and kind in ('stale_paid_event','annual_plan_mismatch',
                                     'reconciliation_failed','event_order_tie',
                                     'plan_change_recovery_required')""",
                 account_id,
+                attempt_started_at,
             )

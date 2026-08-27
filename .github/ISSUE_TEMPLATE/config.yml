@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/FromCSUZhou/stripe-entitlements-fastapi/security/advisories/new
+    url: https://github.com/Deng-m1/stripe-entitlements-fastapi/security/advisories/new
     about: Report vulnerabilities privately

@@ -56,6 +56,7 @@ jobs:
               "stripe_entitlements/migrations/003_transition_policies.sql",
               "stripe_entitlements/migrations/004_event_audit_hardening.sql",
               "stripe_entitlements/migrations/005_simplify_event_audit.sql",
+              "stripe_entitlements/migrations/006_invoice_ownership_and_incident_causality.sql",
           }
           missing = required - names
           assert not missing, sorted(missing)
@@ -85,6 +86,7 @@ jobs:
               "003_transition_policies.sql",
               "004_event_audit_hardening.sql",
               "005_simplify_event_audit.sql",
+              "006_invoice_ownership_and_incident_causality.sql",
           ]
           assert [plan.key for plan in PlanCatalog.from_toml(catalog_path).ordered()] == [
               "starter",
@@ -93,6 +95,44 @@ jobs:
           ]
           PY
           )
+
+          wheel_pg_container="stripe-wheel-pg-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}"
+          cleanup_wheel_pg() {
+            docker rm -f "$wheel_pg_container" >/dev/null 2>&1 || true
+          }
+          trap cleanup_wheel_pg EXIT
+          cleanup_wheel_pg
+          docker run -d \
+            --name "$wheel_pg_container" \
+            --tmpfs /var/lib/postgresql/data:rw,nosuid,nodev,size=256m \
+            -e POSTGRES_PASSWORD=wheel-ci-only \
+            -e POSTGRES_DB=wheel_ci \
+            -p 127.0.0.1::5432 \
+            postgres:17-alpine
+          for attempt in $(seq 1 60); do
+            if docker exec "$wheel_pg_container" \
+              pg_isready -U postgres -d wheel_ci >/dev/null 2>&1; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              docker logs "$wheel_pg_container"
+              exit 1
+            fi
+            sleep 1
+          done
+          wheel_pg_port="$(docker port "$wheel_pg_container" 5432/tcp | sed 's/.*://')"
+          DATABASE_URL="postgresql://postgres:wheel-ci-only@127.0.0.1:${wheel_pg_port}/wheel_ci" \
+          STRIPE_SECRET_KEY=sk_test_ci_placeholder \
+          STRIPE_WEBHOOK_SECRET=whsec_ci_placeholder \
+          STRIPE_WEBHOOK_API_VERSION=2026-06-24.dahlia \
+            "$test_root/venv/bin/stripe-entitlements" migrate
+          applied_migrations="$(docker exec "$wheel_pg_container" \
+            psql -U postgres -d wheel_ci -Atqc \
+            "select string_agg(filename, ',' order by filename) from schema_migrations")"
+          test "$applied_migrations" = \
+            "001_schema.sql,002_plan_transitions.sql,003_transition_policies.sql,004_event_audit_hardening.sql,005_simplify_event_audit.sql,006_invoice_ownership_and_incident_causality.sql"
+          cleanup_wheel_pg
+          trap - EXIT
       - name: Check whitespace
         run: git diff --check
 
@@ -107,11 +147,90 @@ jobs:
           docker build \
             --build-arg PYTHON_IMAGE=public.ecr.aws/docker/library/python:3.12-slim \
             --tag stripe-entitlements-ci .
-      - name: Verify non-root read-only runtime
+      - name: Verify migrations and non-root read-only runtime
         run: |
+          set -euo pipefail
           test "$(docker image inspect stripe-entitlements-ci --format '{{.Config.User}}')" = "10001:10001"
           test "$(docker image inspect stripe-entitlements-ci --format '{{json .Config.Healthcheck.Test}}')" != "null"
-          docker run --rm --read-only stripe-entitlements-ci stripe-entitlements --help
+          runtime_suffix="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}"
+          runtime_network="stripe-entitlements-ci-${runtime_suffix}"
+          runtime_pg="stripe-entitlements-pg-${runtime_suffix}"
+          runtime_app="stripe-entitlements-app-${runtime_suffix}"
+          cleanup_runtime() {
+            docker rm -f "$runtime_app" "$runtime_pg" >/dev/null 2>&1 || true
+            docker network rm "$runtime_network" >/dev/null 2>&1 || true
+          }
+          trap cleanup_runtime EXIT
+          cleanup_runtime
+          docker network create --internal "$runtime_network"
+          docker run -d \
+            --name "$runtime_pg" \
+            --network "$runtime_network" \
+            --tmpfs /var/lib/postgresql/data:rw,nosuid,nodev,size=256m \
+            -e POSTGRES_PASSWORD=container-ci-only \
+            -e POSTGRES_DB=container_ci \
+            postgres:17-alpine
+          for attempt in $(seq 1 60); do
+            if docker exec "$runtime_pg" \
+              pg_isready -U postgres -d container_ci >/dev/null 2>&1; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              docker logs "$runtime_pg"
+              exit 1
+            fi
+            sleep 1
+          done
+
+          runtime_database_url="postgresql://postgres:container-ci-only@${runtime_pg}:5432/container_ci"
+          docker run --rm \
+            --network "$runtime_network" \
+            --user 10001:10001 \
+            -e DATABASE_URL="$runtime_database_url" \
+            -e STRIPE_SECRET_KEY=sk_test_ci_placeholder \
+            -e STRIPE_WEBHOOK_SECRET=whsec_ci_placeholder \
+            -e STRIPE_WEBHOOK_API_VERSION=2026-06-24.dahlia \
+            stripe-entitlements-ci stripe-entitlements migrate
+          applied_migrations="$(docker exec "$runtime_pg" \
+            psql -U postgres -d container_ci -Atqc \
+            "select string_agg(filename, ',' order by filename) from schema_migrations")"
+          test "$applied_migrations" = \
+            "001_schema.sql,002_plan_transitions.sql,003_transition_policies.sql,004_event_audit_hardening.sql,005_simplify_event_audit.sql,006_invoice_ownership_and_incident_causality.sql"
+
+          docker run -d \
+            --name "$runtime_app" \
+            --network "$runtime_network" \
+            --user 10001:10001 \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            -e DATABASE_URL="$runtime_database_url" \
+            -e STRIPE_SECRET_KEY=sk_test_ci_placeholder \
+            -e STRIPE_WEBHOOK_SECRET=whsec_ci_placeholder \
+            -e STRIPE_WEBHOOK_API_VERSION=2026-06-24.dahlia \
+            stripe-entitlements-ci
+          runtime_ip="$(docker inspect "$runtime_app" \
+            --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')"
+          test -n "$runtime_ip"
+          health_json=""
+          for attempt in $(seq 1 60); do
+            if health_json="$(curl --noproxy '*' --fail --silent --show-error \
+              "http://${runtime_ip}:8000/health" 2>/dev/null)"; then
+              break
+            fi
+            if [ "$(docker inspect "$runtime_app" --format '{{.State.Running}}')" != "true" ]; then
+              docker logs "$runtime_app"
+              exit 1
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              docker logs "$runtime_app"
+              exit 1
+            fi
+            sleep 1
+          done
+          python3 -c \
+            'import json,sys; value=json.loads(sys.argv[1]); assert value["ok"] is True and value["database"] is True, value' \
+            "$health_json"
 
   web:
     name: Web

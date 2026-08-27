@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncpg
@@ -77,7 +77,7 @@ class FakeGateway:
     [
         (ProcessResult("handled"), True),
         (ProcessResult("replayed"), True),
-        (ProcessResult("duplicate", "event id already committed"), True),
+        (ProcessResult("duplicate", "event id already committed"), False),
         (ProcessResult("duplicate", "event id was reused with a conflicting payload"), False),
         (ProcessResult("ignored", "remote CAS lost"), False),
     ],
@@ -227,6 +227,168 @@ async def test_reconcile_recovers_lost_paid_event_even_after_newer_local_failure
     assert status == "active"
 
 
+@pytest.mark.parametrize(
+    ("inject_on", "new_kind"),
+    [
+        ("customer.subscription.updated", "event_order_tie"),
+        ("invoice.paid", "annual_plan_mismatch"),
+    ],
+)
+async def test_reconcile_does_not_resolve_incident_created_after_attempt_started(
+    inject_on: str,
+    new_kind: str,
+    processor: EventProcessor,
+    pool: asyncpg.Pool,
+    make_account,
+) -> None:
+    account_id = await make_account()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """insert into billing_incidents(kind,dedupe_key,account_id,detail)
+                 values('reconciliation_failed',$1,$2::uuid,'{}'::jsonb)""",
+            f"old:{account_id}",
+            account_id,
+        )
+
+    class InjectingProcessor:
+        injected = False
+
+        async def process(self, event: dict[str, Any]) -> ProcessResult:
+            result = await processor.process(event)
+            if not self.injected and event["type"] == inject_on:
+                self.injected = True
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        """insert into billing_incidents(kind,dedupe_key,account_id,detail)
+                             values($1,$2,$3::uuid,'{}'::jsonb)""",
+                        new_kind,
+                        f"new:{account_id}:{new_kind}",
+                        account_id,
+                    )
+            return result
+
+    service = ReconciliationService(
+        pool,
+        InjectingProcessor(),  # type: ignore[arg-type]
+        FakeGateway(account_id, invoice_id=f"in_causal_{new_kind}"),
+    )
+    result = await service.reconcile_account(account_id)
+
+    assert result.outcome == "handled"
+    async with pool.acquire() as conn:
+        incidents = await conn.fetch(
+            """select kind,dedupe_key,resolved_at from billing_incidents
+                 where account_id=$1::uuid order by id""",
+            account_id,
+        )
+    by_dedupe = {row["dedupe_key"]: row for row in incidents}
+    assert by_dedupe[f"old:{account_id}"]["resolved_at"] is not None
+    assert by_dedupe[f"new:{account_id}:{new_kind}"]["resolved_at"] is None
+
+
+@pytest.mark.parametrize("preexisting", [False, True])
+async def test_reconcile_causal_barrier_uses_incident_write_time_not_transaction_start(
+    preexisting: bool,
+    processor: EventProcessor,
+    pool: asyncpg.Pool,
+    make_account,
+) -> None:
+    account_id = await make_account()
+    dedupe_key = f"long-transaction:{account_id}:{preexisting}"
+    if preexisting:
+        async with pool.acquire() as conn:
+            await processor._incident(
+                conn,
+                "event_order_tie",
+                event={"id": "evt_old_incident_observation"},
+                dedupe_key=dedupe_key,
+                account_id=account_id,
+            )
+
+    attempt_recorded = asyncio.Event()
+    incident_committed = asyncio.Event()
+
+    class BarrierGateway(FakeGateway):
+        async def subscription_object(self, subscription_id: str) -> dict[str, Any]:
+            attempt_recorded.set()
+            await incident_committed.wait()
+            return await super().subscription_object(subscription_id)
+
+    service = ReconciliationService(
+        pool,
+        processor,
+        BarrierGateway(account_id, invoice_id=f"in_long_transaction_{preexisting}"),
+    )
+    async with pool.acquire() as incident_conn:
+        transaction = incident_conn.transaction()
+        await transaction.start()
+        transaction_started_at = await incident_conn.fetchval("select now()")
+        reconcile_task = asyncio.create_task(service.reconcile_account(account_id))
+        try:
+            await asyncio.wait_for(attempt_recorded.wait(), timeout=5)
+            await processor._incident(
+                incident_conn,
+                "event_order_tie",
+                event={"id": "evt_late_incident_observation"},
+                dedupe_key=dedupe_key,
+                account_id=account_id,
+            )
+            await transaction.commit()
+            incident_committed.set()
+            result = await asyncio.wait_for(reconcile_task, timeout=5)
+        finally:
+            incident_committed.set()
+            if not reconcile_task.done():
+                reconcile_task.cancel()
+                await asyncio.gather(reconcile_task, return_exceptions=True)
+
+    assert result.outcome == "handled"
+    async with pool.acquire() as conn:
+        observation = await conn.fetchrow(
+            """select a.last_reconciled_at,i.last_seen_at,i.resolved_at,i.seen_count
+                 from billing_accounts a
+                 join billing_incidents i on i.account_id=a.id
+                where a.id=$1::uuid and i.kind='event_order_tie' and i.dedupe_key=$2""",
+            account_id,
+            dedupe_key,
+        )
+    assert observation is not None
+    assert transaction_started_at < observation["last_reconciled_at"]
+    assert observation["last_seen_at"] > observation["last_reconciled_at"]
+    assert observation["resolved_at"] is None
+    assert observation["seen_count"] == (2 if preexisting else 1)
+
+
+async def test_reconcile_causal_cutoff_keeps_equal_timestamp_fail_closed(
+    processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account()
+    async with pool.acquire() as conn:
+        cutoff = await conn.fetchval("select clock_timestamp()")
+        await conn.executemany(
+            """insert into billing_incidents(
+                   kind,dedupe_key,account_id,detail,last_seen_at)
+                 values('event_order_tie',$1,$2::uuid,'{}'::jsonb,$3::timestamptz)""",
+            [
+                (f"older:{account_id}", account_id, cutoff - timedelta(microseconds=1)),
+                (f"equal:{account_id}", account_id, cutoff),
+            ],
+        )
+
+    service = ReconciliationService(pool, processor, FakeGateway(account_id))
+    await service._resolve_status_incidents(account_id, cutoff)
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """select dedupe_key,resolved_at from billing_incidents
+                 where account_id=$1::uuid order by dedupe_key""",
+            account_id,
+        )
+    by_dedupe = {row["dedupe_key"]: row for row in rows}
+    assert by_dedupe[f"older:{account_id}"]["resolved_at"] is not None
+    assert by_dedupe[f"equal:{account_id}"]["resolved_at"] is None
+
+
 async def test_reconcile_status_projection_uses_database_clock(
     processor: EventProcessor, pool: asyncpg.Pool, make_account
 ) -> None:
@@ -333,6 +495,122 @@ async def test_reconcile_remote_cancellation_clears_local_entitlement(
         )
     assert row is not None and tuple(row) == ("free", "canceled", 0, 1_800_000_100, 40)
     assert incident is not None and incident["resolved_at"] is not None
+
+
+async def test_duplicate_of_ignored_synthetic_event_is_not_projection_success(
+    processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account()
+    await processor.process(paid_invoice(account_id, event_id="evt_before_ignored_duplicate"))
+    async with pool.acquire() as conn:
+        account = await conn.fetchrow(
+            "select * from billing_accounts where id=$1::uuid", account_id
+        )
+    assert account is not None
+    expected_account = {
+        "stripe_subscription_id": "sub_test",
+        "event_created": int(account["event_created"]),
+        "event_rank": int(account["event_rank"]),
+    }
+    malformed = subscription_event(
+        account_id,
+        "customer.subscription.deleted",
+        status="canceled",
+        event_id="reconcile:ignored-cancellation",
+        created=1_800_000_100,
+    )
+    malformed["_remote_verified"] = True
+    malformed["_expected_account"] = expected_account
+    malformed["data"]["object"]["customer"] = None
+    service = ReconciliationService(pool, processor, FakeGateway(account_id, status="canceled"))
+
+    first = await service._process(malformed, account_id, "sub_test")
+    duplicate = await service._process(malformed, account_id, "sub_test")
+
+    assert first.outcome == "ignored"
+    assert duplicate.outcome == "ignored"
+    assert duplicate.reason == first.reason
+    async with pool.acquire() as conn:
+        unchanged = await conn.fetchrow(
+            "select plan_key,subscription_status from billing_accounts where id=$1::uuid",
+            account_id,
+        )
+    assert unchanged is not None and tuple(unchanged) == ("starter", "active")
+
+
+async def test_reconcile_retries_corrected_cancellation_after_ignored_delivery(
+    processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account()
+    await processor.process(paid_invoice(account_id, event_id="evt_before_corrected_cancel"))
+
+    class CorrectableCancellationGateway(FakeGateway):
+        customer: str | None = None
+
+        async def subscription_object(self, subscription_id: str) -> dict[str, Any]:
+            payload = await super().subscription_object(subscription_id)
+            payload["customer"] = self.customer
+            return payload
+
+    gateway = CorrectableCancellationGateway(account_id, status="canceled")
+    service = ReconciliationService(pool, processor, gateway)
+    first = await service.reconcile_account(account_id)
+    gateway.customer = "cus_test"
+    second = await service.reconcile_account(account_id)
+
+    assert first.outcome == "ignored"
+    assert second.outcome == "handled"
+    async with pool.acquire() as conn:
+        account = await conn.fetchrow(
+            """select stripe_subscription_id,plan_key,subscription_status,credits_balance
+                 from billing_accounts where id=$1::uuid""",
+            account_id,
+        )
+        deliveries = await conn.fetch(
+            """select outcome from stripe_webhook_events
+                 where id like 'reconcile:%:deleted:%' order by received_at,id"""
+        )
+        reconciliation_incident = await conn.fetchrow(
+            """select resolved_at from billing_incidents
+                 where kind='reconciliation_failed'"""
+        )
+    assert account is not None and tuple(account) == (None, "free", "canceled", 0)
+    assert [row["outcome"] for row in deliveries] == ["ignored", "handled"]
+    assert reconciliation_incident is not None
+    assert reconciliation_incident["resolved_at"] is not None
+
+
+async def test_concurrent_identical_ignored_cancellations_use_distinct_attempt_identities(
+    processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account()
+    await processor.process(paid_invoice(account_id, event_id="evt_before_attempt_identity"))
+
+    class MissingCustomerGateway(FakeGateway):
+        async def subscription_object(self, subscription_id: str) -> dict[str, Any]:
+            payload = await super().subscription_object(subscription_id)
+            payload["customer"] = None
+            return payload
+
+    service = ReconciliationService(
+        pool,
+        processor,
+        MissingCustomerGateway(account_id, status="canceled"),
+    )
+    results = await asyncio.gather(
+        service.reconcile_account(account_id),
+        service.reconcile_account(account_id),
+    )
+
+    assert [result.outcome for result in results] == ["ignored", "ignored"]
+    async with pool.acquire() as conn:
+        deliveries = await conn.fetch(
+            """select id,outcome from stripe_webhook_events
+                 where id like 'reconcile:%:deleted:%' order by id"""
+        )
+    assert len(deliveries) == 2
+    assert len({row["id"] for row in deliveries}) == 2
+    assert {row["outcome"] for row in deliveries} == {"ignored"}
 
 
 async def test_reconcile_cancellation_cas_race_gets_a_new_synthetic_event_id(
@@ -469,8 +747,9 @@ async def test_many_reconcilers_share_business_idempotency(
         pool, processor, FakeGateway(account_id, invoice_id="in_reconcile_race")
     )
     results = await asyncio.gather(*(service.reconcile_account(account_id) for _ in range(20)))
-    assert sum(result.outcome == "handled" for result in results) == 1
-    assert sum(result.outcome in {"duplicate", "replayed"} for result in results) == 19
+    observed = [(result.outcome, result.reason) for result in results]
+    assert sum(result.outcome == "handled" for result in results) == 1, observed
+    assert sum(result.outcome in {"duplicate", "replayed"} for result in results) == 19, observed
     async with pool.acquire() as conn:
         assert (
             await conn.fetchval(
