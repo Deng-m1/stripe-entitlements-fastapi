@@ -1,29 +1,34 @@
 import { ImageResponse } from "next/og";
 
-const CHAOS_DOTS = ["#2e7d5b", "#e4b65c", "#f26d5f"];
-
+/**
+ * Paper-theme social card (brief §4 tokens): warm off-white canvas, ink
+ * typography, ONE orange accent, and the event-pill vocabulary as the
+ * bottom artifact row.
+ */
 export function createSocialImage(): ImageResponse {
   return new ImageResponse(
     <div
       style={{
         alignItems: "flex-start",
-        background: "#0b100e",
-        color: "#ecf4ee",
+        background: "#faf6ef",
+        backgroundImage: "radial-gradient(#d8d2c6 2px, transparent 2.5px)",
+        backgroundSize: "38px 38px",
+        color: "#17201c",
         display: "flex",
         flexDirection: "column",
         height: "100%",
         justifyContent: "space-between",
-        padding: "72px 82px",
+        padding: "70px 82px",
         width: "100%",
       }}
     >
       <div
         style={{
-          color: "#9dafa4",
+          color: "#6b7570",
           display: "flex",
-          fontSize: 26,
+          fontSize: 25,
           fontWeight: 700,
-          letterSpacing: "0.1em",
+          letterSpacing: "0.14em",
           textTransform: "uppercase",
         }}
       >
@@ -33,83 +38,60 @@ export function createSocialImage(): ImageResponse {
         <div
           style={{
             display: "flex",
-            fontSize: 66,
+            flexWrap: "wrap",
+            fontSize: 68,
             fontWeight: 800,
             letterSpacing: "-0.04em",
-            lineHeight: 1.04,
+            lineHeight: 1.06,
             maxWidth: 1000,
           }}
         >
-          Billing events are chaos. Your entitlements aren’t.
+          Billing events are chaos. Your entitlements{" "}
+          <span style={{ color: "#e35a1f", marginLeft: 16 }}>aren’t.</span>
         </div>
         <div
           style={{
-            color: "#9dafa4",
+            color: "#6b7570",
             display: "flex",
             fontSize: 30,
             lineHeight: 1.4,
-            maxWidth: 1000,
+            maxWidth: 980,
           }}
         >
           A Stripe billing reference for FastAPI, PostgreSQL, and Next.js — real
           webhook and Test Clock gates
         </div>
-        <div style={{ alignItems: "center", display: "flex", gap: 14 }}>
-          {CHAOS_DOTS.map((color) => (
-            <div
-              key={color}
-              style={{
-                background: color,
-                borderRadius: 999,
-                display: "flex",
-                height: 12,
-                width: 12,
-              }}
-            />
-          ))}
-          <div
-            style={{
-              background: "#2f4237",
-              display: "flex",
-              height: 40,
-              margin: "0 14px",
-              width: 2,
-            }}
-          />
-          {[0, 1, 2, 3, 4, 5].map((index) => (
-            <div
-              key={index}
-              style={{
-                background: "#56e39f",
-                borderRadius: 999,
-                display: "flex",
-                height: 12,
-                width: 12,
-              }}
-            />
-          ))}
-        </div>
       </div>
-      <div style={{ display: "flex", gap: 16 }}>
+      <div style={{ alignItems: "center", display: "flex", gap: 16 }}>
         {[
-          "Duplicate-safe events",
-          "Monthly + annual plans",
-          "SCA + renewal tests",
-        ].map((label) => (
+          { label: "invoice.paid", background: "#1e3a2f", color: "#dcefe2" },
+          {
+            label: "entitlement.granted",
+            background: "#cfe8d8",
+            color: "#1e3a2f",
+          },
+          { label: "charge.refunded", background: "#f0e2c8", color: "#8a3b2a" },
+          {
+            label: "dispute.created",
+            background: "#ffffff",
+            color: "#b3261c",
+            border: "1px solid #e3ddd2",
+          },
+        ].map((pill) => (
           <div
-            key={label}
+            key={pill.label}
             style={{
-              background: "#18231f",
-              border: "1px solid #2f4237",
+              background: pill.background,
+              border: pill.border ?? "1px solid transparent",
               borderRadius: 999,
-              color: "#ecf4ee",
+              color: pill.color,
               display: "flex",
               fontSize: 22,
-              fontWeight: 650,
-              padding: "13px 21px",
+              fontWeight: 600,
+              padding: "13px 24px",
             }}
           >
-            {label}
+            {pill.label}
           </div>
         ))}
       </div>
