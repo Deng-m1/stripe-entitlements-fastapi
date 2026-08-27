@@ -44,7 +44,7 @@ const AREA_PATH = `${LINE_PATH} L320,100 L0,100 Z`;
 export function SettlementChart() {
   return (
     <figure
-      aria-label="Replay gate: 12,406 events replayed with zero double-grants"
+      aria-label="PostgreSQL race gates cover replay, reordering, and duplicate grants"
       className="settlement-chart"
     >
       <svg aria-hidden="true" preserveAspectRatio="none" viewBox="0 0 320 100">
@@ -60,7 +60,7 @@ export function SettlementChart() {
         />
       </svg>
       <figcaption className="chart-label">
-        48h replay · 12,406 events · 0 double-grants
+        PostgreSQL replay · concurrent races · duplicate grants blocked
       </figcaption>
     </figure>
   );

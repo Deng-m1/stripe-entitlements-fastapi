@@ -8,7 +8,7 @@
 export function HeroTerminal() {
   return (
     <figure
-      aria-label="Stripe CLI transcript: duplicate and out-of-order webhook deliveries settling exactly once"
+      aria-label="Stripe CLI transcript: duplicate and out-of-order webhook deliveries producing effectively-once PostgreSQL effects"
       className="hero-terminal"
     >
       <figcaption className="terminal-chrome">

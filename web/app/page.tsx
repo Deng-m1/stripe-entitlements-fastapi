@@ -54,7 +54,7 @@ const pipelineStages = [
   },
   {
     title: "Claim the event in the inbox",
-    body: "A PostgreSQL event inbox claims each Stripe event exactly once, so duplicate and out-of-order deliveries cannot double-apply.",
+    body: "A PostgreSQL event inbox claims one Stripe Event ID in the same transaction as its effects, so redeliveries cannot double-apply.",
   },
   {
     title: "Apply effects in one transaction",
@@ -80,7 +80,7 @@ const testGates = [
   {
     key: "sca",
     command: "3-D Secure challenge",
-    note: "SCA recovery completes and settles exactly once",
+    note: "SCA recovery completes before webhook-authoritative settlement",
   },
   {
     key: "webhook",
@@ -90,7 +90,7 @@ const testGates = [
   {
     key: "test-clock",
     command: "Test Clock renewal",
-    note: "cross-period grants advance exactly once",
+    note: "cross-period grants advance without duplicate slots",
   },
   {
     key: "projection",
@@ -250,8 +250,8 @@ export default function HomePage() {
             </h2>
             <p className="section-support">
               Stripe retries, reorders, and duplicates deliveries. The
-              reference claims each one exactly once in a PostgreSQL event
-              inbox and projects entitlements your product can trust.
+              reference binds each Event ID to its PostgreSQL effects and
+              projects entitlements your product can trust.
             </p>
             <ol aria-label="The four pipeline stages" className="ledger-steps">
               {pipelineStages.map((stage, index) => (
@@ -330,8 +330,8 @@ export default function HomePage() {
             <p className="eyebrow">Proof, not promises</p>
             <h2 id="gates-heading">Proven against real Stripe test mode.</h2>
             <p>
-              Every advertised behavior has an automated gate that runs against
-              the real Stripe test-mode API — not a mock of it.
+              The payment lifecycle has automated gates against real Stripe
+              test mode, with PostgreSQL race tests for delivery permutations.
             </p>
           </div>
           <div className="proof-grid">
@@ -353,23 +353,23 @@ export default function HomePage() {
                 <p className="proof-popover-title">Settlement report</p>
                 <dl>
                   <div>
-                    <dt>events replayed</dt>
-                    <dd>12,406</dd>
+                    <dt>race gates</dt>
+                    <dd>passed</dd>
                   </div>
                   <div>
-                    <dt>duplicates absorbed</dt>
-                    <dd>1,183</dd>
+                    <dt>redeliveries</dt>
+                    <dd>absorbed</dd>
                   </div>
                   <div>
-                    <dt>double-grants</dt>
-                    <dd>0</dd>
+                    <dt>business grants</dt>
+                    <dd>deduplicated</dd>
                   </div>
                   <div>
                     <dt>entitlements</dt>
                     <dd>consistent</dd>
                   </div>
                 </dl>
-                <span className="ok-chip">✓ Balanced — no double-grants</span>
+                <span className="ok-chip">✓ Effects remain consistent</span>
               </div>
             </div>
             <div className="proof-gates">

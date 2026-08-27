@@ -85,6 +85,11 @@ describe("public SEO surface", () => {
     expect(
       screen.getByText(/Does it support Stripe prorated subscription upgrades/i),
     ).toBeInTheDocument();
+    // The repository guarantees effectively-once PostgreSQL effects, not
+    // impossible end-to-end exactly-once delivery. Marketing content must also
+    // not invent event-volume evidence that no reproducible test produces.
+    expect(container.innerHTML).not.toMatch(/exactly.once|12,406|1,183/i);
+    expect(container.innerHTML).toMatch(/effectively-once PostgreSQL effects/i);
 
     const script = container.querySelector('script[type="application/ld+json"]');
     expect(script).not.toBeNull();
