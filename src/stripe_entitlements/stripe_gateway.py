@@ -557,6 +557,12 @@ class StripeGateway:
             expected_lookup_key=lookup_key,
         ):
             raise CheckoutCreationRejected(f"Stripe price {lookup_key!r} drifted from the catalog")
+        # Invariant: never add allow_promotion_codes (or any other discount surface) to
+        # these params. has_unsupported_invoice_adjustments fails closed on every
+        # discounted Invoice, so a redeemed promotion code would mean Stripe collected
+        # a discounted payment while this service grants nothing and opens an incident.
+        # Promotion-code support is reserved and must not be enabled standalone; it
+        # requires an explicit coupon funding policy with its own invoice acceptance.
         params: dict[str, Any] = {
             "mode": "subscription",
             "client_reference_id": account_id,

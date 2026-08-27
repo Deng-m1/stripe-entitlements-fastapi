@@ -27,6 +27,7 @@ export function SuccessScreen({
   const [attempt, setAttempt] = useState(0);
   const [account, setAccount] = useState<AccountResponse | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
+  const [pollRun, setPollRun] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -104,7 +105,14 @@ export function SuccessScreen({
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [api, expectedInterval, expectedPlan, maxAttempts, pollIntervalMs]);
+  }, [api, expectedInterval, expectedPlan, maxAttempts, pollIntervalMs, pollRun]);
+
+  function restartPolling() {
+    setState("validating");
+    setLastError(null);
+    setAttempt(0);
+    setPollRun((run) => run + 1);
+  }
 
   const heading =
     state === "confirmed"
@@ -121,11 +129,26 @@ export function SuccessScreen({
       aria-live="polite"
       className="success-card"
     >
+      <style>{successLocalStyles}</style>
       <div className={`success-mark ${state}`} aria-hidden="true">
-        {state === "confirmed" ? "✓" : "↻"}
+        {state === "confirmed" ? "✓" : state === "timed_out" ? "!" : "↻"}
       </div>
       <p className="eyebrow">Checkout returned</p>
       <h1>{heading}</h1>
+      {state !== "invalid" ? (
+        <ol className="success-steps">
+          <li className="done">Returned from checkout</li>
+          <li
+            aria-current={state === "confirmed" ? undefined : "step"}
+            className={state === "confirmed" ? "done" : "active"}
+          >
+            Webhook projection applied
+          </li>
+          <li className={state === "confirmed" ? "done" : ""}>
+            Entitlements enforceable
+          </li>
+        </ol>
+      ) : null}
       {state === "confirmed" ? (
         <p>
           The account API now reports {account?.plan_key}/{account?.plan_interval} as
@@ -136,14 +159,48 @@ export function SuccessScreen({
           The return URL is missing a valid catalog plan and interval. Review the
           account state directly; this page will not infer a successful purchase.
         </p>
+      ) : state === "timed_out" ? (
+        <p>
+          {maxAttempts} polls finished without a webhook-projected{" "}
+          {expectedPlan}/{expectedInterval} account. No entitlement is assumed from
+          the redirect; Stripe may still be processing. Checking again is safe and
+          repeatable.
+        </p>
       ) : (
         <p>
           Poll {attempt} of {maxAttempts}. Entitlements are granted only after the
           backend processes Stripe state; refreshing this page is safe.
         </p>
       )}
+      {state === "confirmed" && account ? (
+        <dl className="success-facts">
+          <div>
+            <dt>Plan</dt>
+            <dd>
+              {account.plan_key} · {account.plan_interval}
+            </dd>
+          </div>
+          <div>
+            <dt>Subscription</dt>
+            <dd>{account.subscription_status}</dd>
+          </div>
+          <div>
+            <dt>Credit balance</dt>
+            <dd>{account.credits.balance.toLocaleString("en-US")} credits</dd>
+          </div>
+        </dl>
+      ) : null}
       {lastError ? <p className="inline-error" role="alert">{lastError}</p> : null}
       <div className="account-actions">
+        {state === "timed_out" ? (
+          <button
+            className="button secondary"
+            onClick={restartPolling}
+            type="button"
+          >
+            Check account state again
+          </button>
+        ) : null}
         <Link className="button primary" href="/account">
           View account
         </Link>
@@ -154,3 +211,67 @@ export function SuccessScreen({
     </section>
   );
 }
+
+const successLocalStyles = `
+.success-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  justify-content: center;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.success-steps li {
+  align-items: center;
+  color: var(--muted);
+  display: inline-flex;
+  font-size: 0.88rem;
+  font-weight: 650;
+  gap: 8px;
+}
+
+.success-steps li::before {
+  background: var(--line);
+  border-radius: 50%;
+  content: "";
+  height: 9px;
+  width: 9px;
+}
+
+.success-steps li.active {
+  color: var(--text);
+}
+
+.success-steps li.active::before {
+  background: var(--warning);
+}
+
+.success-steps li.done {
+  color: var(--success);
+}
+
+.success-steps li.done::before {
+  background: var(--success);
+}
+
+.success-facts {
+  display: grid;
+  gap: 10px 22px;
+  grid-template-columns: repeat(3, minmax(0, auto));
+  margin: 0;
+}
+
+.success-facts div {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+  text-align: left;
+}
+
+@media (max-width: 560px) {
+  .success-facts {
+    grid-template-columns: 1fr;
+  }
+}
+`;

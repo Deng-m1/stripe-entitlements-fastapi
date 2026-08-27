@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { AccountScreen } from "@/components/AccountScreen";
@@ -114,12 +114,55 @@ describe("billing screens", () => {
     );
 
     await screen.findByRole("heading", { name: "Starter" });
+    expect(
+      screen.getByText("or $11.42/mo with yearly billing"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Save 40%")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Yearly" }));
 
     expect(screen.getByText("$137.00 billed yearly")).toBeInTheDocument();
     expect(screen.getByText("$11.42")).toBeInTheDocument();
     expect(screen.getByText("Save $91.00/year")).toBeInTheDocument();
     expect(screen.getByText("Plan key: starter")).toBeInTheDocument();
+  });
+
+  it("renders a tier ladder and an honest catalog comparison table", async () => {
+    render(
+      <PricingScreen
+        api={testApi({})}
+        billingRedirect={vi.fn()}
+        internalRedirect={vi.fn()}
+      />,
+    );
+
+    await screen.findByRole("heading", { name: "Starter" });
+    expect(screen.getByText("Includes:")).toBeInTheDocument();
+    expect(screen.getByText("Everything in Starter, plus:")).toBeInTheDocument();
+    expect(screen.getByText("Everything in Pro, plus:")).toBeInTheDocument();
+    expect(screen.getByText("Recommended").closest("article")).toHaveTextContent(
+      "Pro",
+    );
+
+    const table = screen.getByRole("table", {
+      name: "Plan price and entitlement comparison",
+    });
+    expect(
+      within(table).getByRole("columnheader", { name: "Ultra" }),
+    ).toBeInTheDocument();
+    const savingsRow = within(table).getByRole("row", {
+      name: /Yearly savings vs monthly/,
+    });
+    expect(within(savingsRow).getByText("$91.00 (40%)")).toBeInTheDocument();
+    const priorityRow = within(table).getByRole("row", {
+      name: /Priority queue/,
+    });
+    expect(within(priorityRow).getAllByText("Not included")).toHaveLength(2);
+    expect(within(priorityRow).getAllByText("Included")).toHaveLength(1);
+    expect(
+      screen.getByText(
+        /no Stripe Coupon or promotion code is created or simulated/,
+      ),
+    ).toBeInTheDocument();
   });
 
   it("renders immediate cross-plan/interval copy and polls after confirmation", async () => {
@@ -777,6 +820,44 @@ describe("billing screens", () => {
     expect(idempotencyKeyForIntent(previewIntent)).not.toBe(previewKey);
     completeIdempotentIntent(checkoutIntent);
     completeIdempotentIntent(previewIntent);
+  });
+
+  it("restarts webhook polling from the timed-out state", async () => {
+    const user = userEvent.setup();
+    const api = testApi({});
+    let polls = 0;
+    api.getAccount = vi.fn(async () => {
+      polls += 1;
+      return polls <= 1
+        ? demoAccount("starter", "month")
+        : demoAccount("pro", "year");
+    });
+    render(
+      <SuccessScreen
+        api={api}
+        expectedInterval="year"
+        expectedPlan="pro"
+        maxAttempts={1}
+        pollIntervalMs={0}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Payment may still be processing",
+      }),
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Check account state again" }),
+    );
+    expect(
+      await screen.findByRole("heading", {
+        name: "Webhook-backed account state is ready",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("1,000 credits")).toBeInTheDocument();
+    completeIdempotentIntent("checkout:pro:year");
+    completeIdempotentIntent("preview:pro:year");
   });
 
   it("does not poll or confirm when the billing return target is missing", async () => {

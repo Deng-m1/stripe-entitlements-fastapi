@@ -13,6 +13,12 @@ Test Clock renewal, and safe plan changes. It must not claim coupons, trials, ta
 multi-currency, seats, or metered billing unless those policies are implemented and
 tested first.
 
+Coupons and promotion codes are not implemented: Checkout omits
+`allow_promotion_codes` unconditionally and discounted Invoices fail closed. Public
+copy must never suggest that promo-code payment is supported;
+[Promotion codes and coupons](PROMOTION_CODES.md) records the future gates that must
+ship before that claim can change.
+
 The site may describe both implemented transition templates: full-price period reset and
 bounded same-period monthly prorated-delta upgrades. Copy must state that annual
 transitions, discounts, tax, credit notes, and customer-balance funding are not handled

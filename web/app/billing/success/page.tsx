@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 import { SuccessScreen } from "@/components/SuccessScreen";
-import type { BillingInterval } from "@/lib/types";
 
 export const metadata: Metadata = {
   title: "Confirming billing",
+  description: "Verify the webhook-backed result of a Stripe billing return.",
   robots: { index: false, follow: false },
 };
 
@@ -18,10 +18,11 @@ export default async function BillingSuccessPage({
   searchParams,
 }: SuccessPageProps) {
   const query = await searchParams;
+  // Comparison narrowing keeps the interval a checked BillingInterval; anything
+  // else is dropped so SuccessScreen reports an unverifiable billing return.
   const expectedInterval =
-    query.expected_interval === "month" ||
-    query.expected_interval === "year"
-      ? (query.expected_interval as BillingInterval)
+    query.expected_interval === "month" || query.expected_interval === "year"
+      ? query.expected_interval
       : undefined;
   return (
     <SuccessScreen

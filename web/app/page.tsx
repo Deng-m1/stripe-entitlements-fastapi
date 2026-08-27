@@ -3,6 +3,7 @@ import Link from "next/link";
 import {
   annualEquivalentMonthly,
   annualSavings,
+  annualSavingsPercent,
   formatMoney,
 } from "@/lib/money";
 import { referencePlans } from "@/lib/reference-catalog";
@@ -116,21 +117,71 @@ export default function HomePage() {
         type="application/ld+json"
       />
 
-      <section className="hero landing-hero">
-        <p className="eyebrow">Open-source Stripe subscription billing</p>
-        <h1>Race-safe Stripe billing for FastAPI, PostgreSQL, and Next.js.</h1>
-        <p>
-          A production-minded SaaS billing reference for subscriptions, credit
-          entitlements, annual renewals, full-price or prorated upgrades, refunds, SCA
-          recovery, and webhook-authoritative access.
-        </p>
-        <div className="hero-actions">
-          <Link className="button primary" href="/pricing">
-            Explore the pricing reference
-          </Link>
-          <a className="button secondary" href={REPOSITORY_URL}>
-            View the source on GitHub
-          </a>
+      <section aria-labelledby="hero-heading" className="landing-hero-plane">
+        <div className="shell hero-inner">
+          <p className="hero-brand">
+            <span aria-hidden="true" className="brand-mark" />
+            <span>{SITE_NAME}</span>
+            <span className="hero-brand-tag">Open-source reference</span>
+          </p>
+          <h1 id="hero-heading">
+            Race-safe Stripe billing for FastAPI, PostgreSQL, and Next.js.
+          </h1>
+          <p className="hero-support">
+            A production-minded SaaS billing reference for subscriptions, credit
+            entitlements, annual renewals, full-price or prorated upgrades, refunds,
+            SCA recovery, and webhook-authoritative access.
+          </p>
+          <div className="hero-actions">
+            <Link className="button primary" href="/pricing">
+              Explore the pricing reference
+              <span aria-hidden="true" className="button-arrow">
+                →
+              </span>
+            </Link>
+            <a className="button secondary" href={REPOSITORY_URL}>
+              View the source on GitHub
+            </a>
+          </div>
+        </div>
+        <div className="hero-pipeline-band">
+          <ol
+            aria-label="How a Stripe event becomes an entitlement"
+            className="shell hero-pipeline"
+          >
+            <li>
+              <span className="pipeline-step">
+                <span aria-hidden="true" className="pipeline-dot" />
+                01 · Stripe
+              </span>
+              <code>checkout.session.completed</code>
+              <p>Signature verified on the raw request body before any parsing.</p>
+            </li>
+            <li>
+              <span className="pipeline-step">
+                <span aria-hidden="true" className="pipeline-dot" />
+                02 · Event inbox
+              </span>
+              <code>claimed exactly once</code>
+              <p>Duplicate and out-of-order deliveries cannot double-apply.</p>
+            </li>
+            <li>
+              <span className="pipeline-step">
+                <span aria-hidden="true" className="pipeline-dot" />
+                03 · PostgreSQL
+              </span>
+              <code>one transaction</code>
+              <p>Row locks and idempotency keys apply every effect together.</p>
+            </li>
+            <li>
+              <span className="pipeline-step">
+                <span aria-hidden="true" className="pipeline-dot" />
+                04 · Entitlements
+              </span>
+              <code>projected state</code>
+              <p>Product code reads the database. The browser never grants access.</p>
+            </li>
+          </ol>
         </div>
       </section>
 
@@ -144,14 +195,19 @@ export default function HomePage() {
             enforces.
           </p>
         </div>
-        <div className="feature-grid">
-          {capabilities.map((capability) => (
-            <article className="feature-card" key={capability.title}>
-              <h3>{capability.title}</h3>
-              <p>{capability.body}</p>
-            </article>
+        <ol className="capability-list">
+          {capabilities.map((capability, index) => (
+            <li className="capability-item" key={capability.title}>
+              <span aria-hidden="true" className="capability-index">
+                {String(index + 1).padStart(2, "0")}
+              </span>
+              <div>
+                <h3>{capability.title}</h3>
+                <p>{capability.body}</p>
+              </div>
+            </li>
           ))}
-        </div>
+        </ol>
       </section>
 
       <section aria-labelledby="catalog-heading" className="landing-section">
@@ -163,6 +219,55 @@ export default function HomePage() {
             downgrade direction, while annual savings remain a display-only calculation.
           </p>
         </div>
+        <div className="savings-grid">
+          {referencePlans.map((plan) => {
+            const saving = annualSavings(plan);
+            const twelveMonthTotal = plan.prices.month.unit_amount * 12;
+            const percent = annualSavingsPercent(plan);
+            return (
+              <div className="savings-tile" key={plan.key}>
+                <h3>{plan.name}</h3>
+                <p className="savings-math">
+                  <span>
+                    12 ×{" "}
+                    {formatMoney(
+                      plan.prices.month.unit_amount,
+                      plan.prices.month.currency,
+                    )}{" "}
+                    monthly ={" "}
+                    {formatMoney(twelveMonthTotal, plan.prices.month.currency)}
+                  </span>
+                  <span>
+                    {formatMoney(
+                      plan.prices.year.unit_amount,
+                      plan.prices.year.currency,
+                    )}{" "}
+                    billed annually
+                  </span>
+                </p>
+                {saving === null ? (
+                  <p className="savings-amount">No saving claimed</p>
+                ) : (
+                  <p className="savings-amount">
+                    Save {formatMoney(saving, plan.prices.year.currency)}
+                    <span>
+                      ≈ {percent}% ·{" "}
+                      {formatMoney(
+                        annualEquivalentMonthly(plan),
+                        plan.prices.year.currency,
+                      )}
+                      /mo equivalent
+                    </span>
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <p className="savings-footnote">
+          Savings are plain catalog arithmetic rendered in the UI — no Stripe Coupon
+          objects are created or claimed.
+        </p>
         <p className="table-scroll-hint">Swipe horizontally to compare every column →</p>
         <div
           aria-label="Scrollable reference plan comparison"
