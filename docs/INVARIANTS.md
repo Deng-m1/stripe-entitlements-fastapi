@@ -81,6 +81,12 @@ attempt. Incident observations use PostgreSQL's statement wall clock rather than
 transaction-start clock; an observation at the exact cutoff or written later by a
 long-running transaction remains unresolved for the next attempt.
 
+If another reconciler advances the Subscription projection cursor between a paid-Invoice
+snapshot and its account lock, the losing attempt performs a bounded retry against a
+fresh snapshot and a new synthetic Event ID. A successful retry may resolve only the
+`stale_paid_event` whose account, Invoice, and failed synthetic Event ID it superseded;
+it does not widen the causal cutoff for any other incident.
+
 ## 8. Product-operation refunds cannot cross grant epochs
 
 Each usage debit snapshots the account's `grant_epoch`. A product job may refund its

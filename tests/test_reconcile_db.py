@@ -739,17 +739,20 @@ async def test_reconcile_marks_stale_plan_change_for_same_preview_recovery(
     assert incident["detail"]["status"] == "applying"
 
 
+@pytest.mark.parametrize("round_id", range(5))
 async def test_many_reconcilers_share_business_idempotency(
-    processor: EventProcessor, pool: asyncpg.Pool, make_account
+    round_id: int, processor: EventProcessor, pool: asyncpg.Pool, make_account
 ) -> None:
     account_id = await make_account()
     service = ReconciliationService(
-        pool, processor, FakeGateway(account_id, invoice_id="in_reconcile_race")
+        pool,
+        processor,
+        FakeGateway(account_id, invoice_id=f"in_reconcile_race_{round_id}"),
     )
     results = await asyncio.gather(*(service.reconcile_account(account_id) for _ in range(20)))
     observed = [(result.outcome, result.reason) for result in results]
     assert sum(result.outcome == "handled" for result in results) == 1, observed
-    assert sum(result.outcome in {"duplicate", "replayed"} for result in results) == 19, observed
+    assert sum(result.outcome == "replayed" for result in results) == 19, observed
     async with pool.acquire() as conn:
         assert (
             await conn.fetchval(
@@ -757,6 +760,139 @@ async def test_many_reconcilers_share_business_idempotency(
             )
             == 300
         )
+        unresolved = await conn.fetchval(
+            """select count(*) from billing_incidents
+                 where account_id=$1::uuid and resolved_at is null
+                   and kind in ('stale_paid_event','reconciliation_failed')""",
+            account_id,
+        )
+    assert unresolved == 0
+
+
+@pytest.mark.parametrize("round_id", range(3))
+async def test_cross_epoch_reconcilers_retry_paid_cas_and_resolve_only_failed_attempt(
+    round_id: int,
+    processor: EventProcessor,
+    pool: asyncpg.Pool,
+    make_account,
+) -> None:
+    account_id = await make_account()
+    invoice_id = f"in_cross_epoch_reconcile_{round_id}"
+    a_paid_ready = asyncio.Event()
+    b_paid_ready = asyncio.Event()
+    release_a_paid = asyncio.Event()
+    release_b_paid = asyncio.Event()
+
+    class PaidBarrierGateway(FakeGateway):
+        def __init__(
+            self,
+            ready: asyncio.Event,
+            release: asyncio.Event,
+        ) -> None:
+            super().__init__(account_id, invoice_id=invoice_id)
+            self.ready = ready
+            self.release = release
+
+        async def latest_paid_invoice_event(self, subscription_id: str) -> dict[str, Any] | None:
+            self.ready.set()
+            await self.release.wait()
+            return await super().latest_paid_invoice_event(subscription_id)
+
+    service_a = ReconciliationService(
+        pool,
+        processor,
+        PaidBarrierGateway(a_paid_ready, release_a_paid),
+    )
+    service_b = ReconciliationService(
+        pool,
+        processor,
+        PaidBarrierGateway(b_paid_ready, release_b_paid),
+    )
+    task_a = asyncio.create_task(service_a.reconcile_account(account_id))
+    task_b: asyncio.Task[ProcessResult] | None = None
+    try:
+        await asyncio.wait_for(a_paid_ready.wait(), timeout=10)
+        async with pool.acquire() as conn:
+            a_epoch = int(
+                await conn.fetchval(
+                    "select event_created from billing_accounts where id=$1::uuid",
+                    account_id,
+                )
+            )
+        for _ in range(300):
+            async with pool.acquire() as conn:
+                database_epoch = int(
+                    await conn.fetchval("select extract(epoch from clock_timestamp())::bigint")
+                )
+            if database_epoch > a_epoch:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("database epoch did not advance for the deterministic race")
+
+        task_b = asyncio.create_task(service_b.reconcile_account(account_id))
+        await asyncio.wait_for(b_paid_ready.wait(), timeout=10)
+        async with pool.acquire() as conn:
+            b_epoch = int(
+                await conn.fetchval(
+                    "select event_created from billing_accounts where id=$1::uuid",
+                    account_id,
+                )
+            )
+        assert b_epoch > a_epoch
+
+        release_a_paid.set()
+        result_a = await asyncio.wait_for(task_a, timeout=10)
+        release_b_paid.set()
+        result_b = await asyncio.wait_for(task_b, timeout=10)
+    finally:
+        release_a_paid.set()
+        release_b_paid.set()
+        tasks = [task_a, *([task_b] if task_b is not None else [])]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    observed = [(result_a.outcome, result_a.reason), (result_b.outcome, result_b.reason)]
+    assert sum(result.outcome == "handled" for result in (result_a, result_b)) == 1, observed
+    assert sum(result.outcome == "replayed" for result in (result_a, result_b)) == 1, observed
+    async with pool.acquire() as conn:
+        account = await conn.fetchrow(
+            """select credits_balance,plan_key,subscription_status
+                 from billing_accounts where id=$1::uuid""",
+            account_id,
+        )
+        grant_count = await conn.fetchval(
+            """select count(*) from credit_ledger
+                 where account_id=$1::uuid and stripe_invoice_id=$2 and grant_slot=1""",
+            account_id,
+            invoice_id,
+        )
+        paid_audits = await conn.fetch(
+            """select id,outcome from stripe_webhook_events
+                 where event_type='invoice.paid' order by id"""
+        )
+        stale_incident = await conn.fetchrow(
+            """select stripe_event_id,resolved_at from billing_incidents
+                 where account_id=$1::uuid and invoice_id=$2 and kind='stale_paid_event'""",
+            account_id,
+            invoice_id,
+        )
+        unresolved = await conn.fetchval(
+            """select count(*) from billing_incidents
+                 where account_id=$1::uuid and resolved_at is null
+                   and kind in ('stale_paid_event','reconciliation_failed')""",
+            account_id,
+        )
+    assert account is not None and tuple(account) == (300, "starter", "active")
+    assert grant_count == 1
+    assert [row["outcome"] for row in paid_audits] == ["ignored", "handled"]
+    ignored_event_id = next(row["id"] for row in paid_audits if row["outcome"] == "ignored")
+    assert stale_incident is not None
+    assert stale_incident["stripe_event_id"] == ignored_event_id
+    assert stale_incident["resolved_at"] is not None
+    assert unresolved == 0
 
 
 async def test_candidate_scan_uses_database_clock_and_explicit_exclusion(

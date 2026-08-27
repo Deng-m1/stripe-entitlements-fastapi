@@ -7,7 +7,8 @@
 - Consume Checkout authority on first Subscription binding and terminal deletion, and
   make matching paid/failed settlement Events converge regardless of delivery order.
 - Harden reconciliation around ignored synthetic duplicates, per-attempt cancellation
-  identity, and strictly causal incident cleanup, including long-running incident writers;
+  identity, paid CAS-loss retries, and strictly causal incident cleanup, including
+  long-running incident writers and exact failed-attempt resolution;
   add migration `006_invoice_ownership_and_incident_causality.sql` for explicit Invoice
   audit retention, wall-clock observations, and the unresolved-incident lookup.
 

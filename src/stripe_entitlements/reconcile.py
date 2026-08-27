@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from typing import Any, Protocol
 
@@ -8,6 +9,8 @@ import asyncpg
 
 from .processor import EventProcessor
 from .types import ProcessResult
+
+_PAID_CAS_RETRY_LIMIT = 3
 
 
 class ReconciliationGateway(Protocol):
@@ -328,12 +331,41 @@ class ReconciliationService:
                 if isinstance(paid_object, dict) and paid_object.get("id")
                 else "unknown"
             )
-            paid["id"] = (
-                f"reconcile:{invoice_id}:{expected_subscription}:"
-                f"{expected_account['event_created']}:{expected_account['event_rank']}"
-            )
-            paid["_expected_account"] = expected_account
-            result = await self._process(paid, account_id, expected_subscription)
+            failed_paid_event_ids: list[str] = []
+            for retry_index in range(_PAID_CAS_RETRY_LIMIT + 1):
+                paid_event_id = (
+                    f"reconcile:{invoice_id}:{expected_subscription}:"
+                    f"{expected_account['event_created']}:{expected_account['event_rank']}"
+                )
+                paid["id"] = paid_event_id
+                paid["_expected_account"] = expected_account
+                result = await self._process(paid, account_id, expected_subscription)
+                if (
+                    _projection_committed(result)
+                    or result.reason != "older than the paid entitlement period"
+                    or retry_index == _PAID_CAS_RETRY_LIMIT
+                ):
+                    break
+                refreshed_snapshot = await self._account_projection_snapshot(
+                    account_id, expected_subscription
+                )
+                if refreshed_snapshot is None or self._same_projection_snapshot(
+                    refreshed_snapshot, expected_account
+                ):
+                    break
+                failed_paid_event_ids.append(paid_event_id)
+                expected_account = refreshed_snapshot
+            if _projection_committed(result) and failed_paid_event_ids:
+                # A competing reconciler may advance the account status cursor after
+                # this attempt snapshots it but before its paid projection locks the
+                # account. Retrying against the refreshed cursor linearizes the same
+                # Invoice. Resolve only stale observations written by this attempt's
+                # failed synthetic Event IDs; the broad causal cutoff remains intact.
+                await self._resolve_stale_paid_attempts(
+                    account_id,
+                    invoice_id,
+                    failed_paid_event_ids,
+                )
             pending = await self._pending_plan_change(account_id)
             if pending is not None:
                 await self._plan_change_recovery_incident(
@@ -341,6 +373,11 @@ class ReconciliationService:
                 )
             elif _projection_committed(result):
                 await self._resolve_incidents(account_id, attempt_started_at)
+            elif result.reason == "older than the paid entitlement period":
+                # EventProcessor committed an invoice-scoped stale_paid_event. A
+                # second shared reconciliation_failed row adds no recovery signal
+                # and can outlive a concurrent successful grant's causal cutoff.
+                pass
             else:
                 await self._incident(
                     account_id,
@@ -349,6 +386,14 @@ class ReconciliationService:
                 )
             return result
         return status_result
+
+    @staticmethod
+    def _same_projection_snapshot(left: Mapping[str, object], right: Mapping[str, object]) -> bool:
+        return bool(
+            left.get("stripe_subscription_id") == right.get("stripe_subscription_id")
+            and left.get("event_created") == right.get("event_created")
+            and left.get("event_rank") == right.get("event_rank")
+        )
 
     async def _process(
         self,
@@ -438,6 +483,23 @@ class ReconciliationService:
                 f"{account_id}:{subscription_id}",
                 account_id,
                 {"reason": reason},
+            )
+
+    async def _resolve_stale_paid_attempts(
+        self,
+        account_id: str,
+        invoice_id: str,
+        failed_event_ids: list[str],
+    ) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """update billing_incidents set resolved_at=clock_timestamp()
+                     where account_id=$1::uuid and invoice_id=$2
+                       and kind='stale_paid_event' and resolved_at is null
+                       and stripe_event_id=any($3::text[])""",
+                account_id,
+                invoice_id,
+                failed_event_ids,
             )
 
     async def _resolve_status_incidents(
