@@ -1,6 +1,10 @@
 import nextConfig, {
+  frontendBuildMode,
+  productionE2ERouteAuthSentinel,
+  PRODUCTION_E2E_ROUTE_AUTH_SENTINEL,
   validatePublicBillingBuildEnvironment,
 } from "../next.config.mjs";
+import { E2E_ROUTE_AUTH_SENTINEL } from "./auth.ts";
 
 
 describe("Next.js public billing build boundary", () => {
@@ -35,6 +39,54 @@ describe("Next.js public billing build boundary", () => {
       validatePublicBillingBuildEnvironment("development", "mock", "local-token"),
     ).not.toThrow();
   });
+
+  const safeRouteAuthBuild = {
+    environment: "production",
+    mode: "http",
+    backendUrl: "https://127.0.0.1:8443",
+    allowIndexing: "false",
+    demoToken: undefined,
+    acknowledgement: "1",
+    publicSentinel: undefined,
+  };
+
+  it("injects one fixed sentinel only for an explicitly non-indexable loopback build", () => {
+    expect(productionE2ERouteAuthSentinel(safeRouteAuthBuild)).toBe(
+      PRODUCTION_E2E_ROUTE_AUTH_SENTINEL,
+    );
+    expect(PRODUCTION_E2E_ROUTE_AUTH_SENTINEL).toBe(E2E_ROUTE_AUTH_SENTINEL);
+  });
+
+  it.each([
+    ["development environment", { environment: "development" }],
+    ["mock mode", { mode: "mock" }],
+    ["implicit mode", { mode: undefined }],
+    ["remote backend", { backendUrl: "https://api.example.test" }],
+    ["HTTP backend", { backendUrl: "http://127.0.0.1:8443" }],
+    ["backend path", { backendUrl: "https://127.0.0.1:8443/api" }],
+    ["indexable build", { allowIndexing: "true" }],
+    ["implicit indexing", { allowIndexing: undefined }],
+    ["demo token", { demoToken: "browser-token" }],
+    ["invalid acknowledgement", { acknowledgement: "yes" }],
+    ["custom sentinel", { publicSentinel: "custom" }],
+  ])("rejects route auth with %s", (_label, override) => {
+    expect(() =>
+      productionE2ERouteAuthSentinel({
+        ...safeRouteAuthBuild,
+        ...override,
+      }),
+    ).toThrow();
+  });
+
+  it("keeps ordinary production builds fail-closed without acknowledgement", () => {
+    expect(
+      productionE2ERouteAuthSentinel({
+        ...safeRouteAuthBuild,
+        acknowledgement: undefined,
+      }),
+    ).toBeUndefined();
+    expect(nextConfig.env).toEqual({});
+  });
 });
 
 
@@ -60,5 +112,14 @@ describe("Next.js security headers", () => {
     expect(headers.get("permissions-policy")).toContain("camera=()");
     expect(headers.get("permissions-policy")).toContain("microphone=()");
     expect(headers.get("permissions-policy")).toContain("geolocation=()");
+    expect(headers.get("x-frontend-build-mode")).toBe(
+      frontendBuildMode(process.env.NODE_ENV),
+    );
+  });
+
+  it("attests production builds independently of browser-supplied state", () => {
+    expect(frontendBuildMode("production")).toBe("production");
+    expect(frontendBuildMode("development")).toBe("development");
+    expect(frontendBuildMode("test")).toBe("development");
   });
 });

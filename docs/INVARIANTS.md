@@ -57,7 +57,9 @@ For the current active pool, these permutations converge to the same credit bala
 
 One account has at most one unexpired Checkout claim. Claim identity, not only account
 identity, guards attach/release. Expiration or completion of an older Session cannot
-delete or bind a newer claim.
+delete or bind a newer claim. A Subscription update that first binds through a claim
+consumes that authority in the same transaction, and terminal deletion removes any claim
+that existed before it. A late paid Event cannot reuse pre-deletion Checkout authority.
 
 ## 6. Annual monthly grants
 
@@ -71,6 +73,13 @@ monthly reset. Refunds monotonically reduce future allowed slots.
 The inbox claim is in the same transaction as side effects. Any exception rolls back the
 claim. A 500 asks Stripe to retry. A 2xx fail-closed decision must have a durable incident
 or persistent invoice flag so it can be inspected and replayed.
+
+An inbox duplicate proves only that a delivery committed, not that its projection did.
+Synthetic reconciliation retries inspect the committed outcome, preserve ignored reasons
+for CAS recovery, and resolve only incidents observed strictly before that reconciliation
+attempt. Incident observations use PostgreSQL's statement wall clock rather than the
+transaction-start clock; an observation at the exact cutoff or written later by a
+long-running transaction remains unresolved for the next attempt.
 
 ## 8. Product-operation refunds cannot cross grant epochs
 
@@ -128,6 +137,10 @@ failure incident. A matching paid Invoice resolves its bound/unbound payment-fai
 incidents in the same transaction as entitlement completion; incidents for another
 Invoice or account remain open.
 
+For one bound settlement Invoice, a committed paid grant dominates a later
+`invoice.payment_failed` snapshot. Both delivery orders converge to a completed intent
+without an order-dependent unresolved failure incident.
+
 ## 12. Optional upgrade failure preserves paid entitlement
 
 `pending_if_incomplete` may leave the old Subscription item active and a new Invoice open.
@@ -166,7 +179,9 @@ intent changes commit in one PostgreSQL transaction.
 Refund/dispute processing follows account → Invoice → grant/allocation lock order. An
 Invoice state, grant slot, or delta allocation bound to another account creates an
 incident before refund facts or balances are changed. Customer lookup alone is never
-sufficient authority to debit credits.
+sufficient authority to debit credits. First ownership is established by an atomic,
+ownership-conditional Invoice upsert; a conflicting concurrent caller cannot merge amount,
+refund, full-closure, or dispute facts into the winner's row.
 
 ## 16. Discounts remain fail-closed until promo attribution gates pass
 

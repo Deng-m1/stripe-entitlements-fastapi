@@ -60,7 +60,8 @@ commit a partial effect.
 
 ## Rolling deployment and migration safety
 
-Apply all five migrations through `005_simplify_event_audit.sql` before sending traffic
+Apply all six migrations through `006_invoice_ownership_and_incident_causality.sql` before
+sending traffic
 to code that uses authenticated billing APIs. Avoid running a new process against an old
 schema. During a rolling deploy:
 

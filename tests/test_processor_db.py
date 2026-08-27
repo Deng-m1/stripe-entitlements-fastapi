@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 
@@ -955,6 +956,104 @@ async def test_cross_account_refund_cannot_mutate_invoice_or_balance(
     assert incident == 1
 
 
+async def test_concurrent_cross_account_first_clawback_claim_keeps_winner_facts_isolated(
+    processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    first_id = await make_account(customer="cus_first_owner", subscription="sub_first_owner")
+    second_id = await make_account(customer="cus_second_owner", subscription="sub_second_owner")
+    invoice_id = "in_concurrent_cross_account_clawback"
+    first = refunded_charge(
+        invoice_id=invoice_id,
+        customer="cus_first_owner",
+        amount=1900,
+        amount_refunded=475,
+        event_id="evt_concurrent_first_clawback",
+    )
+    second = refunded_charge(
+        invoice_id=invoice_id,
+        customer="cus_second_owner",
+        amount=4900,
+        amount_refunded=4900,
+        refunded=True,
+        event_id="evt_concurrent_second_clawback",
+    )
+
+    results = await asyncio.gather(processor.process(first), processor.process(second))
+
+    assert [result.outcome for result in results] == ["ignored", "ignored"]
+    assert {result.reason for result in results} == {
+        "clawback stored before grant",
+        "invoice belongs to a different account",
+    }
+    async with pool.acquire() as conn:
+        state = await conn.fetchrow(
+            """select account_id,amount_total,amount_refunded,fully_refunded,disputed
+                 from stripe_invoice_state where invoice_id=$1""",
+            invoice_id,
+        )
+        conflicts = await conn.fetchval(
+            """select count(*) from billing_incidents
+                 where kind='clawback_invoice_identity_conflict'"""
+        )
+    assert state is not None
+    expected = {
+        first_id: (1900, 475, False, False),
+        second_id: (4900, 4900, True, False),
+    }
+    owner_id = str(state["account_id"])
+    assert tuple(state)[1:] == expected[owner_id]
+    assert conflicts == 1
+
+
+async def test_concurrent_paid_and_cross_account_clawback_first_claim_is_atomic(
+    processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    paid_owner = await make_account(customer="cus_paid_owner", subscription="sub_paid_owner")
+    refund_owner = await make_account(customer="cus_refund_owner", subscription="sub_refund_owner")
+    invoice_id = "in_concurrent_paid_clawback_owner"
+    paid = paid_invoice(
+        paid_owner,
+        invoice_id=invoice_id,
+        customer="cus_paid_owner",
+        subscription="sub_paid_owner",
+        event_id="evt_concurrent_owner_paid",
+    )
+    clawback = refunded_charge(
+        invoice_id=invoice_id,
+        customer="cus_refund_owner",
+        amount=4900,
+        amount_refunded=4900,
+        refunded=True,
+        event_id="evt_concurrent_owner_clawback",
+    )
+
+    await asyncio.gather(processor.process(paid), processor.process(clawback))
+
+    async with pool.acquire() as conn:
+        state = await conn.fetchrow(
+            """select account_id,amount_total,amount_refunded,fully_refunded
+                 from stripe_invoice_state where invoice_id=$1""",
+            invoice_id,
+        )
+        paid_account = await conn.fetchrow(
+            """select plan_key,credits_balance from billing_accounts where id=$1::uuid""",
+            paid_owner,
+        )
+        refund_account = await conn.fetchrow(
+            """select plan_key,credits_balance from billing_accounts where id=$1::uuid""",
+            refund_owner,
+        )
+    assert state is not None and paid_account is not None and refund_account is not None
+    if str(state["account_id"]) == paid_owner:
+        assert tuple(state)[1:] == (1900, 0, False)
+        assert tuple(paid_account) == ("starter", 300)
+    else:
+        assert str(state["account_id"]) == refund_owner
+        assert tuple(state)[1:] == (4900, 4900, True)
+        assert tuple(paid_account) == ("starter", 0)
+    assert tuple(refund_account) == ("starter", 0)
+
+
 @pytest.mark.parametrize("refund_first", [False, True])
 async def test_partial_refund_order_converges(
     refund_first: bool, processor: EventProcessor, pool: asyncpg.Pool, make_account
@@ -1300,6 +1399,127 @@ async def test_unbound_subscription_update_uses_claim_and_price_identity_not_met
         "cus_test",
         f"sub_unbound_advisory_{observed}",
     )
+
+
+@pytest.mark.parametrize("paid_created", [150, 300])
+async def test_terminal_subscription_consumes_claim_and_rejects_delayed_paid(
+    paid_created: int, processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account(customer=None, subscription=None)
+    claim_token = uuid.uuid4()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """insert into checkout_claims(
+                   account_id,claim_token,plan_key,plan_interval,expires_at,
+                   client_request_key)
+                 values($1::uuid,$2,'starter','month',now()+interval '30 minutes',
+                        'terminal-claim')""",
+            account_id,
+            claim_token,
+        )
+    updated = subscription_event(
+        account_id,
+        subscription="sub_terminal_claim",
+        event_id=f"evt_terminal_updated_{paid_created}",
+        created=100,
+    )
+    updated["data"]["object"]["metadata"]["claim_token"] = str(claim_token)
+    assert (await processor.process(updated)).outcome == "handled"
+    deleted = subscription_event(
+        account_id,
+        "customer.subscription.deleted",
+        status="canceled",
+        subscription="sub_terminal_claim",
+        event_id=f"evt_terminal_deleted_{paid_created}",
+        created=200,
+    )
+    assert (await processor.process(deleted)).outcome == "handled"
+
+    delayed = paid_invoice(
+        account_id,
+        invoice_id=f"in_terminal_delayed_{paid_created}",
+        subscription="sub_terminal_claim",
+        billing_reason="subscription_create",
+        claim_token=str(claim_token),
+        event_id=f"evt_terminal_paid_{paid_created}",
+        created=paid_created,
+    )
+    result = await processor.process(delayed)
+
+    assert result.outcome == "ignored"
+    assert result.reason == "subscription create lacks a live Checkout claim"
+    async with pool.acquire() as conn:
+        account = await conn.fetchrow(
+            """select stripe_subscription_id,plan_key,subscription_status,credits_balance,
+                      entitlement_revoked
+                 from billing_accounts where id=$1::uuid""",
+            account_id,
+        )
+        claims = await conn.fetchval(
+            "select count(*) from checkout_claims where account_id=$1::uuid", account_id
+        )
+        grants = await conn.fetchval(
+            """select count(*) from credit_ledger
+                 where stripe_invoice_id=$1 and grant_slot=1""",
+            f"in_terminal_delayed_{paid_created}",
+        )
+    assert account is not None
+    assert tuple(account) == (None, "free", "canceled", 0, True)
+    assert claims == 0
+    assert grants == 0
+
+
+async def test_concurrent_paid_and_terminal_delete_converge_to_revoked_free(
+    processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account(customer=None, subscription=None)
+    claim_token = uuid.uuid4()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """insert into checkout_claims(
+                   account_id,claim_token,plan_key,plan_interval,expires_at,
+                   client_request_key)
+                 values($1::uuid,$2,'starter','month',now()+interval '30 minutes',
+                        'concurrent-terminal-claim')""",
+            account_id,
+            claim_token,
+        )
+    updated = subscription_event(
+        account_id,
+        subscription="sub_concurrent_terminal",
+        event_id="evt_concurrent_terminal_updated",
+        created=100,
+    )
+    updated["data"]["object"]["metadata"]["claim_token"] = str(claim_token)
+    assert (await processor.process(updated)).outcome == "handled"
+    paid = paid_invoice(
+        account_id,
+        invoice_id="in_concurrent_terminal_paid",
+        subscription="sub_concurrent_terminal",
+        billing_reason="subscription_create",
+        claim_token=str(claim_token),
+        event_id="evt_concurrent_terminal_paid",
+        created=150,
+    )
+    deleted = subscription_event(
+        account_id,
+        "customer.subscription.deleted",
+        status="canceled",
+        subscription="sub_concurrent_terminal",
+        event_id="evt_concurrent_terminal_deleted",
+        created=200,
+    )
+
+    await asyncio.gather(processor.process(paid), processor.process(deleted))
+
+    account = await _account(pool, account_id)
+    assert (
+        account["stripe_subscription_id"],
+        account["plan_key"],
+        account["subscription_status"],
+        account["credits_balance"],
+        account["entitlement_revoked"],
+    ) == (None, "free", "canceled", 0, True)
 
 
 async def test_unbound_subscription_update_cannot_authorize_checkoutless_paid_invoice(

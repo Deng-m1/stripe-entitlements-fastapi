@@ -133,6 +133,13 @@ compatibility window so an older replica can drain safely. Stripe signatures aut
 delivery, Event IDs provide delivery idempotency, and business uniqueness constraints
 provide effect idempotency; the active audit contract uses only the redacted snapshot.
 
+`006_invoice_ownership_and_incident_causality.sql` aligns the Invoice-owner foreign key
+with audit retention: an account referenced by `stripe_invoice_state` cannot be deleted
+independently. It also indexes unresolved incidents by account, kind, and observation time
+and changes `last_seen_at` to a statement-wall-clock default. Reconciliation resolves only
+facts that strictly predate its database attempt token, including when an incident writer's
+transaction began earlier but wrote or committed after the attempt began.
+
 Together the migrations define ten correctness tables. Backup and restore them as one
 unit; restoring account balances without their inbox, Invoice, allocation, debt, or
 intent identity can reopen a business effect.

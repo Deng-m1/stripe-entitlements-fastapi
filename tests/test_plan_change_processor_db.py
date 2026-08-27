@@ -311,6 +311,78 @@ async def test_prorated_delta_different_events_same_invoice_are_concurrent_safe(
         )
 
 
+async def test_prorated_delta_cross_account_first_invoice_claim_is_atomic(
+    processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    first_id = await make_account(customer="cus_delta_first", subscription="sub_delta_first")
+    second_id = await make_account(customer="cus_delta_second", subscription="sub_delta_second")
+    for account_id, customer, subscription, source_invoice in (
+        (first_id, "cus_delta_first", "sub_delta_first", "in_delta_source_first"),
+        (second_id, "cus_delta_second", "sub_delta_second", "in_delta_source_second"),
+    ):
+        initial = paid_invoice(
+            account_id,
+            invoice_id=source_invoice,
+            customer=customer,
+            subscription=subscription,
+            event_id=f"evt_{source_invoice}",
+            created=100,
+        )
+        assert (await processor.process(initial)).outcome == "handled"
+        await _insert_change(
+            pool,
+            account_id,
+            policy="prorated_delta",
+            proration_date=1_801_000_000,
+        )
+    invoice_id = "in_delta_cross_account_race"
+    first = prorated_upgrade_invoice(
+        first_id,
+        invoice_id=invoice_id,
+        customer="cus_delta_first",
+        subscription="sub_delta_first",
+        event_id="evt_delta_cross_account_first",
+    )
+    second = prorated_upgrade_invoice(
+        second_id,
+        invoice_id=invoice_id,
+        customer="cus_delta_second",
+        subscription="sub_delta_second",
+        event_id="evt_delta_cross_account_second",
+    )
+
+    results = await asyncio.gather(processor.process(first), processor.process(second))
+
+    assert sorted(result.outcome for result in results) == ["handled", "ignored"]
+    async with pool.acquire() as conn:
+        state_owner = await conn.fetchval(
+            "select account_id from stripe_invoice_state where invoice_id=$1", invoice_id
+        )
+        allocation_owner = await conn.fetchval(
+            """select account_id from billing_funding_allocations
+                 where stripe_invoice_id=$1""",
+            invoice_id,
+        )
+        accounts = await conn.fetch(
+            """select id,plan_key,credits_balance from billing_accounts
+                 where id=any($1::uuid[]) order by id""",
+            [first_id, second_id],
+        )
+        grants = await conn.fetchval(
+            """select count(*) from credit_ledger
+                 where stripe_invoice_id=$1 and grant_slot=1""",
+            invoice_id,
+        )
+    assert state_owner is not None and allocation_owner is not None
+    assert state_owner == allocation_owner
+    owner_id = str(state_owner)
+    by_id = {str(row["id"]): (row["plan_key"], row["credits_balance"]) for row in accounts}
+    assert by_id[owner_id] == ("pro", 1000)
+    loser_id = second_id if owner_id == first_id else first_id
+    assert by_id[loser_id] == ("starter", 300)
+    assert grants == 1
+
+
 @pytest.mark.parametrize(
     "malformation",
     [
@@ -1132,6 +1204,113 @@ async def test_paid_settlement_resolves_its_payment_failure_incident(
         )
     assert account is not None and tuple(account) == ("pro", 1000)
     assert incident is not None and incident["resolved_at"] is not None
+
+
+@pytest.mark.parametrize("policy", ["full_period_reset", "prorated_delta"])
+async def test_late_failure_for_completed_paid_settlement_is_replayed(
+    policy: str, processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account()
+    await _initial_paid(processor, account_id)
+    await _insert_change(
+        pool,
+        account_id,
+        policy=policy,
+        proration_date=1_801_000_000 if policy == "prorated_delta" else None,
+    )
+    invoice_id = f"in_paid_before_failure_{policy}"
+    paid = (
+        prorated_upgrade_invoice(
+            account_id,
+            invoice_id=invoice_id,
+            event_id=f"evt_paid_before_failure_{policy}",
+            created=201,
+        )
+        if policy == "prorated_delta"
+        else paid_invoice(
+            account_id,
+            invoice_id=invoice_id,
+            plan="pro",
+            billing_reason="subscription_update",
+            period_start=1_801_000_000,
+            period_end=1_803_592_000,
+            event_id=f"evt_paid_before_failure_{policy}",
+            created=201,
+        )
+    )
+    assert (await processor.process(paid)).outcome == "handled"
+    failed = payment_failed(
+        account_id,
+        event_id=f"evt_failure_after_paid_{policy}",
+        created=202,
+        billing_reason="subscription_update",
+    )
+    failed["data"]["object"]["id"] = invoice_id
+
+    result = await processor.process(failed)
+
+    assert result.outcome == "replayed"
+    async with pool.acquire() as conn:
+        account = await conn.fetchrow(
+            """select plan_key,subscription_status,credits_balance
+                 from billing_accounts where id=$1::uuid""",
+            account_id,
+        )
+        transition_status = await conn.fetchval("select status from billing_plan_changes")
+        unresolved = await conn.fetchval(
+            """select count(*) from billing_incidents where resolved_at is null
+                 and kind in ('plan_change_payment_failed',
+                              'unbound_plan_change_payment_failed')"""
+        )
+    assert account is not None and tuple(account) == ("pro", "active", 1000)
+    assert transition_status == "completed"
+    assert unresolved == 0
+
+
+async def test_paid_and_failure_for_same_settlement_concurrently_converge(
+    processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account()
+    await _initial_paid(processor, account_id)
+    await _insert_change(pool, account_id)
+    invoice_id = "in_concurrent_paid_failure_settlement"
+    async with pool.acquire() as conn:
+        await conn.execute("update billing_plan_changes set settlement_invoice_id=$1", invoice_id)
+    paid = paid_invoice(
+        account_id,
+        invoice_id=invoice_id,
+        plan="pro",
+        billing_reason="subscription_update",
+        period_start=1_801_000_000,
+        period_end=1_803_592_000,
+        event_id="evt_concurrent_settlement_paid",
+        created=201,
+    )
+    failed = payment_failed(
+        account_id,
+        event_id="evt_concurrent_settlement_failed",
+        created=202,
+        billing_reason="subscription_update",
+    )
+    failed["data"]["object"]["id"] = invoice_id
+
+    await asyncio.gather(processor.process(paid), processor.process(failed))
+
+    async with pool.acquire() as conn:
+        account = await conn.fetchrow(
+            """select plan_key,subscription_status,credits_balance
+                 from billing_accounts where id=$1::uuid""",
+            account_id,
+        )
+        transition_status = await conn.fetchval("select status from billing_plan_changes")
+        unresolved = await conn.fetchval(
+            """select count(*) from billing_incidents where resolved_at is null
+                 and kind in ('plan_change_payment_failed',
+                              'unbound_plan_change_payment_failed')"""
+        )
+    assert account is not None and tuple(account) == ("pro", "active", 1000)
+    assert transition_status == "completed"
+    assert unresolved == 0
 
 
 async def test_delayed_old_payment_failure_cannot_mutate_new_plan_change(

@@ -66,6 +66,7 @@ e2e_tunnel_start=""
 e2e_listener_start=""
 e2e_backend_start=""
 e2e_frontend_start=""
+e2e_run_completed=0
 e2e_child_path="${PATH:-/usr/local/bin:/usr/bin:/bin}"
 e2e_child_home="${HOME:-/tmp}"
 e2e_child_tmp="${TMPDIR:-/tmp}"
@@ -86,10 +87,14 @@ while [[ "$e2e_frontend_port" == "$e2e_pg_port" || \
   e2e_frontend_port="$(e2e_free_port)"
 done
 e2e_database_url="postgresql://postgres:local-only@127.0.0.1:${e2e_pg_port}/stripe_entitlements"
-e2e_backend_url="http://127.0.0.1:${e2e_backend_port}"
-e2e_frontend_url="http://127.0.0.1:${e2e_frontend_port}"
+e2e_backend_url="https://127.0.0.1:${e2e_backend_port}"
+e2e_frontend_url="https://127.0.0.1:${e2e_frontend_port}"
 e2e_demo_token="$(uv run python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-e2e_output_dir="${E2E_OUTPUT_DIR:-$e2e_repo_root/web/test-results/playwright-stripe-${e2e_transition_policy}}"
+e2e_output_root="${E2E_OUTPUT_DIR:-$e2e_repo_root/web/test-results/playwright-stripe-${e2e_transition_policy}}"
+e2e_output_dir=""
+e2e_loopback_key="$e2e_tmp_dir/loopback.key"
+e2e_loopback_cert="$e2e_tmp_dir/loopback.crt"
+e2e_loopback_spki=""
 
 e2e_pid_start() {
   local e2e_pid="${1:-}"
@@ -232,14 +237,39 @@ e2e_cleanup() {
       fi
       ;;
   esac
-  rm -f "$e2e_endpoint_state"
+  if ! rm -f "$e2e_endpoint_state"; then
+    echo "browser E2E signing-secret state cleanup failed" >&2
+    e2e_cleanup_failed=1
+  fi
+  if [[ "$e2e_status" -eq 0 && "$e2e_run_completed" -ne 1 ]]; then
+    echo "browser E2E exited before final database verification" >&2
+    e2e_cleanup_failed=1
+  fi
   if [[ "$e2e_cleanup_failed" -ne 0 && "$e2e_status" -eq 0 ]]; then
     e2e_status=1
   fi
   if [[ "$e2e_status" -eq 0 ]]; then
     case "$e2e_tmp_dir" in
-      /tmp/stripe-entitlements-browser-e2e.*) rm -rf "$e2e_tmp_dir" ;;
+      /tmp/stripe-entitlements-browser-e2e.*)
+        if ! rm -rf "$e2e_tmp_dir"; then
+          echo "browser E2E private temporary directory cleanup failed" >&2
+          e2e_status=1
+        fi
+        ;;
+      *)
+        echo "browser E2E cleanup directory has an unsafe path" >&2
+        e2e_status=1
+        ;;
     esac
+  fi
+  if [[ "$e2e_status" -eq 0 ]]; then
+    echo "browser Stripe Checkout, $e2e_transition_policy upgrade, signed webhook, and cleanup E2E passed"
+    echo "browser E2E artifacts: $e2e_output_dir"
+    if [[ "$e2e_record_video" == "1" ]]; then
+      find "$e2e_output_dir" -type f -name '*.webm' -print | while read -r video_path; do
+        echo "recorded video: $video_path"
+      done
+    fi
   else
     echo "browser E2E failed; non-secret logs kept in $e2e_tmp_dir" >&2
   fi
@@ -247,12 +277,51 @@ e2e_cleanup() {
 }
 trap 'e2e_cleanup $?' EXIT
 
-for e2e_command in docker curl uv npm; do
+for e2e_command in docker curl uv npm openssl; do
   command -v "$e2e_command" >/dev/null || {
     echo "missing required command: $e2e_command" >&2
     exit 2
   }
 done
+
+umask 077
+if ! mkdir -p -- "$e2e_output_root"; then
+  echo "browser E2E could not create its artifact root" >&2
+  exit 1
+fi
+if ! e2e_output_root="$(cd "$e2e_output_root" && pwd -P)"; then
+  echo "browser E2E could not resolve its artifact root" >&2
+  exit 1
+fi
+if ! e2e_output_dir="$(
+    mktemp -d -- "$e2e_output_root/run-${e2e_transition_policy}-${e2e_run_id}.XXXXXX"
+  )"; then
+  echo "browser E2E could not create a unique artifact directory" >&2
+  exit 1
+fi
+echo "browser E2E artifact directory: $e2e_output_dir"
+if ! openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout "$e2e_loopback_key" -out "$e2e_loopback_cert" \
+    -days 1 -subj "/CN=localhost" \
+    -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
+    >"$e2e_tmp_dir/openssl.log" 2>&1; then
+  echo "browser E2E could not create its ephemeral loopback TLS certificate" >&2
+  exit 1
+fi
+chmod 600 "$e2e_loopback_key" "$e2e_loopback_cert"
+if ! e2e_loopback_spki="$(
+    openssl x509 -in "$e2e_loopback_cert" -pubkey -noout |
+      openssl pkey -pubin -outform DER |
+      openssl dgst -sha256 -binary |
+      openssl base64 -A
+  )" 2>>"$e2e_tmp_dir/openssl.log"; then
+  echo "browser E2E could not derive its loopback certificate SPKI pin" >&2
+  exit 1
+fi
+if [[ ! "$e2e_loopback_spki" =~ ^[A-Za-z0-9+/]{43}=$ ]]; then
+  echo "browser E2E derived an invalid loopback certificate SPKI pin" >&2
+  exit 1
+fi
 if [[ "$e2e_webhook_transport" == "endpoint" ]]; then
   if [[ ! -x "$e2e_cloudflared" ]] && ! command -v "$e2e_cloudflared" >/dev/null; then
     echo "cloudflared is required; set CLOUDFLARED_BIN to its executable" >&2
@@ -302,7 +371,7 @@ fi
 
 e2e_stateful_run_started=1
 if [[ "$e2e_webhook_transport" == "endpoint" ]]; then
-  "$e2e_cloudflared" tunnel --no-autoupdate \
+  "$e2e_cloudflared" tunnel --no-autoupdate --no-tls-verify \
     --url "$e2e_backend_url" >"$e2e_tmp_dir/cloudflared.log" 2>&1 &
   e2e_tunnel_pid="$!"
   e2e_tunnel_start="$(e2e_pid_start "$e2e_tunnel_pid")"
@@ -337,7 +406,7 @@ if [[ "$e2e_webhook_transport" == "endpoint" ]]; then
 else
   e2e_webhook_url="${e2e_backend_url}/webhooks/stripe"
   e2e_listener_log="$e2e_tmp_dir/stripe-listen.log"
-  STRIPE_API_KEY="$STRIPE_SECRET_KEY" stripe listen --skip-update \
+  STRIPE_API_KEY="$STRIPE_SECRET_KEY" stripe listen --skip-update --skip-verify \
     --events "$e2e_supported_events" \
     --forward-to "$e2e_webhook_url" >"$e2e_listener_log" 2>&1 &
   e2e_listener_pid="$!"
@@ -384,15 +453,17 @@ env \
   DEMO_BEARER_EMAIL="${e2e_external_ref}@example.test" \
   uv run uvicorn stripe_entitlements.app:create_app --factory \
     --host 127.0.0.1 --port "$e2e_backend_port" \
+    --ssl-keyfile "$e2e_loopback_key" --ssl-certfile "$e2e_loopback_cert" \
     >"$e2e_tmp_dir/backend.log" 2>&1 &
 e2e_backend_pid="$!"
 e2e_backend_start="$(e2e_pid_start "$e2e_backend_pid")"
 
 for _ in $(seq 1 60); do
-  curl -fsS "${e2e_backend_url}/health" >/dev/null 2>&1 && break
+  curl --cacert "$e2e_loopback_cert" -fsS \
+    "${e2e_backend_url}/health" >/dev/null 2>&1 && break
   sleep 1
 done
-curl -fsS "${e2e_backend_url}/health" >/dev/null
+curl --cacert "$e2e_loopback_cert" -fsS "${e2e_backend_url}/health" >/dev/null
 if [[ "$e2e_webhook_transport" == "endpoint" ]]; then
   e2e_public_health_ready=0
   for _ in $(seq 1 60); do
@@ -411,6 +482,33 @@ elif ! kill -0 "$e2e_listener_pid" 2>/dev/null; then
   exit 1
 fi
 
+# E2E_FRONTEND_BUILD_ENV_BEGIN
+if ! (
+  cd web
+  exec env -i \
+    PATH="$e2e_child_path" \
+    HOME="$e2e_child_home" \
+    TMPDIR="$e2e_child_tmp" \
+    LANG="$e2e_child_lang" \
+    NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    NEXT_PUBLIC_BILLING_API_MODE=http \
+    NEXT_PUBLIC_BILLING_API_BASE_URL="$e2e_backend_url" \
+    NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY="$STRIPE_PUBLISHABLE_KEY" \
+    NEXT_PUBLIC_ALLOW_INDEXING=false \
+    E2E_ALLOW_PRODUCTION_ROUTE_AUTH=1 \
+    ./node_modules/.bin/next build
+) >"$e2e_tmp_dir/frontend-build.log" 2>&1; then
+  echo "production frontend build failed; inspect the retained frontend-build.log" >&2
+  exit 1
+fi
+# E2E_FRONTEND_BUILD_ENV_END
+if [[ ! -s "$e2e_repo_root/web/.next/BUILD_ID" ]]; then
+  echo "production frontend build did not create a BUILD_ID" >&2
+  exit 1
+fi
+
+# E2E_FRONTEND_START_ENV_BEGIN
 (
   cd web
   exec env -i \
@@ -418,33 +516,43 @@ fi
     HOME="$e2e_child_home" \
     TMPDIR="$e2e_child_tmp" \
     LANG="$e2e_child_lang" \
+    NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     NEXT_PUBLIC_BILLING_API_MODE=http \
     NEXT_PUBLIC_BILLING_API_BASE_URL="$e2e_backend_url" \
     NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY="$STRIPE_PUBLISHABLE_KEY" \
-    NEXT_PUBLIC_DEMO_BEARER_TOKEN="$e2e_demo_token" \
-    ./node_modules/.bin/next dev --hostname 127.0.0.1 \
-      --port "$e2e_frontend_port"
+    NEXT_PUBLIC_ALLOW_INDEXING=false \
+    E2E_ALLOW_PRODUCTION_ROUTE_AUTH=1 \
+    E2E_HTTPS_HOST=127.0.0.1 \
+    E2E_HTTPS_PORT="$e2e_frontend_port" \
+    E2E_HTTPS_KEY_FILE="$e2e_loopback_key" \
+    E2E_HTTPS_CERT_FILE="$e2e_loopback_cert" \
+    node ./scripts/serve-production-https.mjs
 ) >"$e2e_tmp_dir/frontend.log" 2>&1 &
+# E2E_FRONTEND_START_ENV_END
 e2e_frontend_pid="$!"
 e2e_frontend_start="$(e2e_pid_start "$e2e_frontend_pid")"
 
 for _ in $(seq 1 90); do
-  curl -fsS "${e2e_frontend_url}/pricing" >/dev/null 2>&1 && break
+  curl --cacert "$e2e_loopback_cert" -fsS \
+    "${e2e_frontend_url}/pricing" >/dev/null 2>&1 && break
   sleep 1
 done
-curl -fsS "${e2e_frontend_url}/pricing" >/dev/null
+curl --cacert "$e2e_loopback_cert" -fsS \
+  "${e2e_frontend_url}/pricing" >/dev/null
 
-rm -rf "$e2e_output_dir"
-mkdir -p "$e2e_output_dir"
-
+# E2E_PLAYWRIGHT_ENV_BEGIN
 env \
+  NODE_EXTRA_CA_CERTS="$e2e_loopback_cert" \
   E2E_RUN_REAL_STRIPE=1 \
   E2E_STRIPE_MODE=test \
   E2E_BASE_URL="$e2e_frontend_url" \
   E2E_BACKEND_URL="$e2e_backend_url" \
   E2E_DATABASE_URL="$e2e_database_url" \
+  E2E_DEMO_BEARER_TOKEN="$e2e_demo_token" \
   E2E_EXTERNAL_REF="$e2e_external_ref" \
+  E2E_FRONTEND_BUILD_MODE=production \
+  E2E_LOOPBACK_TLS_SPKI="$e2e_loopback_spki" \
   E2E_DECLINE_STABILITY_SECONDS="${E2E_DECLINE_STABILITY_SECONDS:-10}" \
   E2E_TRANSITION_POLICY="$e2e_transition_policy" \
   E2E_UPGRADE_PAYMENT_METHOD="$e2e_upgrade_payment_method" \
@@ -452,6 +560,7 @@ env \
   E2E_DEMO_PAUSE_MS="${E2E_DEMO_PAUSE_MS:-0}" \
   E2E_OUTPUT_DIR="$e2e_output_dir" \
   npm --prefix web run test:e2e:stripe
+# E2E_PLAYWRIGHT_ENV_END
 
 STRIPE_API_VERSION="$e2e_request_version" uv run python scripts/e2e_stripe.py \
   verify-database --database-url "$e2e_database_url" \
@@ -460,10 +569,4 @@ STRIPE_API_VERSION="$e2e_request_version" uv run python scripts/e2e_stripe.py \
   --delivery-transport "$e2e_webhook_transport" \
   --expected-plan pro --expected-credits 1000 \
   --transition-policy "$e2e_transition_policy"
-
-echo "browser Stripe Checkout, $e2e_transition_policy upgrade, and signed webhook E2E passed"
-if [[ "$e2e_record_video" == "1" ]]; then
-  find "$e2e_output_dir" -type f -name '*.webm' -print | while read -r video_path; do
-    echo "recorded video: $video_path"
-  done
-fi
+e2e_run_completed=1

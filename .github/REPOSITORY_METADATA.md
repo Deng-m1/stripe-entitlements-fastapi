@@ -44,7 +44,7 @@ file does not change GitHub's remote description, topics or branch protection.
 Example authenticated administrator command:
 
 ```bash
-gh repo edit FromCSUZhou/stripe-entitlements-fastapi \\
+gh repo edit Deng-m1/stripe-entitlements-fastapi \\
   --description "Open-source Stripe billing and entitlements for FastAPI/PostgreSQL with two complete full-period/prorated upgrade policies and race-safe webhooks." \\
   --add-topic stripe,fastapi,postgresql,subscriptions,billing,entitlements,webhooks,idempotency,concurrency,nextjs,python,payments,saas,stripe-webhooks,subscription-management,stripe-proration,payment-integration,stripe-checkout,stripe-test-clock
 ```

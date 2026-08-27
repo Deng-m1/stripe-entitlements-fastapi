@@ -24,10 +24,11 @@ Every discount shape on an Invoice fails closed today:
   outside the documented single-item contract.
 - The paid webhook paths in `src/stripe_entitlements/processor.py` fail closed: the
   first-purchase/full-period path records a durable incident without granting, and the
-  prorated-delta settlement path raises
-  `balance, credit notes, taxes and discounts are not supported`, rolling back the
-  event-inbox claim so Stripe retries (invariant 7). No discounted Invoice ever grants
-  silently.
+  prorated-delta settlement path records `invalid_prorated_delta_invoice` with
+  `balance, credit notes, taxes and discounts are not supported`. Both paths acknowledge
+  the fail-closed decision and commit the durable Event audit/incident without an
+  entitlement effect; an unexpected processing exception instead rolls the transaction
+  back so Stripe can retry (invariant 7). No discounted Invoice ever grants silently.
 - Both transition policies reject discounts symmetrically. The preview estimate in
   `src/stripe_entitlements/stripe_gateway.py` sums `total_discount_amounts` and line
   `discount_amounts`, and coerces a presence-only sentinel: a non-empty `discounts`

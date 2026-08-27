@@ -6,9 +6,11 @@
 - [ ] Link every billing behavior change to an invariant and migration.
 - [ ] Separate automated PostgreSQL, automated real Stripe, manual test-mode and
       production evidence.
-- [ ] Bind every pass claim to the exact commit. Current `0.2.2` evidence is 702 local
-      PostgreSQL tests, 9 real Stripe cases, 102 frontend tests, and 2 browser policies;
-      label older 239/7/60/2 and 270/9/62/2 results as historical.
+- [ ] Bind every pass claim to the exact commit. The review candidate based on
+      `main@75070ef` provisionally passed 743 PostgreSQL tests and 153 frontend tests; it
+      is not evidence for that base commit. Replace this label after the final commit and
+      full rerun. Retained `0.2.2` network evidence is 9 real Stripe cases and 2 browser
+      policies; label older 239/7/60/2 and 270/9/62/2 results as historical.
 - [ ] Cite Test Clock renewal/annual-slot evidence only when the full annual lifecycle
       test actually ran; a collected or skipped test is not evidence.
 - [ ] Record outbound request API version and webhook Event snapshot API version
@@ -93,7 +95,12 @@
 ## Database and deployment
 
 - [ ] Back up all ten correctness tables together.
-- [ ] Apply all five migrations through `005_simplify_event_audit.sql` before new code.
+- [ ] Apply all six migrations through
+      `006_invoice_ownership_and_incident_causality.sql` before new code.
+- [ ] Treat migration `006` as a maintenance-window operation: it rebuilds the
+      Invoice-owner foreign key and creates a non-concurrent index. Stop billing writers,
+      rehearse on a production-scale restored copy, set and exercise `lock_timeout`, and
+      monitor `pg_stat_activity`/`pg_locks`; do not claim zero downtime.
 - [ ] Verify every bundled migration checksum; tolerate later migration rows only when
       the runtime/schema change remains backward-compatible during rolling deployment.
 - [ ] Verify restore/PITR and run reconciliation in staging.
@@ -127,7 +134,10 @@
       return routes `noindex` using `docs/SEO.md`.
 - [ ] Confirm visible landing, plan, savings and FAQ copy matches JSON-LD and the
       enforced catalog; do not advertise unsupported coupons, trials, tax or currency.
-- [ ] Confirm CI `Backend`, `Container`, and `Web` jobs pass from a clean clone.
+- [ ] Confirm CI `Backend`, `Container`, and `Web` jobs pass from a clean clone. Backend
+      must install the Wheel independently and apply all six migrations to fresh
+      PostgreSQL; Container must do the same from the built image, then return
+      `ok=true`/`database=true` from host `curl` while UID/GID 10001 and read-only.
 - [ ] Review dependency/security alerts and license changes.
 - [ ] When publishing a demo video:
   - [ ] record only isolated Stripe test mode and show an explicit test-mode label;

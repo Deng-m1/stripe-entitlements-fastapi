@@ -15,11 +15,78 @@ export function validatePublicBillingBuildEnvironment(
   }
 }
 
+export function frontendBuildMode(environment) {
+  return environment === "production" ? "production" : "development";
+}
+
+export const PRODUCTION_E2E_ROUTE_AUTH_SENTINEL =
+  "stripe-entitlements-e2e-route-auth-v1.invalid";
+
+function isHttpsLoopbackOrigin(raw) {
+  if (!raw) return false;
+  try {
+    const url = new URL(raw);
+    return (
+      url.protocol === "https:" &&
+      ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash &&
+      url.pathname === "/"
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function productionE2ERouteAuthSentinel({
+  environment,
+  mode,
+  backendUrl,
+  allowIndexing,
+  demoToken,
+  acknowledgement,
+  publicSentinel,
+}) {
+  if (publicSentinel !== undefined) {
+    throw new Error(
+      "NEXT_PUBLIC_E2E_ROUTE_AUTH_SENTINEL is reserved and cannot be configured.",
+    );
+  }
+  if (acknowledgement === undefined || acknowledgement === "") return undefined;
+  if (acknowledgement !== "1") {
+    throw new Error("E2E_ALLOW_PRODUCTION_ROUTE_AUTH must be exactly '1'.");
+  }
+  if (
+    environment !== "production" ||
+    mode !== "http" ||
+    !isHttpsLoopbackOrigin(backendUrl) ||
+    allowIndexing !== "false" ||
+    Boolean(demoToken)
+  ) {
+    throw new Error(
+      "Production E2E route auth requires production HTTP mode, an HTTPS loopback backend origin, explicit indexing=false, and no demo token.",
+    );
+  }
+  return PRODUCTION_E2E_ROUTE_AUTH_SENTINEL;
+}
+
 validatePublicBillingBuildEnvironment(
   process.env.NODE_ENV,
   process.env.NEXT_PUBLIC_BILLING_API_MODE,
   process.env.NEXT_PUBLIC_DEMO_BEARER_TOKEN,
 );
+
+const productionRouteAuthSentinel = productionE2ERouteAuthSentinel({
+  environment: process.env.NODE_ENV,
+  mode: process.env.NEXT_PUBLIC_BILLING_API_MODE,
+  backendUrl: process.env.NEXT_PUBLIC_BILLING_API_BASE_URL,
+  allowIndexing: process.env.NEXT_PUBLIC_ALLOW_INDEXING,
+  demoToken: process.env.NEXT_PUBLIC_DEMO_BEARER_TOKEN,
+  acknowledgement: process.env.E2E_ALLOW_PRODUCTION_ROUTE_AUTH,
+  publicSentinel: process.env.NEXT_PUBLIC_E2E_ROUTE_AUTH_SENTINEL,
+});
 
 /** @type {import("next").NextConfig} */
 const nextConfig = {
@@ -27,6 +94,9 @@ const nextConfig = {
   // duplicating and potentially shadowing this repository's reviewed root guide.
   agentRules: false,
   reactStrictMode: true,
+  env: productionRouteAuthSentinel
+    ? { NEXT_PUBLIC_E2E_ROUTE_AUTH_SENTINEL: productionRouteAuthSentinel }
+    : {},
   async headers() {
     return [
       {
@@ -45,6 +115,10 @@ const nextConfig = {
           {
             key: "Permissions-Policy",
             value: "camera=(), geolocation=(), microphone=()",
+          },
+          {
+            key: "X-Frontend-Build-Mode",
+            value: frontendBuildMode(process.env.NODE_ENV),
           },
         ],
       },

@@ -1,6 +1,6 @@
 # Stripe Subscription Billing & Entitlements for FastAPI
 
-[![CI](https://github.com/FromCSUZhou/stripe-entitlements-fastapi/actions/workflows/ci.yml/badge.svg)](https://github.com/FromCSUZhou/stripe-entitlements-fastapi/actions/workflows/ci.yml)
+[![CI](https://github.com/Deng-m1/stripe-entitlements-fastapi/actions/workflows/ci.yml/badge.svg)](https://github.com/Deng-m1/stripe-entitlements-fastapi/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12%2B-3776AB.svg)](pyproject.toml)
 
@@ -317,13 +317,19 @@ privacy rules, and reproducible workflow.
 Evidence is split by execution layer; collecting a test or retaining an older run does
 not prove the current tree against Stripe's network.
 
-Current `0.2.2` release-candidate evidence recorded on 2026-08-18:
+Local review-candidate evidence was rerun on 2026-08-28 from a branch based on
+`main@75070ef`; it is not evidence for that base commit and must be rebound to
+the exact final commit before release. Networked `0.2.2` evidence remains the separate
+run recorded on 2026-08-18:
 
-- 702 local/backend tests passed against disposable PostgreSQL 17; the full collection
-  contained 711 cases and 9 `real_stripe` cases were deselected;
-- 102 frontend tests passed with lint, typecheck, production build, production-only npm
-  audit, complete npm audit, and Python dependency audit all passing with zero known
-  vulnerabilities;
+- the local candidate passed 743 backend tests against disposable PostgreSQL 17; the
+  full collection contained 752 cases and 9 `real_stripe` cases were deselected;
+- the local candidate passed 153 frontend tests, lint, typecheck, and a production build;
+- an independently installed candidate Wheel loaded its packaged catalog and all six
+  migrations from an arbitrary working directory and migrated a fresh PostgreSQL 17
+  database; the candidate Docker image applied all six migrations over an internal-only
+  network, then ran as UID/GID 10001 with a read-only root while a host-side `/health`
+  request returned `ok=true` and `database=true`;
 - all 9 real Stripe cases executed and passed against test mode, including strict
   run-owned cleanup, paid/refund projection, both upgrade policies, the four-case failed-
   payment matrix, annual Schedule construction, and the complete Test Clock renewal
@@ -332,10 +338,8 @@ Current `0.2.2` release-candidate evidence recorded on 2026-08-18:
   explicit Stripe CLI signed forwarding: decline, Checkout 3DS, Starter/300 projection,
   upgrade SCA, Pro/1,000 projection, seven related Events, zero unrelated Events, and
   exact three-essential-Event binding;
-- the `0.2.2` Wheel installed in an independent virtual environment, loaded its packaged
-  catalog and five migrations from an arbitrary working directory, and migrated a fresh
-  PostgreSQL database; the Docker image ran as UID/GID 10001 with a read-only root,
-  completed migration, and returned a healthy `0.2.2` API;
+- those retained Stripe/browser passes predate the current production HTTPS, browser
+  environment, and runner changes and therefore do not validate the new runner;
 - the final 48.800-second public demo remains the separately reviewed `0.2.0` visual
   artifact: 1,464 decoded frames, no long black segment, zero forbidden-term OCR matches,
   15/15 semantic scene checks, and 1080p/30 fps H.264 with 48 kHz stereo AAC at -20.0
@@ -456,7 +460,11 @@ customer, Event, Invoice, or secret identifiers are committed. See
    scrubbing, and the transitional audit-shape contract;
 5. `005_simplify_event_audit.sql`: stops new payload hashing, clears stored digests,
    removes hash-based constraints, and retains a nullable compatibility column for a
-   safe rolling upgrade while keeping the redacted audit snapshot.
+   safe rolling upgrade while keeping the redacted audit snapshot;
+6. `006_invoice_ownership_and_incident_causality.sql`: makes retained Invoice ownership
+   explicitly restrict independent billing-account deletion, records incident observation
+   time using the statement wall clock, and indexes strictly causal unresolved-incident
+   cleanup.
 
 The runner serializes migration application, verifies the checksum of every bundled
 migration already present in the database, and allows later migration rows so a backward-

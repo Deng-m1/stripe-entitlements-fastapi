@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Make first Invoice ownership atomic across paid, prorated-delta, refund, and dispute
+  paths so a conflicting account cannot merge facts before its ownership check.
+- Consume Checkout authority on first Subscription binding and terminal deletion, and
+  make matching paid/failed settlement Events converge regardless of delivery order.
+- Harden reconciliation around ignored synthetic duplicates, per-attempt cancellation
+  identity, and strictly causal incident cleanup, including long-running incident writers;
+  add migration `006_invoice_ownership_and_incident_causality.sql` for explicit Invoice
+  audit retention, wall-clock observations, and the unresolved-incident lookup.
+
 ## 0.2.2 - 2026-08-18
 
 - Remove webhook payload hashing from runtime with `005_simplify_event_audit.sql`, clear

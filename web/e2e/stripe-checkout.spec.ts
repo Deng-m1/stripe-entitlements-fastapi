@@ -1,7 +1,7 @@
 import {
   expect,
   test,
-  type APIRequestContext,
+  type BrowserContext,
   type Frame,
   type Locator,
   type Page,
@@ -10,6 +10,11 @@ import {
 import { execFile } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import {
+  isExactBackendApiRequest,
+  optionalE2EBearerToken,
+  withE2EBackendAuthorization,
+} from "../lib/e2e-backend-auth";
 
 const DECLINED_TEST_CARD = "4000000000000002";
 const SCA_TEST_CARD = "4000002500003155";
@@ -127,12 +132,16 @@ async function clickAfterUserScroll(
 }
 
 async function verifyTestBackend(
-  request: APIRequestContext,
+  page: Page,
   backendURL: string,
 ): Promise<void> {
-  const response = await request.get(new URL("/health", backendURL).toString());
-  if (!response.ok()) {
-    throw new Error(`Backend /health returned HTTP ${response.status()}.`);
+  const response = await page.goto(new URL("/health", backendURL).toString(), {
+    waitUntil: "domcontentloaded",
+  });
+  if (!response || !response.ok()) {
+    throw new Error(
+      `Backend /health returned HTTP ${response?.status() ?? "no response"}.`,
+    );
   }
   const health = (await response.json()) as BackendHealth;
   expect(health.ok).toBe(true);
@@ -146,6 +155,29 @@ async function verifyTestBackend(
   if (health.transition_policy !== expectedPolicy) {
     throw new Error("Backend transition policy differs from E2E_TRANSITION_POLICY.");
   }
+}
+
+async function installBackendAuthentication(
+  context: BrowserContext,
+  backendURL: string,
+  token: string | undefined,
+): Promise<void> {
+  if (!token) return;
+  await context.route("**/*", async (route) => {
+    const request = route.request();
+    if (
+      request.method() === "OPTIONS" ||
+      !isExactBackendApiRequest(request.url(), backendURL)
+    ) {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch({
+      headers: withE2EBackendAuthorization(request.headers(), token),
+      maxRedirects: 0,
+    });
+    await route.fulfill({ response });
+  });
 }
 
 async function prepareUpgradePaymentMethod(): Promise<void> {
@@ -239,9 +271,14 @@ async function openPricingThroughExpectedBackend(
     (response) => isCatalogResponse(response.url(), response.request().method()),
     { timeout: 20_000 },
   );
-  await page.goto(frontendUrl(baseURL, "/pricing"), {
+  const navigation = await page.goto(frontendUrl(baseURL, "/pricing"), {
     waitUntil: "domcontentloaded",
   });
+  if (navigation?.headers()["x-frontend-build-mode"] !== "production") {
+    throw new Error(
+      "Real browser E2E requires a production Next.js build served by next start.",
+    );
+  }
   const response = await responsePromise;
   if (!response.ok()) {
     throw new Error(`GET /api/catalog returned HTTP ${response.status()}.`);
@@ -281,7 +318,11 @@ async function openHostedCheckout(page: Page, checkoutUrl: string): Promise<void
   throw lastError;
 }
 
-async function prepareCheckoutCapture(page: Page, backendURL: string): Promise<{
+async function prepareCheckoutCapture(
+  page: Page,
+  backendURL: string,
+  token: string | undefined,
+): Promise<{
   wait: () => Promise<CheckoutRedirect>;
   release: () => Promise<void>;
 }> {
@@ -316,11 +357,15 @@ async function prepareCheckoutCapture(page: Page, backendURL: string): Promise<{
           "Refusing Checkout POST: frontend write target does not match E2E_BACKEND_URL.",
         );
       }
+      const requestHeaders = token
+        ? withE2EBackendAuthorization(route.request().headers(), token)
+        : route.request().headers();
       const response = await route.fetch({
         headers: {
-          ...route.request().headers(),
+          ...requestHeaders,
           "x-stripe-mode-requirement": "test",
         },
+        maxRedirects: 0,
       });
       const body = await response.text();
       let capturedRedirect: CheckoutRedirect | undefined;
@@ -370,6 +415,7 @@ async function prepareCheckoutCapture(page: Page, backendURL: string): Promise<{
 async function loadAccountProjection(
   page: Page,
   baseURL: string,
+  backendURL: string,
 ): Promise<AccountProjection> {
   const responsePromise = page.waitForResponse(
     (response) => isAccountResponse(response.url(), response.request().method()),
@@ -382,12 +428,18 @@ async function loadAccountProjection(
   if (!response.ok()) {
     throw new Error(`GET /api/account returned HTTP ${response.status()}.`);
   }
+  if (new URL(response.url()).origin !== new URL(backendURL).origin) {
+    throw new Error(
+      "Account projection response does not use the attested E2E backend origin.",
+    );
+  }
   return (await response.json()) as AccountProjection;
 }
 
 async function waitForPaidProjection(
   page: Page,
   baseURL: string,
+  backendURL: string,
   expectedPlan = "starter",
   expectedBalance = 300,
   expectedGrant = 300,
@@ -397,7 +449,7 @@ async function waitForPaidProjection(
     .poll(
       async () => {
         try {
-          latest = await loadAccountProjection(page, baseURL);
+          latest = await loadAccountProjection(page, baseURL, backendURL);
           return {
             plan_key: latest.plan_key,
             plan_interval: latest.plan_interval,
@@ -732,12 +784,15 @@ test.describe("real Stripe hosted Checkout", () => {
   test("decline remains free, then 3DS succeeds only after webhook projection", async ({
     context,
     page,
-    request,
     baseURL,
   }, testInfo) => {
     if (!baseURL) throw new Error("Playwright baseURL is missing.");
     const backendURL = process.env.E2E_BACKEND_URL?.trim();
     if (!backendURL) throw new Error("E2E_BACKEND_URL is missing.");
+    const demoBearerToken = optionalE2EBearerToken(
+      process.env.E2E_DEMO_BEARER_TOKEN,
+    );
+    await installBackendAuthentication(context, backendURL, demoBearerToken);
 
     const recordingStartedAt = Date.now();
     const timeline: Array<{ label: string; milliseconds: number; url: string }> = [];
@@ -781,7 +836,7 @@ test.describe("real Stripe hosted Checkout", () => {
     await installRecordingCaptureStyles(page);
 
     await test.step("backend attests Stripe test mode before any state write", async () => {
-      await verifyTestBackend(request, backendURL);
+      await verifyTestBackend(page, backendURL);
     });
 
     await test.step("frontend read traffic is bound to the attested backend", async () => {
@@ -791,7 +846,7 @@ test.describe("real Stripe hosted Checkout", () => {
 
     const accountPage = await context.newPage();
     await installRecordingCaptureStyles(accountPage);
-    const initial = await loadAccountProjection(accountPage, baseURL);
+    const initial = await loadAccountProjection(accountPage, baseURL, backendURL);
     expect(initial.account_id).toBe(await expectedAccountId());
     expect(initial.plan_key).toBe("free");
     expect(initial.credits.balance).toBe(0);
@@ -800,7 +855,11 @@ test.describe("real Stripe hosted Checkout", () => {
 
     await test.step("open a verifiably test-mode hosted Checkout", async () => {
       await expect(page.getByRole("heading", { name: "Starter" })).toBeVisible();
-      const capture = await prepareCheckoutCapture(page, backendURL);
+      const capture = await prepareCheckoutCapture(
+        page,
+        backendURL,
+        demoBearerToken,
+      );
       await clickAfterUserScroll(
         page.getByRole("button", { name: "Choose Starter month" }),
         { noWaitAfter: true },
@@ -830,7 +889,11 @@ test.describe("real Stripe hosted Checkout", () => {
         .toBe(true);
       assertTestModeCheckout(page.url());
 
-      const afterDecline = await loadAccountProjection(accountPage, baseURL);
+      const afterDecline = await loadAccountProjection(
+        accountPage,
+        baseURL,
+        backendURL,
+      );
       expect(afterDecline.plan_key).toBe("free");
       expect(afterDecline.credits.balance).toBe(0);
       expect(afterDecline.entitlements_enforceable).toBe(false);
@@ -856,7 +919,7 @@ test.describe("real Stripe hosted Checkout", () => {
     });
 
     await test.step("signed webhooks become the only success authority", async () => {
-      await waitForPaidProjection(accountPage, baseURL);
+      await waitForPaidProjection(accountPage, baseURL, backendURL);
       await page.goto(page.url());
       await expect(
         page.getByRole("heading", { name: "Webhook-backed account state is ready" }),
@@ -938,7 +1001,7 @@ test.describe("real Stripe hosted Checkout", () => {
     });
 
     await test.step("upgrade access still waits for its paid webhook projection", async () => {
-      await waitForPaidProjection(page, baseURL, "pro", 1000, 1000);
+      await waitForPaidProjection(page, baseURL, backendURL, "pro", 1000, 1000);
       await accountPage.goto(accountPage.url());
       await expect(
         accountPage.getByRole("heading", { name: "Webhook-backed account state is ready" }),
