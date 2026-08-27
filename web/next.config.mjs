@@ -23,6 +23,9 @@ validatePublicBillingBuildEnvironment(
 
 /** @type {import("next").NextConfig} */
 const nextConfig = {
+  // Next 16.3 otherwise writes nested AGENTS.md/CLAUDE.md files on `next dev`,
+  // duplicating and potentially shadowing this repository's reviewed root guide.
+  agentRules: false,
   reactStrictMode: true,
   async headers() {
     return [
