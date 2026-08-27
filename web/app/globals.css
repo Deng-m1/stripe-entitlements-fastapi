@@ -281,41 +281,15 @@ h2 {
   animation-delay: 0.37s;
 }
 
-.hero-brand {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  font-family: var(--font-display-stack);
-  font-size: 1.05rem;
-  font-weight: 600;
-  gap: 10px;
-  letter-spacing: 0.005em;
-  margin: 0 0 26px;
-}
-
-.hero-brand .brand-mark {
-  height: 14px;
-  width: 14px;
-}
-
-.hero-brand-tag {
-  border-left: 1px solid var(--line);
-  color: var(--muted);
-  font-family: var(--font-body-stack);
-  font-size: 0.74rem;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  margin-left: 6px;
-  padding-left: 16px;
-  text-transform: uppercase;
-}
-
 .hero-copy h1 {
-  font-size: clamp(2.4rem, 4.9vw, 3.9rem);
+  font-size: clamp(2.4rem, 4.6vw, 3.7rem);
   letter-spacing: -0.03em;
-  line-height: 1.04;
-  margin: 0 0 20px;
-  max-width: 15ch;
+  line-height: 1.06;
+  margin: 0 0 22px;
+}
+
+.h1-line {
+  display: block;
 }
 
 .hero-accent {
@@ -1491,7 +1465,16 @@ h2 {
   font-family: var(--font-mono-stack);
   font-size: 0.78rem;
   opacity: 0.55;
+  table-layout: fixed;
   width: 100%;
+}
+
+.proof-table td:first-child {
+  width: 6em;
+}
+
+.proof-table td:last-child {
+  width: 7em;
 }
 
 .proof-table td {
@@ -2404,7 +2387,7 @@ dd {
 
 @media (max-width: 850px) {
   .hero-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 44px;
   }
 
@@ -2417,12 +2400,12 @@ dd {
   }
 
   .ledger-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 48px;
   }
 
   .proof-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 24px;
   }
 
@@ -2435,7 +2418,7 @@ dd {
   }
 
   .capability-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .catalog-tiles {
@@ -2493,13 +2476,37 @@ dd {
     padding: 18px 14px 20px;
   }
 
+  .ledger-table {
+    table-layout: fixed;
+  }
+
   .ledger-table td {
     font-size: 0.76rem;
+    overflow: hidden;
     padding: 9px 6px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .ledger-table th {
     padding: 6px;
+  }
+
+  /* Drop the Effect column on very small screens; Seq/Event/Status still
+     tell the ordered-and-deduplicated story. */
+  .ledger-table th:nth-child(3),
+  .ledger-table td:nth-child(3) {
+    display: none;
+  }
+
+  .ledger-table th:first-child,
+  .ledger-table td:first-child {
+    width: 3em;
+  }
+
+  .ledger-table th:last-child,
+  .ledger-table td:last-child {
+    width: 7.5em;
   }
 
   .ledger-seq,

@@ -190,14 +190,12 @@ export default function HomePage() {
         <div className="shell">
           <div className="hero-grid">
             <div className="hero-copy">
-              <p className="hero-brand">
-                <span aria-hidden="true" className="brand-mark" />
-                <span>{SITE_NAME}</span>
-                <span className="hero-brand-tag">Open-source reference</span>
-              </p>
               <h1 id="hero-heading">
-                Billing events are chaos. Your entitlements{" "}
-                <em className="hero-accent">aren&rsquo;t.</em>
+                <span className="h1-line">Billing events are chaos.</span>{" "}
+                <span className="h1-line">
+                  Your entitlements{" "}
+                  <em className="hero-accent">aren&rsquo;t.</em>
+                </span>
               </h1>
               <p className="hero-support">
                 An open-source Stripe billing reference for FastAPI, PostgreSQL,
