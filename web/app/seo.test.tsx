@@ -1,11 +1,24 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import HomePage, { metadata as homeMetadata } from "@/app/page";
+import RootLayout from "@/app/layout";
 import manifest from "@/app/manifest";
 import robots from "@/app/robots";
 import sitemap from "@/app/sitemap";
 
+vi.mock("next/font/google", () => ({
+  IBM_Plex_Mono: () => ({ variable: "font-mono" }),
+  IBM_Plex_Sans: () => ({ variable: "font-body" }),
+  Schibsted_Grotesk: () => ({ variable: "font-display" }),
+}));
+
 describe("public SEO surface", () => {
+  it("declares the global smooth-scroll contract for Next.js navigation", () => {
+    expect(RootLayout({ children: <div /> })).toMatchObject({
+      props: { "data-scroll-behavior": "smooth" },
+    });
+  });
+
   it("renders searchable project, plan, savings, and scope content", () => {
     const { container } = render(<HomePage />);
 
