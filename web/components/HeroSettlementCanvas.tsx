@@ -141,7 +141,9 @@ export function HeroSettlementCanvas() {
 
     const initialize = (settledFraction: number): void => {
       const target = window.innerWidth < 720 ? 90 : 220;
-      slotCount = Math.round(target * 0.62);
+      // Half the budget forms the lattice; the other half stays in flight so
+      // the chaos side of the gate reads as a live stream, not stray dust.
+      slotCount = Math.round(target * 0.5);
       particles = [];
       freeSlots = [];
       for (let index = 0; index < slotCount; index += 1) freeSlots.push(index);
@@ -175,7 +177,7 @@ export function HeroSettlementCanvas() {
         } else {
           // Pre-scatter the field so the first frame already tells the story.
           particle.x = width * Math.random() * GATE_X;
-          particle.alpha = 0.4 + Math.random() * 0.55;
+          particle.alpha = 0.55 + Math.random() * 0.4;
         }
         particles.push(particle);
       }
@@ -214,7 +216,7 @@ export function HeroSettlementCanvas() {
         }
         particle.alpha = Math.min(
           particle.ghost ? 0.7 : 0.95,
-          particle.alpha + dt * 1.5,
+          particle.alpha + dt * 2.2,
         );
         particle.x += particle.vx * dt;
         particle.y += Math.sin(clock * 1.7 + particle.wobble) * particle.amp * dt;
@@ -240,10 +242,12 @@ export function HeroSettlementCanvas() {
     const draw = (): void => {
       context.clearRect(0, 0, width, height);
       const gate = GATE_X * width;
-      // Event-inbox gate: one hairline with a whisper of phosphor.
-      context.fillStyle = "rgba(86, 227, 159, 0.05)";
-      context.fillRect(gate - 3, height * 0.06, 7, height * 0.88);
-      context.fillStyle = "rgba(47, 66, 55, 0.95)";
+      // Event-inbox gate: a phosphor hairline inside a soft light band.
+      context.fillStyle = "rgba(86, 227, 159, 0.04)";
+      context.fillRect(gate - 14, height * 0.06, 28, height * 0.88);
+      context.fillStyle = "rgba(86, 227, 159, 0.07)";
+      context.fillRect(gate - 4, height * 0.06, 9, height * 0.88);
+      context.fillStyle = "rgba(86, 227, 159, 0.3)";
       context.fillRect(gate, height * 0.06, 1, height * 0.88);
 
       for (const particle of particles) {
@@ -253,7 +257,19 @@ export function HeroSettlementCanvas() {
         const y = particle.settled ? slotY(particle.slot) : particle.y;
         const chaos = CHAOS_HUES[particle.hue];
         const mix = particle.mix;
-        const glowSize = particle.settled ? 15 : 19;
+        const glowSize = particle.settled ? 18 : 26;
+        // In-flight events trail a short velocity streak so the chaos side
+        // reads as a moving stream even in a single frame.
+        if (!particle.settled && particle.slot < 0) {
+          const streak = Math.min(26, Math.max(10, particle.vx * 0.16));
+          context.globalAlpha = alpha * 0.3;
+          context.strokeStyle = `rgb(${chaos[0]}, ${chaos[1]}, ${chaos[2]})`;
+          context.lineWidth = 1;
+          context.beginPath();
+          context.moveTo(x - streak, y);
+          context.lineTo(x, y);
+          context.stroke();
+        }
         context.globalCompositeOperation = "lighter";
         if (mix < 1) {
           context.globalAlpha = alpha * (1 - mix) * 0.9;
@@ -279,7 +295,7 @@ export function HeroSettlementCanvas() {
         context.globalAlpha = alpha;
         context.fillStyle = `rgb(${Math.round(chaos[0] + (PHOSPHOR[0] - chaos[0]) * mix)}, ${Math.round(chaos[1] + (PHOSPHOR[1] - chaos[1]) * mix)}, ${Math.round(chaos[2] + (PHOSPHOR[2] - chaos[2]) * mix)})`;
         context.beginPath();
-        context.arc(x, y, particle.settled ? 1.7 : 2, 0, Math.PI * 2);
+        context.arc(x, y, particle.settled ? 1.9 : 2.4, 0, Math.PI * 2);
         context.fill();
       }
       context.globalAlpha = 1;

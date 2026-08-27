@@ -277,6 +277,19 @@ h2 {
   z-index: 1;
 }
 
+/* On narrow viewports the copy spans the full width, so the field must
+   recede to a background texture instead of competing with the headline. */
+@media (max-width: 720px) {
+  .landing-hero-plane::after {
+    background: linear-gradient(
+      90deg,
+      rgba(11, 16, 14, 0.9) 0%,
+      rgba(11, 16, 14, 0.78) 55%,
+      rgba(11, 16, 14, 0.55) 100%
+    );
+  }
+}
+
 .hero-inner {
   padding-block: 96px;
   position: relative;
@@ -608,10 +621,26 @@ h2 {
 
 /* Upgrade matrix: static 6 × 6 transition grid. */
 
+.upgrade-matrix-layout {
+  align-items: start;
+  display: grid;
+  gap: 32px 48px;
+  grid-template-columns: auto minmax(240px, 44ch);
+}
+
+@media (max-width: 980px) {
+  .upgrade-matrix-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .upgrade-matrix-wrap {
   max-width: 100%;
   overflow-x: auto;
   padding-bottom: 6px;
+  /* Contain the absolutely positioned caption and sr-only spans so they
+     scroll with the table instead of widening the document on mobile. */
+  position: relative;
 }
 
 .upgrade-matrix {
@@ -629,10 +658,11 @@ h2 {
 
 .upgrade-matrix th {
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: 0.72rem;
   font-weight: 500;
   letter-spacing: 0.08em;
   padding: 10px 12px;
+  position: relative;
   text-align: left;
   text-transform: uppercase;
   white-space: nowrap;
@@ -640,15 +670,55 @@ h2 {
 
 .upgrade-matrix thead th {
   text-align: center;
+  vertical-align: bottom;
+}
+
+.matrix-col-code {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1;
+}
+
+.matrix-col-code span:first-child {
+  color: var(--text);
+}
+
+.matrix-col-code span:last-child {
+  color: var(--muted);
+  font-size: 0.62rem;
+}
+
+.matrix-row-code {
+  display: none;
 }
 
 .upgrade-matrix td {
   background: var(--surface);
   border: 1px solid var(--line);
-  height: 46px;
-  min-width: 46px;
+  height: 54px;
+  min-width: 54px;
   position: relative;
   text-align: center;
+}
+
+@media (max-width: 520px) {
+  .matrix-row-label {
+    display: none;
+  }
+
+  .matrix-row-code {
+    display: inline;
+  }
+
+  .upgrade-matrix th {
+    padding: 8px;
+  }
+
+  .upgrade-matrix td {
+    height: 42px;
+    min-width: 42px;
+  }
 }
 
 .matrix-dot {
@@ -702,18 +772,53 @@ h2 {
   display: block;
 }
 
+.matrix-aside {
+  display: grid;
+  gap: 20px;
+}
+
+.matrix-callout {
+  background: var(--bg-2, var(--surface));
+  border: 1px solid var(--line-strong, var(--line));
+  border-left: 2px solid var(--phosphor, var(--accent));
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.6;
+  margin: 0;
+  padding: 16px 18px;
+}
+
+.matrix-callout-path {
+  color: var(--text);
+  display: block;
+  font-family: var(--font-mono-stack);
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+
 .matrix-legend {
   color: var(--muted);
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   font-family: var(--font-mono-stack);
   font-size: 0.76rem;
-  gap: 10px 24px;
+  gap: 10px;
   letter-spacing: 0.06em;
   list-style: none;
-  margin: 18px 0 0;
+  margin: 0;
   padding: 0;
   text-transform: uppercase;
+}
+
+@media (max-width: 980px) {
+  .matrix-legend {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 10px 24px;
+  }
 }
 
 .matrix-legend .matrix-dot {
@@ -724,7 +829,7 @@ h2 {
   color: var(--muted);
   font-size: 0.85rem;
   line-height: 1.55;
-  margin: 14px 0 0;
+  margin: 0;
   max-width: 72ch;
 }
 

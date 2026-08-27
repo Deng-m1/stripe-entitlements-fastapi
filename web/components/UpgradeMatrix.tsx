@@ -15,7 +15,8 @@ interface MatrixState {
   interval: BillingInterval;
   rank: number;
   monthlyCredits: number;
-  code: string;
+  planAbbr: string;
+  intervalAbbr: string;
   label: string;
 }
 
@@ -40,7 +41,8 @@ function buildStates(): MatrixState[] {
         interval,
         rank: plan.display_order,
         monthlyCredits: typeof credits === "number" ? credits : 0,
-        code: `${plan.name.charAt(0)}${interval === "month" ? "M" : "Y"}`,
+        planAbbr: plan.name.slice(0, 3),
+        intervalAbbr: interval === "month" ? "mo" : "yr",
         label: `${plan.name} ${interval === "month" ? "Monthly" : "Yearly"}`,
       };
     }),
@@ -71,72 +73,104 @@ export function UpgradeMatrix() {
       : 0;
 
   return (
-    <div className="upgrade-matrix-wrap">
-      <table className="upgrade-matrix">
-        <caption>
-          Outcome of every plan change under the prorated_delta template, from
-          the row state to the column state
-        </caption>
-        <thead>
-          <tr>
-            <th scope="col">
-              <span aria-hidden="true">from \ to</span>
-            </th>
-            {states.map((state) => (
-              <th key={`${state.planKey}-${state.interval}`} scope="col">
-                <span aria-hidden="true">{state.code}</span>
-                <span className="sr-only">{state.label}</span>
+    <div className="upgrade-matrix-layout">
+      <div
+        aria-label="Scrollable plan transition matrix"
+        className="upgrade-matrix-wrap"
+        role="region"
+        tabIndex={0}
+      >
+        <table className="upgrade-matrix">
+          <caption>
+            Outcome of every plan change under the prorated_delta template,
+            from the row state to the column state
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col">
+                <span aria-hidden="true">from \ to</span>
               </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {states.map((from) => (
-            <tr key={`${from.planKey}-${from.interval}`}>
-              <th scope="row">{from.label}</th>
-              {states.map((to) => {
-                const kind = transitionKind(from, to);
-                const highlighted = from === highlightFrom && to === highlightTo;
-                return (
-                  <td
-                    className={highlighted ? "matrix-highlight" : undefined}
-                    key={`${to.planKey}-${to.interval}`}
-                    tabIndex={highlighted ? 0 : undefined}
-                  >
-                    <span aria-hidden="true" className={`matrix-dot ${kind}`} />
-                    <span className="sr-only">{KIND_COPY[kind]}</span>
-                    {highlighted ? (
-                      <span className="matrix-tooltip">
-                        prorated_delta · paid two-line Invoice · +{creditDelta}
-                        {" credits · period preserved"}
-                      </span>
-                    ) : null}
-                  </td>
-                );
-              })}
+              {states.map((state) => (
+                <th key={`${state.planKey}-${state.interval}`} scope="col">
+                  <span aria-hidden="true" className="matrix-col-code">
+                    <span>{state.planAbbr}</span>
+                    <span>{state.intervalAbbr}</span>
+                  </span>
+                  <span className="sr-only">{state.label}</span>
+                </th>
+              ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
-      <ul className="matrix-legend">
-        <li>
-          <span aria-hidden="true" className="matrix-dot immediate" />
-          Immediate prorated settlement
-        </li>
-        <li>
-          <span aria-hidden="true" className="matrix-dot period-end" />
-          Scheduled at period end
-        </li>
-        <li>
-          <span aria-hidden="true" className="matrix-dot noop" />
-          No-op
-        </li>
-      </ul>
-      <p className="matrix-footnote">
-        Shown: the prorated_delta template. The full_period_reset template
-        defines the same 36 cells and instead settles monthly-origin upgrades
-        immediately at the full target price.
-      </p>
+          </thead>
+          <tbody>
+            {states.map((from) => (
+              <tr key={`${from.planKey}-${from.interval}`}>
+                <th scope="row">
+                  <span className="sr-only">{from.label}</span>
+                  <span aria-hidden="true" className="matrix-row-label">
+                    {from.label}
+                  </span>
+                  <span aria-hidden="true" className="matrix-row-code">
+                    {from.planAbbr}·{from.intervalAbbr}
+                  </span>
+                </th>
+                {states.map((to) => {
+                  const kind = transitionKind(from, to);
+                  const highlighted =
+                    from === highlightFrom && to === highlightTo;
+                  return (
+                    <td
+                      className={highlighted ? "matrix-highlight" : undefined}
+                      key={`${to.planKey}-${to.interval}`}
+                      tabIndex={highlighted ? 0 : undefined}
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={`matrix-dot ${kind}`}
+                      />
+                      <span className="sr-only">{KIND_COPY[kind]}</span>
+                      {highlighted ? (
+                        <span className="matrix-tooltip">
+                          prorated_delta · paid two-line Invoice · +
+                          {creditDelta}
+                          {" credits · period preserved"}
+                        </span>
+                      ) : null}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="matrix-aside">
+        <p className="matrix-callout">
+          <span className="matrix-callout-path">
+            Starter → Pro · monthly (highlighted cell)
+          </span>
+          prorated_delta settles it immediately: a paid two-line Invoice, +
+          {creditDelta} credits, and the current period preserved.
+        </p>
+        <ul className="matrix-legend">
+          <li>
+            <span aria-hidden="true" className="matrix-dot immediate" />
+            Immediate prorated settlement
+          </li>
+          <li>
+            <span aria-hidden="true" className="matrix-dot period-end" />
+            Scheduled at period end
+          </li>
+          <li>
+            <span aria-hidden="true" className="matrix-dot noop" />
+            No-op
+          </li>
+        </ul>
+        <p className="matrix-footnote">
+          Shown: the prorated_delta template. The full_period_reset template
+          defines the same 36 cells and instead settles monthly-origin
+          upgrades immediately at the full target price.
+        </p>
+      </div>
     </div>
   );
 }
