@@ -1,213 +1,340 @@
-# Landing Redesign Brief — "Settlement Field"
+# Landing Redesign Brief — "Engineering Ledger Paper"
 
-Status: approved direction (planning phase — no landing code changed yet).
+Status: approved direction, v2. This brief SUPERSEDES the v1 "Settlement
+Field" dark-ink/phosphor direction (commits `04eb423`…`aa54ea3`), which was
+implemented and rejected in visual review as a generic dark AI-site look.
+
 Scope: `web/` marketing surface only. No billing backend behavior changes.
 
-## 1. One-line direction
+## 0. Why this brief was rewritten (process correction)
 
-A dark "ledger ink" landing page whose single hero visual — a Canvas particle
-field where chaotic Stripe webhook events settle into a perfectly ordered
-entitlement lattice — dramatizes the product's actual guarantee:
-deterministic entitlements out of non-deterministic event streams.
+The v1 brief cited two concept renders that were never committed to the repo
+and contained **zero** verifiable design references. Implementation therefore
+had nothing concrete to match against, and review had nothing to reject
+against. Correction, binding from now on:
 
-Concept renders (generated, for art direction only, not shipped assets):
+- Every visual decision in this brief traces to a **Mobbin reference with a
+  full URL** that any reviewer can open.
+- The Mobbin clauses in §2 are **contract terms**, not mood. An
+  implementation that does not visibly resemble the cited references fails
+  review (§3).
+- Generated concept art may be used for exploration but can never substitute
+  for, or override, a Mobbin clause. This brief intentionally ships without
+  any non-repo image dependencies.
 
-- Hero: `landing-hero-concept-settlement-field.png` (agent artifact)
-- Matrix section: `landing-upgrade-matrix-section-concept.png` (agent artifact)
-- Reviewer note: these renders are NOT present in the repo or on this server.
-  They are non-normative mood references; the written spec in this brief is the
-  contract. Do not block implementation on locating them.
+## 1. One-line direction (decided)
 
-## 2. Diagnosis of the current landing (`web/app/page.tsx`, `globals.css`)
+A light "engineering ledger paper" landing: warm off-white canvas with a faint
+dotted grid, near-black ink typography, ONE settlement-orange accent, and the
+product's real artifacts — a dark terminal window, a ledger table filling with
+events, an event-pipeline node graph — framed as thin-bordered paper cards.
+Dark is demoted from page theme to a single contrast band. The product
+narrative is unchanged: out-of-order Stripe events in, deterministic
+entitlements out — but it is now told as *reconciliation on paper*, the way
+Midday, Anchor, and Cloudflare Workers tell it, not as a neon terminal.
 
-1. Template look: pale teal-gray wash + white cards + Space Grotesk/IBM Plex is
-   indistinguishable from generic SaaS boilerplate; no memorable brand image.
-2. No visual anchor: the hero is typography plus a faint animated background
-   grid (`.landing-hero-plane::before/::after`); nothing depicts the product.
-3. Landing behaves like a dashboard: a full 6-column comparison table
-   (`.comparison-table`) and three math tiles (`.savings-grid`) duplicate
-   `/pricing` and force reading, not persuasion.
-4. The strongest differentiator (complete 6 × 6 upgrade matrix, race-safety
-   invariants) is buried in body copy of `capabilities[]` and FAQ answers.
-5. The pipeline strip (`.hero-pipeline`) is the right story told too small —
-   four gray list items under the fold line.
-6. Header/footer are neutral chrome with a 12px gradient square as the only
-   mark; `DemoNotice` yellow banner visually outranks the brand.
+Why the reversal is justified by evidence, not taste: every category-adjacent
+reference found (billing, payments, fintech dev tools — Midday, Anchor, Mews'
+product cards, Cloudflare Workers) uses a light paper canvas with restrained
+accents and real UI artifacts. The rejected phosphor-dark direction matched
+none of them; it pattern-matched "generic AI dev site" instead.
 
-## 3. Visual system (decided)
+## 2. Mobbin reference contract (hard constraints)
 
-### Tokens (replace the light theme on the landing route)
+Each clause below was written after inspecting the actual Mobbin screenshot,
+not its metadata. Format: URL → what the screenshot actually shows → what we
+MUST borrow (acceptance-checkable) → what we must NOT borrow.
+
+### M1 — Cloudflare Workers: page canvas, grid, accent discipline
+
+URL: https://mobbin.com/sites/sections/0aa3bdd1-b2cf-4922-b0a2-39ce4ade272e
+
+Observed: cream/off-white page over a faint dotted-dot grid. Centered
+headline "Go from localhost → global in minutes" with the two key words set
+in orange (one in mono style), tiny gray subline. Below, thin-bordered white
+cards in an asymmetric two-column grid: a syntax-highlighted code editor card
+(orange/blue tokens on white, real file tabs), a white terminal card with mac
+traffic-light dots and a single `npx wrangler deploy` prompt line, and a
+spiky orange area chart with a dashed annotation line labeled "685k requests
+per second". Small hand-drawn arrow doodles and tiny mono tags ("PLAYER 1")
+sit between cards.
+
+MUST borrow:
+- Page canvas: warm off-white (`--paper`) with a faint dotted grid visible in
+  section backgrounds (CSS `radial-gradient` dots, opacity ≤ 8%).
+- Thin-bordered (1px, `--line`) white cards as the ONLY framing device for
+  product artifacts. No shadows heavier than 0–2px, no glassmorphism.
+- Exactly one warm accent (settlement orange) used for: highlighted headline
+  words, primary CTA fill, chart stroke, annotation labels. Counted per
+  viewport: ≤ 3 orange elements visible at once.
+- One annotated metric chart somewhere on the page: spiky line/area chart +
+  dashed reference line + small mono label stating a concrete number (ours:
+  events replayed / duplicate deliveries absorbed).
+
+MUST NOT borrow: the hand-drawn doodle arrows and game-y "PLAYER" tags
+(wrong tone for billing infrastructure); the centered hero layout (our hero
+is left-aligned per M2).
+
+### M2 — Anchor (developer section): hero composition
+
+URL: https://mobbin.com/sites/sections/d99917c8-d6a4-42f2-92ce-00e32442c35c
+
+Observed: very light gray-green background. Left: large near-black grotesque
+headline "Made for developers, by developers.", small gray body copy, one
+solid orange rounded CTA ("View docs"). Right: a near-black rounded code
+window titled `developersection.js` with mac dots, tilted a few degrees,
+showing a `curl --request POST` call with green/cream syntax highlighting and
+line numbers. Scattered below at varying angles: rounded pill cards — dark
+green `<Accounts/>` in mono, mint "return payments", cream "export
+({Cards})", solid orange "Transfers" — over rows of plain light-gray
+placeholder pills.
+
+MUST borrow:
+- Hero composition: headline block LEFT (grotesque, near-black, ≤ 8 words per
+  line), ONE dark terminal/code window RIGHT as the only dark object in the
+  hero. The dark window is where the terminal aesthetic survives: it shows a
+  real webhook payload / `stripe trigger` transcript with restrained syntax
+  color on near-black.
+- Slight rotation (2–4°) on the dark window OR on the event pills — one of
+  the two, not both.
+- Domain-object pills in a muted palette (dark green, mint, cream, orange)
+  used for our vocabulary: `invoice.paid`, `charge.refunded`,
+  `entitlement.granted`, `dispute.created`. Mono type inside pills.
+
+MUST NOT borrow: the decorative rows of empty placeholder pills (visual
+filler); more than one solid-orange object in the hero.
+
+### M3 — Midday (how it works): sources → ledger section
+
+URL: https://mobbin.com/sites/sections/feaf92f2-1f1e-45bc-b9a0-39b2102c816e
+
+Observed: white/cream page, huge whitespace. Right: a thin-bordered card
+containing a "Transactions" label, four small account icons in a row, dotted
+vertical connector lines dropping from the icons into a ledger table (Date /
+Description / Amount / Category) with three filled rows — colored category
+chips (blue, light blue, green), the newest row rendered faded as if just
+arriving — followed by many empty ruled rows. Left: serif "How it works"
+heading over a vertical five-step list where only the active step is black
+(with a small square marker) and the rest are faded gray.
+
+MUST borrow:
+- The page's centerpiece section: sources-above, dotted connector lines
+  dropping into a ledger table below. Ours: Stripe webhook types on top
+  (out of order, jittered) → dotted lines → `event_inbox` ledger table whose
+  rows are ordered and deduplicated. The newest row appears faded (M3's
+  arriving-row trick) — this IS the product story drawn as a diagram.
+- Empty ruled rows below the filled ones (the ledger visibly has room —
+  quiet confidence, and it reads as paper).
+- Vertical stepper with a single active (ink) step and faded (gray) siblings
+  for the four pipeline stages: signature verify → inbox claim → one
+  transaction → projected entitlement.
+
+MUST NOT borrow: the serif display face for our H1 (we stay grotesque per
+M2/M6; serif is permitted ONLY for section eyebrows if at all); Midday's
+near-invisible nav (ours keeps visible CTAs).
+
+### M4 — Retool (use cases): event-pipeline node graph
+
+URL: https://mobbin.com/sites/sections/57a4e887-2d6e-4fda-8eea-bd4fcc1a98a4
+
+Observed: white background. Bold black h2 ("Monitoring & alerting"), gray
+body, one black CTA. Below: a left-to-right node graph of white 1px-bordered
+cards, each with a plain-language title ("Every day at 09:00 PT", "Get list
+of expiring trials") and a colored mono chip naming the tech (`crontab`
+green, `PostgreSQL` blue, `JavaScript` yellow, `Slack` red) with matching
+icon; thin colored elbow lines with dot terminals connect the cards, and the
+graph branches into two end nodes. A faded watermark of tiny gray text lines
+sits behind the graph.
+
+MUST borrow:
+- The "guarantees" section renders our webhook path as exactly this node
+  graph: white bordered node cards titled in plain language ("Verify
+  signature on raw body", "Claim event in inbox", "Apply effects in one
+  transaction", "Project entitlements") each with a mono tech chip
+  (`FastAPI`, `PostgreSQL`, `Stripe CLI`) in that node's assigned color.
+- Elbow connector lines with small dot terminals; ONE branch showing the
+  duplicate-delivery path terminating in a "no-op (already claimed)" node —
+  the race-safety differentiator drawn, not described.
+
+MUST NOT borrow: the background text watermark (noise); tab bar above the
+graph (we have one use case, not four).
+
+### M5 — Mews (embedded payments): the single dark contrast band
+
+URL: https://mobbin.com/sites/sections/5bfe32b1-3f5c-4b82-ae83-cba6b6feb2cb
+
+Observed: near-black full-width section. Mono uppercase eyebrow ("EMBEDDED
+PAYMENTS"), white bold h2 "Take the pain out of payments", gray subcopy.
+Left: a dimmed dark table of dated rows overlaid by a white popover card
+"Ledger activity report" listing labeled money values ending in "Net balance
+$0.00" with a green-check chip "Ledgers balanced"; one cell carries a focus
+outline. Right: white h3, three checklist rows with square check marks, one
+white-outline mono-caps pill button.
+
+MUST borrow:
+- Exactly ONE near-black full-width band on the page: the "proof" section
+  listing real test gates (Checkout, decline, 3DS, signed webhook, Test
+  Clock renewal). Mono uppercase eyebrow + white h2 + checklist with square
+  checks + one outline pill CTA — Mews' layout, our content.
+- The white-popover-over-dark-table motif: a light card showing
+  `entitlements: consistent` / `duplicates absorbed: N` with a single green
+  "balanced"-style chip. Green appears ONLY inside this chip on the whole
+  page (semantic, not thematic — this retires phosphor green as a theme).
+
+MUST NOT borrow: making the whole page this dark theme (v1's mistake —
+exactly one band); purple focus-outline accent.
+
+### M6 — Vercel (hero): typography and restraint ceiling
+
+URL: https://mobbin.com/sites/sections/42b13454-50c5-40ec-bd46-c7c1ea521873
+
+Observed: white page, extreme whitespace. Left: two-line light-weight
+grotesque headline "Agentic Infrastructure" in near-black; two pill buttons
+(black filled, white outline). Center: one large solid-black triangle with a
+soft shadow. Right: three lines of tiny mono uppercase microcopy ("FOR
+CODING AGENTS / …"). Bottom: a single-row strip of small monochrome customer
+logos.
+
+MUST borrow:
+- Typography ceiling: grotesque display + tiny mono-uppercase microcopy as
+  the entire typographic system. Mono-caps microcopy column in the hero for
+  our three guarantees ("RACE-SAFE WEBHOOKS / IDEMPOTENT GRANTS /
+  DETERMINISTIC UPGRADES").
+- Button grammar sitewide: exactly two styles — ink-filled pill and
+  1px-outline pill. No gradients, no glows.
+- A single-row monochrome strip near the footer for the stack (FastAPI,
+  PostgreSQL, Stripe, Next.js) rendered as quiet gray marks, not colored
+  badges.
+
+MUST NOT borrow: the centered giant logo mark (we have no such brand
+equity); pure-white background (ours is warm paper per M1).
+
+## 3. Acceptance clause (binding for implementation PR and visual review)
+
+1. The implementation PR description MUST contain a screen-by-screen mapping
+   table: every landing section names the Mobbin clause(s) (M1–M6) it
+   implements. A section that maps to no clause must be removed or justified
+   as pure content (e.g. FAQ text).
+2. Visual review MUST be able to place a section screenshot next to its cited
+   Mobbin screenshot and see the resemblance in layout, framing, and accent
+   discipline. If a reviewer cannot tell which reference a screen came from,
+   the screen fails — regardless of how polished it looks in isolation.
+3. Any deviation from a MUST-borrow item requires updating this brief in the
+   same PR with the replacement Mobbin URL and rationale. Silent drift is a
+   review-blocking defect, equal in severity to a failing test.
+4. Reviewer self-check: `grep -i mobbin web/DESIGN_BRIEF.md` must return the
+   clause URLs; a brief revision that drops them is invalid.
+
+## 4. Visual system (derived from M1/M2/M5/M6)
 
 ```css
-:root[data-theme="ink"] {
-  --bg-0: #0b100e;        /* page base: green-black ink, not pure black */
-  --bg-1: #111917;        /* raised plane / bands */
-  --bg-2: #18231f;        /* cards, matrix panel */
-  --line: #223029;        /* hairlines */
-  --line-strong: #2f4237;
-  --ink: #ecf4ee;         /* primary text */
-  --ink-dim: #9dafa4;     /* secondary text */
-  --phosphor: #56e39f;    /* settled / entitlement accent */
-  --phosphor-dim: #2e7d5b;
-  --signal-amber: #e4b65c;/* money figures, period-end states */
-  --signal-red: #f26d5f;  /* refund / dispute states */
-  --focus: #7ff0bc;
+:root[data-theme="paper"] {
+  --paper: #faf6ef;        /* page canvas (M1 cream) */
+  --paper-raised: #ffffff; /* cards */
+  --grid-dot: #d8d2c6;     /* dotted grid, ≤ 8% visual weight */
+  --line: #e3ddd2;         /* 1px card borders */
+  --ink: #17201c;          /* headlines, body (M2 near-black green-cast) */
+  --ink-dim: #6b7570;      /* secondary text */
+  --accent: #e35a1f;       /* settlement orange (M1/M2) — the ONLY accent */
+  --pill-forest: #1e3a2f;  /* event pills (M2) */
+  --pill-mint: #cfe8d8;
+  --pill-cream: #f0e2c8;
+  --ok-chip: #1f9d55;      /* ONLY inside the M5 "balanced" chip */
+  --band-ink: #101513;     /* the single dark band (M5) */
 }
 ```
 
-Usage discipline: phosphor is a thin accent (dots, numerals, one primary CTA),
-never large fills; amber only on money/period-end semantics; red only on
-refund/dispute semantics. This keeps the palette away from "Matrix" kitsch.
+Type: display + body = Schibsted Grotesk (already loaded); mono = IBM Plex
+Mono for pills, microcopy, table figures (`tabular-nums`). IBM Plex Sans may
+remain for long-form FAQ text. No serif display. Space Grotesk stays retired.
 
-### Type
+Accent budget (reviewable): ≤ 3 orange elements per viewport (M1); green only
+in the M5 chip; red only on `dispute/refund` pill semantics.
 
-- Display: Schibsted Grotesk (next/font/google), tight tracking, for h1/h2.
-- Body: keep IBM Plex Sans (already loaded — reduces churn, reads technical).
-- Mono: add IBM Plex Mono as a loaded font for eyebrows, event IDs, matrix
-  labels, all tabular figures (`font-variant-numeric: tabular-nums`).
-- Space Grotesk is retired.
+## 5. Information architecture (each section cites its clause)
 
-### Composition
+1. Hero [M2 + M6] — left headline (keep narrative: "Billing events are
+   chaos. Your entitlements aren't."), support line keeping the verbatim
+   SEO phrase "Stripe billing reference for FastAPI, PostgreSQL, and
+   Next.js"; right: tilted dark terminal window replaying a `stripe trigger`
+   transcript; scattered event pills; mono-caps guarantee microcopy column.
+2. Sources → ledger [M3] — the centerpiece: jittered webhook types dropping
+   via dotted connectors into an ordered `event_inbox` ledger table, newest
+   row faded, empty ruled rows below; vertical 4-step pipeline stepper left.
+3. Pipeline node graph [M4] — plain-language nodes with tech chips, one
+   duplicate-delivery branch ending in "no-op (already claimed)".
+4. Upgrade matrix [M1 card discipline] — the 6 × 6 plan-transition grid as a
+   thin-bordered paper card, orange used only for the highlighted
+   `prorated_delta` cell; legend in mono.
+5. Proof band [M5] — the single dark band: test-gate checklist + light
+   popover card with the green "consistent" chip; annotated metric chart
+   [M1] may live here or in section 2.
+6. Catalog teaser + slim SEO table — three compact tiles + link to
+   `/pricing`; keep the slim restyled `<table>` for the tabular SEO surface.
+7. FAQ (content unchanged, restyled to paper) + JSON-LD kept.
+8. Footer [M6] — monochrome stack strip, repo link, license note.
 
-Single full-bleed hero plane (~88vh): headline block left, settlement field
-filling the plane; no floating badges, no stacked cards, no screenshot frames.
-Below the fold, sections alternate `--bg-0` / `--bg-1` bands separated by
-hairlines, editorial one-column headings with content right or below.
+## 6. Motion & rendering tech (decided, with degradation)
 
-## 4. Motion / rendering tech (decided)
+The v1 Canvas particle field is retired with the dark theme. On paper, the
+references animate almost nothing — restraint is the premium signal.
 
-- Hero: hand-rolled Canvas 2D particle system (`HeroSettlementCanvas.tsx`,
-  client component, zero dependencies, target < 8 KB min+gz).
-  Not three.js / react-three-fiber / OGL: the composition is flat 2D; three.js
-  costs ~150 KB+ gz and measurable TTI on mid-range mobile for no gain here.
-- Reviewer ruling (WebGL vs Canvas, final): Canvas 2D upheld. At ≤ ~220 flat
-  particles WebGL adds shader boilerplate, context-loss handling, and driver
-  blocklist failures that would require a Canvas fallback anyway — double the
-  code for zero visual gain. The "premium" glow WebGL implies is achieved in
-  Canvas via a pre-rendered radial-gradient sprite (offscreen canvas) drawn
-  with `globalCompositeOperation: "lighter"` additive blending. Revisit only
-  if the design later demands > 2,000 particles or per-pixel post-processing.
-- Behavior: particles spawn left with jitter in mixed hues (a few duplicate
-  "ghost pairs" merge at the gate), cross a hairline "event inbox" gate, then
-  snap to lattice rows that accumulate on the right.
-- Performance budget: cap DPR at 2; ~220 particles desktop / ~90 mobile
-  (viewport-width based); rAF paused via IntersectionObserver when offscreen
-  and on `document.visibilitychange`.
-- Accessibility/degradation: canvas is `aria-hidden`; headline is real text so
-  LCP is unaffected; `prefers-reduced-motion: reduce` renders one static
-  settled frame (single draw, no loop); no-JS gets the plain dark hero.
-- Scroll reveals: CSS class toggled by one IntersectionObserver; existing
-  global reduced-motion kill-switch in `globals.css` already covers it.
+- NO WebGL / three.js / r3f / OGL / GSAP / Framer Motion. Nothing in M1–M6
+  needs a GPU pipeline; adding one would be résumé-driven engineering.
+- Hero terminal [M2]: line-by-line reveal of a pre-scripted transcript.
+  CSS-only (`@keyframes` steps + `animation-delay` per line, pure DOM text).
+  No rAF loop. `prefers-reduced-motion: reduce` → all lines visible, static.
+- Ledger drop [M3]: dotted connectors are inline SVG; on section entry
+  (single IntersectionObserver) play `stroke-dashoffset` line-draw + a
+  `translateY + opacity` row-settle transition, once, ~600ms total.
+  Reduced-motion or no-JS → final settled state rendered statically
+  (server-renderable markup; observer only adds a class).
+- Node graph [M4] and metric chart [M1]: static inline SVG. No animation.
+- Budget: zero new npm dependencies, zero canvas contexts, no persistent rAF;
+  total added client JS for motion ≤ 2 KB (one observer utility).
 
-## 5. Information architecture (top to bottom)
+## 7. Test impact (update in lockstep, same commit as the change)
 
-Each section has exactly one job; copy skeleton is the contract:
+- `web/app/seo.test.tsx`: keep asserting the keyword-bearing support
+  paragraph and JSON-LD (SoftwareApplication + FAQPage). `featureList`
+  derives from `capabilities[].title` — keep titles keyword-meaningful when
+  re-labeling to plain-language node names.
+- `web/promo/ui-tour.spec.ts`: asserts EXACT H1/h2 copy — update in the same
+  commit as `page.tsx`. With the rAF canvas gone, the
+  `page.emulateMedia({ reducedMotion: "reduce" })` guard is still required
+  for the CSS/SVG animations to keep captures deterministic.
+- `npm run lint`, `typecheck`, `vitest` green; no backend tests touched.
+- Workspace hygiene: the checkout carries unrelated uncommitted diffs
+  (`web/lib/mock-api*`, `web/lib/runtime.ts`, `web/next.config.mjs`,
+  `web/lib/next-config.test.mjs`, `web/next-env.d.ts`). Redesign commits must
+  not absorb them.
 
-1. Hero — the claim. H1: "Billing events are chaos. Your entitlements aren't."
-   Support: "An open-source Stripe billing reference for FastAPI, PostgreSQL,
-   and Next.js that turns noisy webhook streams into deterministic access."
-   CTAs: "Explore the live demo" (phosphor) / "View the source" (ghost).
-   SEO tradeoff (reviewer-decided): the slogan H1 drops the keyword-rich
-   current H1. Accepted ONLY under these compensations, which are binding:
-   the support paragraph keeps the full phrase "Stripe billing reference for
-   FastAPI, PostgreSQL, and Next.js" verbatim; at least one section h2 below
-   the fold contains "Stripe billing"; metadata titles/description and JSON-LD
-   stay keyword-rich and untouched; `seo.test.tsx` asserts the keyword-bearing
-   support paragraph (not only the slogan H1) so the keyword surface cannot
-   silently regress.
-2. Pipeline band — how (kept content, restaged). The four existing steps as a
-   full-width mono strip: signature → inbox claim → one transaction →
-   projected entitlement.
-3. Invariants — why trust it. Reframe `capabilities[]` as "Guarantees, not
-   features": numbered invariants with mono indices (race-safe webhooks,
-   idempotent grants, refund/dispute convergence, real Stripe test gates).
-4. Upgrade matrix — the differentiator. "All 36 plan transitions, defined."
-   Static 6 × 6 CSS grid (server-rendered), legend: immediate / period-end /
-   no-op; one highlighted cell shows a `prorated_delta` tooltip.
-5. Catalog teaser — what it costs. Three compact tiles (plan, price, credits,
-   annual saving) + link to `/pricing`. The full comparison table moves out of
-   the landing; the `<table>` itself is kept in DOM (visually restyled) only if
-   we choose to preserve current SEO assertions — decision: keep a slim table,
-   restyled dark, to retain the tabular SEO surface.
-6. Test gates — proof. Terminal-styled strip listing real gates: Checkout,
-   decline, 3DS, signed webhook, Test Clock renewal, UI projection.
-   Kitsch guard: same accent discipline as the hero — no full-green text
-   blocks, no blinking cursor, no scanline effects; mono type + one phosphor
-   status dot per line is the ceiling.
-7. FAQ — objections + JSON-LD (content unchanged, dark restyle).
-8. Final CTA + footer — repo link, license, "reference UI only" note.
+## 8. Not doing (explicitly)
 
-## 6. File plan
-
-- `web/app/globals.css` — token system + dark landing styles (largest diff).
-- `web/app/page.tsx` — section restructure per IA above; JSON-LD kept.
-- `web/components/HeroSettlementCanvas.tsx` — new client component.
-- `web/components/UpgradeMatrix.tsx` — new, server-renderable.
-- `web/components/SiteHeader.tsx` — token-aware chrome (transparent over ink
-  on `/`, solid on app routes); `DemoNotice` restyled subordinate to brand.
-- Theme scoping mechanism (reviewer-decided): header/footer live outside the
-  landing wrapper in `layout.tsx`, so a wrapper-level `data-theme` cannot
-  style them. Use `body:has(.landing-page)` selectors in `globals.css` to
-  re-chrome header/footer/demo-notice on `/` (supported by all browsers this
-  project targets); keep `SiteHeader` a server component — no `usePathname`
-  client conversion. Dark-theme `:focus-visible` must switch to the `--focus`
-  token inside the ink scope (the global teal outline is invisible on ink).
-- `web/app/icon.svg`, `opengraph-image.tsx`, `twitter-image.tsx` — re-skin to
-  ink/phosphor after the landing lands.
-- `/pricing`, `/account`, `/billing/*` keep the light app theme this phase;
-  they inherit accent tokens only.
-- No new npm dependencies.
-
-## 7. Test impact (must be updated in lockstep)
-
-- `web/app/seo.test.tsx` asserts the current H1 ("Race-safe Stripe billing…"),
-  the comparison table name, and copy fragments — update assertions to the new
-  copy skeleton in the same commit; keep SoftwareApplication + FAQPage graph.
-  Note: `featureList` in the JSON-LD derives from `capabilities[].title`;
-  when reframing capabilities as guarantees, keep those titles keyword-
-  meaningful (they are indexed structured data, not just UI copy).
-- `web/promo/ui-tour.spec.ts` asserts EXACT heading copy (H1 and three h2s),
-  not just selectors — every renamed heading breaks the promo tour and must be
-  updated in the same commit as `page.tsx`.
-- Canvas determinism in captures: Playwright's `animations: "disabled"`
-  screenshot option does NOT stop a rAF canvas loop. The promo spec (and any
-  screenshot test crossing the hero) must call
-  `page.emulateMedia({ reducedMotion: "reduce" })` so the hero renders the
-  static settled frame and captures stay reproducible.
-- `npm run lint`, `typecheck`, `vitest` must pass; no backend tests touched.
-- Workspace hygiene: the checkout currently carries unrelated uncommitted
-  diffs (`web/lib/mock-api*`, `web/lib/runtime.ts`, `web/next.config.mjs`,
-  `web/lib/next-config.test.mjs`). Landing commits must not absorb them; keep
-  them out of every redesign commit.
-
-## 8. Risks and mitigations
-
-- Canvas jank on low-end mobile → particle cap by viewport, DPR clamp,
-  offscreen pause; worst case ships the static settled frame permanently.
-- Dark-theme contrast → all text pairs checked to WCAG AA (ink-dim on bg-0 is
-  ~7:1; phosphor reserved for non-text accents and large CTA text).
-- SEO regression → metadata, JSON-LD, robots/sitemap fail-closed logic remain
-  untouched; copy changes mirrored into `seo.test.tsx`.
-- Mixed theme (dark landing / light app) → mediated by tokenized header and a
-  shared accent family; revisit app-screen dark skin as a later phase.
-
-## 9. Not doing (explicitly)
-
-- No purple/white gradients, cream+serif+terracotta, newspaper grids, default
-  Inter/Roboto, hero badge chips, or floating card stacks.
-- No three.js / r3f / OGL / GSAP / Framer Motion dependencies.
+- No dark page theme, no phosphor-green accents, no scanlines, no blinking
+  cursors — the terminal exists only inside the M2 hero window and the M5
+  band artifacts.
+- No WebGL/three.js/animation libraries (§6).
+- No purple/white AI gradients, glassmorphism, floating 3D blobs, or
+  centered mega-logo heroes.
 - No full comparison-table dashboard on the landing (slim SEO table only).
-- No changes to FastAPI backend, webhook logic, catalog data, or tests outside
-  `web/`.
-- No dark re-skin of `/account` and `/pricing` interactive screens this phase.
+- No changes to FastAPI backend, webhook logic, catalog data, or tests
+  outside `web/`.
+- No re-theming of `/account`, `/billing/*`, `/pricing` interactive screens
+  this phase; they keep the light app theme and inherit tokens only.
 
-## 10. Implementation order
+## 9. Implementation order (for the implementing agent)
 
-1. Tokens + fonts in `globals.css` / `layout.tsx` (behind `data-theme="ink"`
-   on the landing wrapper), header/footer/demo-notice re-chrome.
-2. Landing section restructure in `page.tsx` + static styles; update
-   `seo.test.tsx` in the same commit.
-3. `UpgradeMatrix.tsx` static grid + legend.
-4. `HeroSettlementCanvas.tsx` with reduced-motion static frame; perf pass
-   (DPR clamp, pause hooks) before merge.
-5. OG/twitter/icon re-skin; promo tour re-check; lint/typecheck/vitest green.
+1. Tokens + dotted-grid canvas + button/pill grammar in `globals.css`
+   (`data-theme="paper"` on the landing wrapper; keep the existing
+   `body:has(.landing-page)` header/footer re-chrome mechanism, re-pointed
+   at paper tokens). Retire ink/phosphor tokens.
+2. Hero [M2+M6]: layout, dark terminal window (static content first),
+   event pills, mono microcopy column. Update `seo.test.tsx` same commit.
+3. Sources → ledger section [M3] as server-rendered markup + SVG; then the
+   node graph [M4] and upgrade-matrix card restyle.
+4. Proof band [M5] + annotated chart [M1]; slim SEO table + FAQ restyle.
+5. Motion pass per §6 (CSS reveals, one observer); promo tour copy + capture
+   guards; delete `HeroSettlementCanvas.tsx` and dead ink styles.
+6. OG/twitter/icon re-skin to paper/ink/orange; lint/typecheck/vitest green.
+7. PR description includes the §3 screen→clause mapping table.
