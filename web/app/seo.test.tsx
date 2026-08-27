@@ -38,6 +38,18 @@ describe("public SEO surface", () => {
     expect(
       screen.getByRole("heading", {
         level: 2,
+        name: /Out-of-order events in\. An ordered ledger out\./i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        level: 2,
+        name: /Proven against real Stripe test mode\./i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        level: 2,
         name: /All 36 plan transitions, defined\./i,
       }),
     ).toBeInTheDocument();

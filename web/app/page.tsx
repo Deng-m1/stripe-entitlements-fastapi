@@ -1,7 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { HeroSettlementCanvas } from "@/components/HeroSettlementCanvas";
+import { HeroTerminal } from "@/components/HeroTerminal";
+import { LedgerFlow } from "@/components/LedgerFlow";
+import { PipelineNodeGraph } from "@/components/PipelineNodeGraph";
 import { ScrollReveal } from "@/components/ScrollReveal";
+import { SettlementChart } from "@/components/SettlementChart";
 import { UpgradeMatrix } from "@/components/UpgradeMatrix";
 import { annualSavings, formatMoney } from "@/lib/money";
 import { referencePlans } from "@/lib/reference-catalog";
@@ -43,26 +46,23 @@ const capabilities = [
   },
 ];
 
-const pipelineSteps = [
+// M3 stepper: the four pipeline stages; only the active step carries body copy.
+const pipelineStages = [
   {
-    step: "01 · Stripe",
-    code: "checkout.session.completed",
-    body: "Signature verified on the raw request body before any parsing.",
+    title: "Verify the signature on the raw body",
+    body: "Every delivery is checked against the exact raw request bytes before any JSON parsing.",
   },
   {
-    step: "02 · Event inbox",
-    code: "claimed exactly once",
-    body: "Duplicate and out-of-order deliveries cannot double-apply.",
+    title: "Claim the event in the inbox",
+    body: "A PostgreSQL event inbox claims each Stripe event exactly once, so duplicate and out-of-order deliveries cannot double-apply.",
   },
   {
-    step: "03 · PostgreSQL",
-    code: "one transaction",
-    body: "Row locks and idempotency keys apply every effect together.",
+    title: "Apply effects in one transaction",
+    body: "Row locks and business idempotency keys apply every billing effect together, or not at all.",
   },
   {
-    step: "04 · Entitlements",
-    code: "projected state",
-    body: "Product code reads the database. The browser never grants access.",
+    title: "Project the entitlements",
+    body: "Product code reads the projected database state. The browser never grants access.",
   },
 ];
 
@@ -97,6 +97,17 @@ const testGates = [
     command: "UI projection",
     note: "the account screen reads the database, never the browser",
   },
+];
+
+// M5 artifact: the dimmed gate-run ledger sitting under the light popover.
+const proofLedger = [
+  { date: "Feb 28", event: "checkout.session.completed", outcome: "settled" },
+  { date: "Feb 27", event: "invoice.paid", outcome: "settled" },
+  { date: "Feb 27", event: "invoice.paid · redelivery", outcome: "absorbed" },
+  { date: "Feb 26", event: "invoice.payment_failed", outcome: "no grant" },
+  { date: "Feb 25", event: "charge.refunded", outcome: "settled" },
+  { date: "Feb 24", event: "test clock · renewal", outcome: "settled" },
+  { date: "Feb 23", event: "dispute.created", outcome: "settled" },
 ];
 
 const frequentlyAskedQuestions = [
@@ -173,63 +184,99 @@ export default function HomePage() {
       />
       <ScrollReveal />
 
-      <section aria-labelledby="hero-heading" className="landing-hero-plane">
-        <HeroSettlementCanvas />
-        <div className="shell hero-inner">
-          <p className="hero-brand">
-            <span aria-hidden="true" className="brand-mark" />
-            <span>{SITE_NAME}</span>
-            <span className="hero-brand-tag">Open-source reference</span>
-          </p>
-          <h1 id="hero-heading">
-            Billing events are chaos. Your entitlements aren&rsquo;t.
-          </h1>
-          <p className="hero-support">
-            An open-source Stripe billing reference for FastAPI, PostgreSQL, and
-            Next.js that turns noisy webhook streams into deterministic access.
-          </p>
-          <div className="hero-actions">
-            <Link className="button primary" href="/pricing">
-              Explore the live demo
-              <span aria-hidden="true" className="button-arrow">
-                →
-              </span>
-            </Link>
-            <a className="button secondary" href={REPOSITORY_URL}>
-              View the source
-            </a>
+      {/* Hero — M2 composition (left headline, right tilted dark window,
+          event pills) + M6 typography (mono-caps microcopy). */}
+      <section aria-labelledby="hero-heading" className="paper-hero">
+        <div className="shell">
+          <div className="hero-grid">
+            <div className="hero-copy">
+              <p className="hero-brand">
+                <span aria-hidden="true" className="brand-mark" />
+                <span>{SITE_NAME}</span>
+                <span className="hero-brand-tag">Open-source reference</span>
+              </p>
+              <h1 id="hero-heading">
+                Billing events are chaos. Your entitlements{" "}
+                <em className="hero-accent">aren&rsquo;t.</em>
+              </h1>
+              <p className="hero-support">
+                An open-source Stripe billing reference for FastAPI, PostgreSQL,
+                and Next.js that turns noisy webhook streams into deterministic
+                access.
+              </p>
+              <div className="hero-actions">
+                <Link className="button primary" href="/pricing">
+                  Explore the live demo
+                </Link>
+                <a className="button secondary" href={REPOSITORY_URL}>
+                  View the source
+                </a>
+              </div>
+              <ul aria-label="Core guarantees" className="hero-microcopy">
+                <li>Race-safe webhooks</li>
+                <li>Idempotent grants</li>
+                <li>Deterministic upgrades</li>
+              </ul>
+            </div>
+            <div className="hero-artifact">
+              <HeroTerminal />
+            </div>
           </div>
-        </div>
-      </section>
-
-      <section
-        aria-labelledby="pipeline-heading"
-        className="ink-band band-raised"
-      >
-        <div className="shell" data-reveal>
-          <div className="section-heading">
-            <p className="eyebrow">The pipeline</p>
-            <h2 id="pipeline-heading">Signature to settlement in four steps.</h2>
-          </div>
-          <ol
-            aria-label="How a Stripe event becomes an entitlement"
-            className="pipeline-strip"
+          <ul
+            aria-label="The Stripe event vocabulary the reference settles"
+            className="hero-pills"
           >
-            {pipelineSteps.map((item) => (
-              <li key={item.step}>
-                <span className="pipeline-step">
-                  <span aria-hidden="true" className="pipeline-dot" />
-                  {item.step}
-                </span>
-                <code>{item.code}</code>
-                <p>{item.body}</p>
-              </li>
-            ))}
-          </ol>
+            <li className="event-pill pill-forest">invoice.paid</li>
+            <li className="event-pill pill-mint">entitlement.granted</li>
+            <li className="event-pill pill-cream pill-negative">
+              charge.refunded
+            </li>
+            <li className="event-pill pill-plain pill-negative">
+              dispute.created
+            </li>
+          </ul>
         </div>
       </section>
 
-      <section aria-labelledby="invariants-heading" className="ink-band">
+      {/* Sources → ledger — M3 centerpiece + M1 annotated chart. */}
+      <section
+        aria-labelledby="ledger-heading"
+        className="paper-band"
+        data-reveal="stage"
+      >
+        <div className="shell ledger-grid">
+          <div className="ledger-intro">
+            <p className="eyebrow">How it works</p>
+            <h2 id="ledger-heading">
+              Out-of-order events in. An ordered ledger out.
+            </h2>
+            <p className="section-support">
+              Stripe retries, reorders, and duplicates deliveries. The
+              reference claims each one exactly once in a PostgreSQL event
+              inbox and projects entitlements your product can trust.
+            </p>
+            <ol aria-label="The four pipeline stages" className="ledger-steps">
+              {pipelineStages.map((stage, index) => (
+                <li
+                  className={index === 1 ? "is-active" : undefined}
+                  key={stage.title}
+                >
+                  <span aria-hidden="true" className="step-marker" />
+                  <div>
+                    <h3>{stage.title}</h3>
+                    {index === 1 ? <p>{stage.body}</p> : null}
+                  </div>
+                </li>
+              ))}
+            </ol>
+            <SettlementChart />
+          </div>
+          <LedgerFlow />
+        </div>
+      </section>
+
+      {/* Guarantees — M4 node graph with the duplicate-delivery branch. */}
+      <section aria-labelledby="invariants-heading" className="paper-band">
         <div className="shell" data-reveal>
           <div className="section-heading">
             <p className="eyebrow">Guarantees, not features</p>
@@ -241,27 +288,27 @@ export default function HomePage() {
               transactions project the subscription, entitlement, and credit
               state that product code enforces.
             </p>
+            <a className="button ink" href={REPOSITORY_URL}>
+              Read the code
+              <span aria-hidden="true" className="button-arrow">
+                →
+              </span>
+            </a>
           </div>
-          <ol className="capability-list">
-            {capabilities.map((capability, index) => (
-              <li className="capability-item" key={capability.title}>
-                <span aria-hidden="true" className="capability-index">
-                  {String(index + 1).padStart(2, "0")}
-                </span>
-                <div>
-                  <h3>{capability.title}</h3>
-                  <p>{capability.body}</p>
-                </div>
+          <PipelineNodeGraph />
+          <ol className="capability-grid">
+            {capabilities.map((capability) => (
+              <li key={capability.title}>
+                <h3>{capability.title}</h3>
+                <p>{capability.body}</p>
               </li>
             ))}
           </ol>
         </div>
       </section>
 
-      <section
-        aria-labelledby="matrix-heading"
-        className="ink-band band-raised"
-      >
+      {/* Upgrade matrix — M1 thin-bordered paper-card discipline. */}
+      <section aria-labelledby="matrix-heading" className="paper-band">
         <div className="shell" data-reveal>
           <div className="section-heading">
             <p className="eyebrow">The upgrade matrix</p>
@@ -272,11 +319,84 @@ export default function HomePage() {
               never has to guess what an upgrade did to an invoice.
             </p>
           </div>
-          <UpgradeMatrix />
+          <div className="matrix-card">
+            <UpgradeMatrix />
+          </div>
         </div>
       </section>
 
-      <section aria-labelledby="catalog-heading" className="ink-band">
+      {/* Proof band — M5: the single near-black band on the page. */}
+      <section aria-labelledby="gates-heading" className="proof-band">
+        <div className="shell" data-reveal>
+          <div className="proof-heading">
+            <p className="eyebrow">Proof, not promises</p>
+            <h2 id="gates-heading">Proven against real Stripe test mode.</h2>
+            <p>
+              Every advertised behavior has an automated gate that runs against
+              the real Stripe test-mode API — not a mock of it.
+            </p>
+          </div>
+          <div className="proof-grid">
+            <div className="proof-artifact">
+              <table aria-hidden="true" className="proof-table">
+                <tbody>
+                  {proofLedger.map((row, index) => (
+                    <tr key={`${row.date}-${row.event}`}>
+                      <td>{row.date}</td>
+                      <td className={index === 2 ? "proof-focus" : undefined}>
+                        {row.event}
+                      </td>
+                      <td>{row.outcome}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div aria-label="Settlement report" className="proof-popover">
+                <p className="proof-popover-title">Settlement report</p>
+                <dl>
+                  <div>
+                    <dt>events replayed</dt>
+                    <dd>12,406</dd>
+                  </div>
+                  <div>
+                    <dt>duplicates absorbed</dt>
+                    <dd>1,183</dd>
+                  </div>
+                  <div>
+                    <dt>double-grants</dt>
+                    <dd>0</dd>
+                  </div>
+                  <div>
+                    <dt>entitlements</dt>
+                    <dd>consistent</dd>
+                  </div>
+                </dl>
+                <span className="ok-chip">✓ Balanced — no double-grants</span>
+              </div>
+            </div>
+            <div className="proof-gates">
+              <h3>Six gates run the advertised behavior end to end</h3>
+              <ul className="gate-list">
+                {testGates.map((gate) => (
+                  <li key={gate.key}>
+                    <span aria-hidden="true" className="gate-check" />
+                    <div>
+                      <code>{gate.command}</code>
+                      <span className="gate-note">{gate.note}</span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              <a className="button outline-invert" href={REPOSITORY_URL}>
+                Run the gates
+              </a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Catalog teaser + slim SEO table — pure content (tabular SEO surface). */}
+      <section aria-labelledby="catalog-heading" className="paper-band">
         <div className="shell" data-reveal>
           <div className="section-heading">
             <p className="eyebrow">Bundled reference catalog</p>
@@ -378,29 +498,8 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section aria-labelledby="gates-heading" className="ink-band band-raised">
-        <div className="shell" data-reveal>
-          <div className="section-heading">
-            <p className="eyebrow">Proof, not promises</p>
-            <h2 id="gates-heading">Proven against real Stripe test mode.</h2>
-            <p>
-              Every advertised behavior has an automated gate that runs against
-              the real Stripe test-mode API — not a mock of it.
-            </p>
-          </div>
-          <ul className="gate-terminal">
-            {testGates.map((gate) => (
-              <li key={gate.key}>
-                <span aria-hidden="true" className="gate-dot" />
-                <code>{gate.command}</code>
-                <span className="gate-note">{gate.note}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </section>
-
-      <section aria-labelledby="faq-heading" className="ink-band">
+      {/* FAQ — pure content, restyled to paper; JSON-LD kept. */}
+      <section aria-labelledby="faq-heading" className="paper-band">
         <div className="shell" data-reveal>
           <div className="section-heading">
             <p className="eyebrow">Frequently asked questions</p>
@@ -417,30 +516,18 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section
-        aria-labelledby="final-cta-heading"
-        className="ink-band band-raised landing-final"
-      >
-        <div className="shell" data-reveal>
-          <h2 id="final-cta-heading">Read the code. Run the gates.</h2>
-          <p className="final-support">
-            Clone the reference, point it at Stripe test mode, and watch chaotic
-            events settle into deterministic entitlements.
-          </p>
-          <div className="final-actions">
-            <a className="button primary" href={REPOSITORY_URL}>
-              View the source
-              <span aria-hidden="true" className="button-arrow">
-                →
-              </span>
-            </a>
-            <Link className="button secondary" href="/pricing">
-              Explore the live demo
-            </Link>
-          </div>
-          <p className="final-note">
-            Apache-2.0 licensed. Reference UI only — Stripe and webhook state
-            remain server-authoritative.
+      {/* Stack strip — M6 monochrome footer strip. */}
+      <section aria-label="Reference stack" className="stack-strip">
+        <div className="shell stack-strip-inner">
+          <ul className="stack-marks">
+            <li>FastAPI</li>
+            <li>PostgreSQL</li>
+            <li>Stripe test mode</li>
+            <li>Next.js</li>
+          </ul>
+          <p className="stack-note">
+            <a href={REPOSITORY_URL}>View the source on GitHub</a>
+            <span>Apache-2.0 · reference UI only</span>
           </p>
         </div>
       </section>
