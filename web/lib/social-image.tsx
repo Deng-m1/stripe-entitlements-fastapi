@@ -1,13 +1,14 @@
 import { ImageResponse } from "next/og";
 
+const CHAOS_DOTS = ["#2e7d5b", "#e4b65c", "#f26d5f"];
+
 export function createSocialImage(): ImageResponse {
   return new ImageResponse(
     <div
       style={{
         alignItems: "flex-start",
-        background:
-          "radial-gradient(circle at 15% 0%, #dbe7ff 0, transparent 48%), #f5f7fb",
-        color: "#142033",
+        background: "#0b100e",
+        color: "#ecf4ee",
         display: "flex",
         flexDirection: "column",
         height: "100%",
@@ -18,38 +19,75 @@ export function createSocialImage(): ImageResponse {
     >
       <div
         style={{
-          color: "#2055d6",
+          color: "#9dafa4",
           display: "flex",
-          fontSize: 27,
+          fontSize: 26,
           fontWeight: 700,
-          letterSpacing: "0.08em",
+          letterSpacing: "0.1em",
           textTransform: "uppercase",
         }}
       >
         Open-source Stripe subscription billing
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 26 }}>
         <div
           style={{
             display: "flex",
-            fontSize: 68,
+            fontSize: 66,
             fontWeight: 800,
-            letterSpacing: "-0.045em",
-            lineHeight: 1.02,
-            maxWidth: 1030,
+            letterSpacing: "-0.04em",
+            lineHeight: 1.04,
+            maxWidth: 1000,
           }}
         >
-          Race-safe Stripe billing for FastAPI.
+          Billing events are chaos. Your entitlements aren’t.
         </div>
         <div
           style={{
-            color: "#526174",
+            color: "#9dafa4",
             display: "flex",
-            fontSize: 31,
-            lineHeight: 1.35,
+            fontSize: 30,
+            lineHeight: 1.4,
+            maxWidth: 1000,
           }}
         >
-          PostgreSQL entitlements · Next.js pricing · real webhook and Test Clock gates
+          A Stripe billing reference for FastAPI, PostgreSQL, and Next.js — real
+          webhook and Test Clock gates
+        </div>
+        <div style={{ alignItems: "center", display: "flex", gap: 14 }}>
+          {CHAOS_DOTS.map((color) => (
+            <div
+              key={color}
+              style={{
+                background: color,
+                borderRadius: 999,
+                display: "flex",
+                height: 12,
+                width: 12,
+              }}
+            />
+          ))}
+          <div
+            style={{
+              background: "#2f4237",
+              display: "flex",
+              height: 40,
+              margin: "0 14px",
+              width: 2,
+            }}
+          />
+          {[0, 1, 2, 3, 4, 5].map((index) => (
+            <div
+              key={index}
+              style={{
+                background: "#56e39f",
+                borderRadius: 999,
+                display: "flex",
+                height: 12,
+                width: 12,
+              }}
+            />
+          ))}
         </div>
       </div>
       <div style={{ display: "flex", gap: 16 }}>
@@ -61,9 +99,10 @@ export function createSocialImage(): ImageResponse {
           <div
             key={label}
             style={{
-              background: "#ffffff",
-              border: "1px solid #cbd7e8",
+              background: "#18231f",
+              border: "1px solid #2f4237",
               borderRadius: 999,
+              color: "#ecf4ee",
               display: "flex",
               fontSize: 22,
               fontWeight: 650,
