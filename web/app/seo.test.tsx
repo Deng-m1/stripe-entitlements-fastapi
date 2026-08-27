@@ -18,7 +18,27 @@ describe("public SEO surface", () => {
 
     expect(
       screen.getByRole("heading", {
-        name: /Race-safe Stripe billing for FastAPI/i,
+        name: /Billing events are chaos\. Your entitlements aren’t\./i,
+      }),
+    ).toBeInTheDocument();
+    // Binding SEO compensations for the slogan H1: the support paragraph
+    // keeps the full keyword phrase, and a below-the-fold h2 keeps
+    // "Stripe billing". Do not weaken these without updating the brief.
+    expect(
+      screen.getByText(
+        /Stripe billing reference for FastAPI, PostgreSQL, and Next\.js/i,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        level: 2,
+        name: /A Stripe billing reference built on invariants\./i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        level: 2,
+        name: /All 36 plan transitions, defined\./i,
       }),
     ).toBeInTheDocument();
     expect(

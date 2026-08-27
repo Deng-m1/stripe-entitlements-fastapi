@@ -1,11 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import {
-  annualEquivalentMonthly,
-  annualSavings,
-  annualSavingsPercent,
-  formatMoney,
-} from "@/lib/money";
+import { HeroSettlementCanvas } from "@/components/HeroSettlementCanvas";
+import { ScrollReveal } from "@/components/ScrollReveal";
+import { UpgradeMatrix } from "@/components/UpgradeMatrix";
+import { annualSavings, formatMoney } from "@/lib/money";
 import { referencePlans } from "@/lib/reference-catalog";
 import {
   absoluteSiteUrl,
@@ -25,6 +23,7 @@ export const metadata: Metadata = {
     : undefined,
 };
 
+// These titles feed the JSON-LD featureList; keep them keyword-meaningful.
 const capabilities = [
   {
     title: "Race-safe Stripe webhooks",
@@ -41,6 +40,62 @@ const capabilities = [
   {
     title: "Real Stripe test gates",
     body: "Test-mode API, Test Clock renewal, Playwright Checkout, decline, 3DS, signed webhook, and UI projection gates.",
+  },
+];
+
+const pipelineSteps = [
+  {
+    step: "01 · Stripe",
+    code: "checkout.session.completed",
+    body: "Signature verified on the raw request body before any parsing.",
+  },
+  {
+    step: "02 · Event inbox",
+    code: "claimed exactly once",
+    body: "Duplicate and out-of-order deliveries cannot double-apply.",
+  },
+  {
+    step: "03 · PostgreSQL",
+    code: "one transaction",
+    body: "Row locks and idempotency keys apply every effect together.",
+  },
+  {
+    step: "04 · Entitlements",
+    code: "projected state",
+    body: "Product code reads the database. The browser never grants access.",
+  },
+];
+
+const testGates = [
+  {
+    key: "checkout",
+    command: "stripe checkout · paid session",
+    note: "a real test-mode purchase settles into credits",
+  },
+  {
+    key: "decline",
+    command: "card declined",
+    note: "no entitlement changes; the retry path stays clean",
+  },
+  {
+    key: "sca",
+    command: "3-D Secure challenge",
+    note: "SCA recovery completes and settles exactly once",
+  },
+  {
+    key: "webhook",
+    command: "signed webhook delivery",
+    note: "signature checked on the exact raw body before parsing",
+  },
+  {
+    key: "test-clock",
+    command: "Test Clock renewal",
+    note: "cross-period grants advance exactly once",
+  },
+  {
+    key: "projection",
+    command: "UI projection",
+    note: "the account screen reads the database, never the browser",
   },
 ];
 
@@ -116,8 +171,10 @@ export default function HomePage() {
         dangerouslySetInnerHTML={{ __html: serializeJsonLd(structuredData) }}
         type="application/ld+json"
       />
+      <ScrollReveal />
 
       <section aria-labelledby="hero-heading" className="landing-hero-plane">
+        <HeroSettlementCanvas />
         <div className="shell hero-inner">
           <p className="hero-brand">
             <span aria-hidden="true" className="brand-mark" />
@@ -125,215 +182,266 @@ export default function HomePage() {
             <span className="hero-brand-tag">Open-source reference</span>
           </p>
           <h1 id="hero-heading">
-            Race-safe Stripe billing for FastAPI, PostgreSQL, and Next.js.
+            Billing events are chaos. Your entitlements aren&rsquo;t.
           </h1>
           <p className="hero-support">
-            A production-minded SaaS billing reference for subscriptions, credit
-            entitlements, annual renewals, full-price or prorated upgrades, refunds,
-            SCA recovery, and webhook-authoritative access.
+            An open-source Stripe billing reference for FastAPI, PostgreSQL, and
+            Next.js that turns noisy webhook streams into deterministic access.
           </p>
           <div className="hero-actions">
             <Link className="button primary" href="/pricing">
-              Explore the pricing reference
+              Explore the live demo
               <span aria-hidden="true" className="button-arrow">
                 →
               </span>
             </Link>
             <a className="button secondary" href={REPOSITORY_URL}>
-              View the source on GitHub
+              View the source
             </a>
           </div>
         </div>
-        <div className="hero-pipeline-band">
+      </section>
+
+      <section
+        aria-labelledby="pipeline-heading"
+        className="ink-band band-raised"
+      >
+        <div className="shell" data-reveal>
+          <div className="section-heading">
+            <p className="eyebrow">The pipeline</p>
+            <h2 id="pipeline-heading">Signature to settlement in four steps.</h2>
+          </div>
           <ol
             aria-label="How a Stripe event becomes an entitlement"
-            className="shell hero-pipeline"
+            className="pipeline-strip"
           >
-            <li>
-              <span className="pipeline-step">
-                <span aria-hidden="true" className="pipeline-dot" />
-                01 · Stripe
-              </span>
-              <code>checkout.session.completed</code>
-              <p>Signature verified on the raw request body before any parsing.</p>
-            </li>
-            <li>
-              <span className="pipeline-step">
-                <span aria-hidden="true" className="pipeline-dot" />
-                02 · Event inbox
-              </span>
-              <code>claimed exactly once</code>
-              <p>Duplicate and out-of-order deliveries cannot double-apply.</p>
-            </li>
-            <li>
-              <span className="pipeline-step">
-                <span aria-hidden="true" className="pipeline-dot" />
-                03 · PostgreSQL
-              </span>
-              <code>one transaction</code>
-              <p>Row locks and idempotency keys apply every effect together.</p>
-            </li>
-            <li>
-              <span className="pipeline-step">
-                <span aria-hidden="true" className="pipeline-dot" />
-                04 · Entitlements
-              </span>
-              <code>projected state</code>
-              <p>Product code reads the database. The browser never grants access.</p>
-            </li>
+            {pipelineSteps.map((item) => (
+              <li key={item.step}>
+                <span className="pipeline-step">
+                  <span aria-hidden="true" className="pipeline-dot" />
+                  {item.step}
+                </span>
+                <code>{item.code}</code>
+                <p>{item.body}</p>
+              </li>
+            ))}
           </ol>
         </div>
       </section>
 
-      <section aria-labelledby="capabilities-heading" className="landing-section">
-        <div className="section-heading">
-          <p className="eyebrow">More than a Checkout example</p>
-          <h2 id="capabilities-heading">A Stripe billing template built around invariants.</h2>
-          <p>
-            The browser never grants access. Signed events and PostgreSQL transactions
-            project the subscription, entitlement, and credit state that product code
-            enforces.
-          </p>
+      <section aria-labelledby="invariants-heading" className="ink-band">
+        <div className="shell" data-reveal>
+          <div className="section-heading">
+            <p className="eyebrow">Guarantees, not features</p>
+            <h2 id="invariants-heading">
+              A Stripe billing reference built on invariants.
+            </h2>
+            <p>
+              The browser never grants access. Signed events and PostgreSQL
+              transactions project the subscription, entitlement, and credit
+              state that product code enforces.
+            </p>
+          </div>
+          <ol className="capability-list">
+            {capabilities.map((capability, index) => (
+              <li className="capability-item" key={capability.title}>
+                <span aria-hidden="true" className="capability-index">
+                  {String(index + 1).padStart(2, "0")}
+                </span>
+                <div>
+                  <h3>{capability.title}</h3>
+                  <p>{capability.body}</p>
+                </div>
+              </li>
+            ))}
+          </ol>
         </div>
-        <ol className="capability-list">
-          {capabilities.map((capability, index) => (
-            <li className="capability-item" key={capability.title}>
-              <span aria-hidden="true" className="capability-index">
-                {String(index + 1).padStart(2, "0")}
-              </span>
-              <div>
-                <h3>{capability.title}</h3>
-                <p>{capability.body}</p>
-              </div>
-            </li>
-          ))}
-        </ol>
       </section>
 
-      <section aria-labelledby="catalog-heading" className="landing-section">
-        <div className="section-heading">
-          <p className="eyebrow">Bundled reference catalog</p>
-          <h2 id="catalog-heading">Three tiers, monthly and annual billing.</h2>
-          <p>
-            Prices are explicit billing data. Stable plan rank controls upgrade and
-            downgrade direction, while annual savings remain a display-only calculation.
-          </p>
+      <section
+        aria-labelledby="matrix-heading"
+        className="ink-band band-raised"
+      >
+        <div className="shell" data-reveal>
+          <div className="section-heading">
+            <p className="eyebrow">The upgrade matrix</p>
+            <h2 id="matrix-heading">All 36 plan transitions, defined.</h2>
+            <p>
+              Three plans, two intervals, no undefined cell. Every source state
+              maps to every target state with an explicit outcome, so support
+              never has to guess what an upgrade did to an invoice.
+            </p>
+          </div>
+          <UpgradeMatrix />
         </div>
-        <div className="savings-grid">
-          {referencePlans.map((plan) => {
-            const saving = annualSavings(plan);
-            const twelveMonthTotal = plan.prices.month.unit_amount * 12;
-            const percent = annualSavingsPercent(plan);
-            return (
-              <div className="savings-tile" key={plan.key}>
-                <h3>{plan.name}</h3>
-                <p className="savings-math">
-                  <span>
-                    12 ×{" "}
+      </section>
+
+      <section aria-labelledby="catalog-heading" className="ink-band">
+        <div className="shell" data-reveal>
+          <div className="section-heading">
+            <p className="eyebrow">Bundled reference catalog</p>
+            <h2 id="catalog-heading">Three tiers, monthly and annual billing.</h2>
+            <p>
+              Prices are explicit billing data. Stable plan rank controls
+              upgrade and downgrade direction, while annual savings remain a
+              display-only calculation.
+            </p>
+          </div>
+          <div className="catalog-tiles">
+            {referencePlans.map((plan) => {
+              const saving = annualSavings(plan);
+              const credits = plan.entitlements.find(
+                (item) => item.key === "monthly_credits",
+              )?.value;
+              return (
+                <div className="catalog-tile" key={plan.key}>
+                  <h3>{plan.name}</h3>
+                  <p className="catalog-price">
                     {formatMoney(
                       plan.prices.month.unit_amount,
                       plan.prices.month.currency,
-                    )}{" "}
-                    monthly ={" "}
-                    {formatMoney(twelveMonthTotal, plan.prices.month.currency)}
-                  </span>
-                  <span>
-                    {formatMoney(
-                      plan.prices.year.unit_amount,
-                      plan.prices.year.currency,
-                    )}{" "}
-                    billed annually
-                  </span>
-                </p>
-                {saving === null ? (
-                  <p className="savings-amount">No saving claimed</p>
-                ) : (
-                  <p className="savings-amount">
-                    Save {formatMoney(saving, plan.prices.year.currency)}
-                    <span>
-                      ≈ {percent}% ·{" "}
-                      {formatMoney(
-                        annualEquivalentMonthly(plan),
-                        plan.prices.year.currency,
-                      )}
-                      /mo equivalent
-                    </span>
+                    )}
+                    <span>/month</span>
                   </p>
-                )}
-              </div>
-            );
-          })}
+                  <p className="catalog-credits">
+                    {String(credits ?? "—")} credits per monthly grant
+                  </p>
+                  <p className="catalog-saving">
+                    {saving === null
+                      ? "No annual saving claimed"
+                      : `Save ${formatMoney(saving, plan.prices.year.currency)} on annual billing`}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+          <p className="catalog-more">
+            <Link href="/pricing">See the full pricing breakdown →</Link>
+          </p>
+          <div
+            aria-label="Scrollable reference plan comparison"
+            className="comparison-table-wrap"
+            role="region"
+            tabIndex={0}
+          >
+            <table className="comparison-table">
+              <caption>
+                Reference Stripe subscription plans and annual savings
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Plan</th>
+                  <th scope="col">Monthly</th>
+                  <th scope="col">Annual total</th>
+                  <th scope="col">Annual saving</th>
+                  <th scope="col">Monthly credits</th>
+                </tr>
+              </thead>
+              <tbody>
+                {referencePlans.map((plan) => {
+                  const savings = annualSavings(plan);
+                  const monthlyCredits = plan.entitlements.find(
+                    (item) => item.key === "monthly_credits",
+                  )?.value;
+                  return (
+                    <tr key={plan.key}>
+                      <th scope="row">{plan.name}</th>
+                      <td>
+                        {formatMoney(
+                          plan.prices.month.unit_amount,
+                          plan.prices.month.currency,
+                        )}
+                      </td>
+                      <td>
+                        {formatMoney(
+                          plan.prices.year.unit_amount,
+                          plan.prices.year.currency,
+                        )}
+                      </td>
+                      <td>
+                        {savings === null
+                          ? "No saving claimed"
+                          : formatMoney(savings, plan.prices.year.currency)}
+                      </td>
+                      <td>{String(monthlyCredits ?? "—")}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <p className="truth-note">
+            This example does not claim coupons, trials, tax, multi-currency,
+            seats, or metered billing. Adapt and test those policies before
+            advertising them.
+          </p>
         </div>
-        <p className="savings-footnote">
-          Savings are plain catalog arithmetic rendered in the UI — no Stripe Coupon
-          objects are created or claimed.
-        </p>
-        <p className="table-scroll-hint">Swipe horizontally to compare every column →</p>
-        <div
-          aria-label="Scrollable reference plan comparison"
-          className="comparison-table-wrap"
-          role="region"
-          tabIndex={0}
-        >
-          <table className="comparison-table">
-            <caption>Reference Stripe subscription plans and annual savings</caption>
-            <thead>
-              <tr>
-                <th scope="col">Plan</th>
-                <th scope="col">Monthly</th>
-                <th scope="col">Annual total</th>
-                <th scope="col">Monthly equivalent</th>
-                <th scope="col">Annual saving</th>
-                <th scope="col">Monthly credits</th>
-              </tr>
-            </thead>
-            <tbody>
-              {referencePlans.map((plan) => {
-                const savings = annualSavings(plan);
-                const monthlyCredits = plan.entitlements.find(
-                  (item) => item.key === "monthly_credits",
-                )?.value;
-                return (
-                  <tr key={plan.key}>
-                    <th scope="row">{plan.name}</th>
-                    <td>{formatMoney(plan.prices.month.unit_amount, plan.prices.month.currency)}</td>
-                    <td>{formatMoney(plan.prices.year.unit_amount, plan.prices.year.currency)}</td>
-                    <td>
-                      {formatMoney(
-                        annualEquivalentMonthly(plan),
-                        plan.prices.year.currency,
-                      )}
-                    </td>
-                    <td>
-                      {savings === null
-                        ? "No saving claimed"
-                        : formatMoney(savings, plan.prices.year.currency)}
-                    </td>
-                    <td>{String(monthlyCredits ?? "—")}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        <p className="truth-note">
-          This example does not claim coupons, trials, tax, multi-currency, seats, or
-          metered billing. Adapt and test those policies before advertising them.
-        </p>
       </section>
 
-      <section aria-labelledby="faq-heading" className="landing-section">
-        <div className="section-heading">
-          <p className="eyebrow">Frequently asked questions</p>
-          <h2 id="faq-heading">Stripe billing template FAQ</h2>
+      <section aria-labelledby="gates-heading" className="ink-band band-raised">
+        <div className="shell" data-reveal>
+          <div className="section-heading">
+            <p className="eyebrow">Proof, not promises</p>
+            <h2 id="gates-heading">Proven against real Stripe test mode.</h2>
+            <p>
+              Every advertised behavior has an automated gate that runs against
+              the real Stripe test-mode API — not a mock of it.
+            </p>
+          </div>
+          <ul className="gate-terminal">
+            {testGates.map((gate) => (
+              <li key={gate.key}>
+                <span aria-hidden="true" className="gate-dot" />
+                <code>{gate.command}</code>
+                <span className="gate-note">{gate.note}</span>
+              </li>
+            ))}
+          </ul>
         </div>
-        <div className="faq-list">
-          {frequentlyAskedQuestions.map((item) => (
-            <details key={item.question}>
-              <summary>{item.question}</summary>
-              <p>{item.answer}</p>
-            </details>
-          ))}
+      </section>
+
+      <section aria-labelledby="faq-heading" className="ink-band">
+        <div className="shell" data-reveal>
+          <div className="section-heading">
+            <p className="eyebrow">Frequently asked questions</p>
+            <h2 id="faq-heading">Stripe billing template FAQ</h2>
+          </div>
+          <div className="faq-list">
+            {frequentlyAskedQuestions.map((item) => (
+              <details key={item.question}>
+                <summary>{item.question}</summary>
+                <p>{item.answer}</p>
+              </details>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section
+        aria-labelledby="final-cta-heading"
+        className="ink-band band-raised landing-final"
+      >
+        <div className="shell" data-reveal>
+          <h2 id="final-cta-heading">Read the code. Run the gates.</h2>
+          <p className="final-support">
+            Clone the reference, point it at Stripe test mode, and watch chaotic
+            events settle into deterministic entitlements.
+          </p>
+          <div className="final-actions">
+            <a className="button primary" href={REPOSITORY_URL}>
+              View the source
+              <span aria-hidden="true" className="button-arrow">
+                →
+              </span>
+            </a>
+            <Link className="button secondary" href="/pricing">
+              Explore the live demo
+            </Link>
+          </div>
+          <p className="final-note">
+            Apache-2.0 licensed. Reference UI only — Stripe and webhook state
+            remain server-authoritative.
+          </p>
         </div>
       </section>
     </div>

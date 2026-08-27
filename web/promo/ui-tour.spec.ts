@@ -37,17 +37,22 @@ test("open-source billing reference UI tour", async ({ page, baseURL }, testInfo
     await page.waitForTimeout(stepPauseMs() * multiplier);
   };
 
+  // The hero settlement canvas is a rAF loop that Playwright's
+  // animations: "disabled" cannot stop; reduced motion renders the static
+  // settled frame so captures stay reproducible.
+  await page.emulateMedia({ reducedMotion: "reduce" });
+
   await page.goto(baseURL, { waitUntil: "networkidle" });
   await cleanCapture(page);
   await expect(
     page.getByRole("heading", {
-      name: "Race-safe Stripe billing for FastAPI, PostgreSQL, and Next.js.",
+      name: "Billing events are chaos. Your entitlements aren’t.",
     }),
   ).toBeVisible();
   await pause("Landing hero", "01-landing-hero", 1.5);
 
   const capabilities = page.getByRole("heading", {
-    name: "A Stripe billing template built around invariants.",
+    name: "A Stripe billing reference built on invariants.",
   });
   await smoothFocus(page, capabilities);
   await expect(capabilities).toBeVisible();
