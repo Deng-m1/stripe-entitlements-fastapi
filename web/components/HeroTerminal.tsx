@@ -18,7 +18,10 @@ export function HeroTerminal() {
           <span />
         </span>
         <span className="terminal-title">
-          stripe listen --forward-to /webhooks/stripe
+          stripe listen
+          <span className="terminal-title-path">
+            {" --forward-to /webhooks/stripe"}
+          </span>
         </span>
       </figcaption>
       <pre className="terminal-body">

@@ -1454,6 +1454,7 @@ h2 {
   color: rgba(243, 246, 243, 0.6);
   line-height: 1.65;
   margin: 0;
+  text-wrap: balance;
 }
 
 .proof-grid {
@@ -2474,6 +2475,11 @@ dd {
 
   .terminal-title {
     font-size: 0.64rem;
+  }
+
+  /* The full forward path does not fit a 390px title bar. */
+  .terminal-title-path {
+    display: none;
   }
 
   .hero-pills {
