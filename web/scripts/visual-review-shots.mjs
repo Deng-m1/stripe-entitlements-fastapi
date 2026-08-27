@@ -21,6 +21,11 @@ const browser = await chromium.launch();
 
 async function settle(page) {
   await page.goto(baseUrl + "/", { waitUntil: "networkidle" });
+  // Headless Chromium may defer CSS animation compositor frames until the first
+  // paint-producing operation. Warm one pixel before the timed reveal so the
+  // first full-page review shot records the settled terminal, not its initial
+  // transparent frame.
+  await page.screenshot({ clip: { x: 0, y: 0, width: 1, height: 1 } });
   // Step-scroll through the page so every IntersectionObserver reveal fires
   // (an instant jump skips intermediate sections), then return to top.
   await page.evaluate(async () => {
