@@ -4,6 +4,10 @@ import nextConfig, {
 
 
 describe("Next.js public billing build boundary", () => {
+  it("does not generate nested agent instructions during development", () => {
+    expect(nextConfig.agentRules).toBe(false);
+  });
+
   it.each([
     ["production", "mock", undefined],
     ["production", "http", "browser-visible-token"],
