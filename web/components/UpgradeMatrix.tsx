@@ -74,6 +74,9 @@ export function UpgradeMatrix() {
 
   return (
     <div className="upgrade-matrix-layout">
+      <p className="table-scroll-hint">
+        Scroll sideways for the yearly target columns.
+      </p>
       <div
         aria-label="Scrollable plan transition matrix"
         className="upgrade-matrix-wrap"

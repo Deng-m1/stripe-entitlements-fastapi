@@ -406,11 +406,14 @@ h2 {
   font-family: inherit;
 }
 
-/* Line-by-line reveal: pure CSS steps + per-line delay (brief §6). The
-   global reduced-motion kill-switch renders all lines statically. */
+/* Line-by-line reveal: pure CSS keyframes + per-line delay (brief §6). The
+   global reduced-motion kill-switch renders all lines statically.
+   The fade needs a real (multi-frame) duration: sub-frame durations such as
+   1ms can start and finish between compositor ticks in Chromium, leaving the
+   forwards fill state unapplied and the line permanently invisible. */
 
 .terminal-line {
-  animation: terminal-line 1ms steps(1, end) forwards;
+  animation: terminal-line 0.4s var(--ease-out-soft, ease-out) forwards;
   display: block;
   opacity: 0;
   white-space: pre-wrap;
@@ -449,6 +452,10 @@ h2 {
 }
 
 @keyframes terminal-line {
+  from {
+    opacity: 0;
+  }
+
   to {
     opacity: 1;
   }
@@ -592,6 +599,7 @@ h2 {
 .section-heading h2 {
   font-size: clamp(1.7rem, 3.6vw, 2.6rem);
   margin-bottom: 14px;
+  text-wrap: balance;
 }
 
 .section-heading > p:not(.eyebrow),
@@ -1008,7 +1016,7 @@ h2 {
   align-self: center;
   background: currentColor;
   grid-row: 1;
-  height: 1px;
+  height: 1.5px;
   position: relative;
 }
 
@@ -1048,7 +1056,7 @@ h2 {
 }
 
 .c-mint {
-  color: #6fa287;
+  color: #5d977a;
 }
 
 .c-forest {
@@ -1439,6 +1447,7 @@ h2 {
   color: #ffffff;
   font-size: clamp(1.8rem, 3.6vw, 2.6rem);
   margin-bottom: 14px;
+  text-wrap: balance;
 }
 
 .proof-heading p {
@@ -2463,6 +2472,10 @@ dd {
     font-size: 0.68rem;
   }
 
+  .terminal-title {
+    font-size: 0.64rem;
+  }
+
   .hero-pills {
     gap: 12px;
   }
@@ -2501,12 +2514,18 @@ dd {
 
   .ledger-table th:first-child,
   .ledger-table td:first-child {
-    width: 3em;
+    width: 3.8em;
   }
 
   .ledger-table th:last-child,
   .ledger-table td:last-child {
-    width: 7.5em;
+    width: 8em;
+  }
+
+  .ledger-chip {
+    font-size: 0.62rem;
+    gap: 4px;
+    padding: 3px 6px;
   }
 
   .ledger-seq,
