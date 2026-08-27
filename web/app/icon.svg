@@ -1,5 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Stripe Entitlements reference mark">
-  <rect width="64" height="64" rx="14" fill="#2055d6"/>
-  <path d="M17 19h30v9H27v4h18v9H27v4h20v9H17V19Z" fill="#fff"/>
-  <circle cx="22" cy="36" r="5" fill="#8fb0ff"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Stripe Entitlements ledger-paper mark">
+  <rect width="64" height="64" rx="14" fill="#faf6ef"/>
+  <rect x="0.5" y="0.5" width="63" height="63" rx="13.5" fill="none" stroke="#e3ddd2"/>
+  <!-- ruled ledger lines -->
+  <g stroke="#17201c" stroke-width="4" stroke-linecap="round">
+    <line x1="14" y1="20" x2="50" y2="20"/>
+    <line x1="14" y1="32" x2="50" y2="32"/>
+    <line x1="14" y1="44" x2="36" y2="44"/>
+  </g>
+  <!-- the settling entry -->
+  <circle cx="46" cy="44" r="5.5" fill="#e35a1f"/>
 </svg>

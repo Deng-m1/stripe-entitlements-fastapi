@@ -1,76 +1,97 @@
 import { ImageResponse } from "next/og";
 
+/**
+ * Paper-theme social card (brief §4 tokens): warm off-white canvas, ink
+ * typography, ONE orange accent, and the event-pill vocabulary as the
+ * bottom artifact row.
+ */
 export function createSocialImage(): ImageResponse {
   return new ImageResponse(
     <div
       style={{
         alignItems: "flex-start",
-        background:
-          "radial-gradient(circle at 15% 0%, #dbe7ff 0, transparent 48%), #f5f7fb",
-        color: "#142033",
+        background: "#faf6ef",
+        backgroundImage: "radial-gradient(#d8d2c6 2px, transparent 2.5px)",
+        backgroundSize: "38px 38px",
+        color: "#17201c",
         display: "flex",
         flexDirection: "column",
         height: "100%",
         justifyContent: "space-between",
-        padding: "72px 82px",
+        padding: "70px 82px",
         width: "100%",
       }}
     >
       <div
         style={{
-          color: "#2055d6",
+          color: "#6b7570",
           display: "flex",
-          fontSize: 27,
+          fontSize: 25,
           fontWeight: 700,
-          letterSpacing: "0.08em",
+          letterSpacing: "0.14em",
           textTransform: "uppercase",
         }}
       >
         Open-source Stripe subscription billing
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 26 }}>
         <div
           style={{
             display: "flex",
+            flexWrap: "wrap",
             fontSize: 68,
             fontWeight: 800,
-            letterSpacing: "-0.045em",
-            lineHeight: 1.02,
-            maxWidth: 1030,
+            letterSpacing: "-0.04em",
+            lineHeight: 1.06,
+            maxWidth: 1000,
           }}
         >
-          Race-safe Stripe billing for FastAPI.
+          Billing events are chaos. Your entitlements{" "}
+          <span style={{ color: "#e35a1f", marginLeft: 16 }}>aren’t.</span>
         </div>
         <div
           style={{
-            color: "#526174",
+            color: "#6b7570",
             display: "flex",
-            fontSize: 31,
-            lineHeight: 1.35,
+            fontSize: 30,
+            lineHeight: 1.4,
+            maxWidth: 980,
           }}
         >
-          PostgreSQL entitlements · Next.js pricing · real webhook and Test Clock gates
+          A Stripe billing reference for FastAPI, PostgreSQL, and Next.js — real
+          webhook and Test Clock gates
         </div>
       </div>
-      <div style={{ display: "flex", gap: 16 }}>
+      <div style={{ alignItems: "center", display: "flex", gap: 16 }}>
         {[
-          "Duplicate-safe events",
-          "Monthly + annual plans",
-          "SCA + renewal tests",
-        ].map((label) => (
+          { label: "invoice.paid", background: "#1e3a2f", color: "#dcefe2" },
+          {
+            label: "entitlement.granted",
+            background: "#cfe8d8",
+            color: "#1e3a2f",
+          },
+          { label: "charge.refunded", background: "#f0e2c8", color: "#8a3b2a" },
+          {
+            label: "dispute.created",
+            background: "#ffffff",
+            color: "#b3261c",
+            border: "1px solid #e3ddd2",
+          },
+        ].map((pill) => (
           <div
-            key={label}
+            key={pill.label}
             style={{
-              background: "#ffffff",
-              border: "1px solid #cbd7e8",
+              background: pill.background,
+              border: pill.border ?? "1px solid transparent",
               borderRadius: 999,
+              color: pill.color,
               display: "flex",
               fontSize: 22,
-              fontWeight: 650,
-              padding: "13px 21px",
+              fontWeight: 600,
+              padding: "13px 24px",
             }}
           >
-            {label}
+            {pill.label}
           </div>
         ))}
       </div>

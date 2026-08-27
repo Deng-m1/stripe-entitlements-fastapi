@@ -37,28 +37,47 @@ test("open-source billing reference UI tour", async ({ page, baseURL }, testInfo
     await page.waitForTimeout(stepPauseMs() * multiplier);
   };
 
+  // The landing animates with CSS reveals (hero terminal lines, ledger
+  // row-settle) driven by one IntersectionObserver; reduced motion renders
+  // the final settled state so captures stay reproducible.
+  await page.emulateMedia({ reducedMotion: "reduce" });
+
   await page.goto(baseURL, { waitUntil: "networkidle" });
   await cleanCapture(page);
   await expect(
     page.getByRole("heading", {
-      name: "Race-safe Stripe billing for FastAPI, PostgreSQL, and Next.js.",
+      name: "Billing events are chaos. Your entitlements aren’t.",
     }),
   ).toBeVisible();
   await pause("Landing hero", "01-landing-hero", 1.5);
 
+  const ledgerHeading = page.getByRole("heading", {
+    name: "Out-of-order events in. An ordered ledger out.",
+  });
+  await smoothFocus(page, ledgerHeading);
+  await expect(ledgerHeading).toBeVisible();
+  await pause("Event inbox ledger", "02-event-inbox-ledger");
+
   const capabilities = page.getByRole("heading", {
-    name: "A Stripe billing template built around invariants.",
+    name: "A Stripe billing reference built on invariants.",
   });
   await smoothFocus(page, capabilities);
   await expect(capabilities).toBeVisible();
-  await pause("Correctness capabilities", "02-correctness-capabilities");
+  await pause("Correctness capabilities", "03-correctness-capabilities");
+
+  const proofHeading = page.getByRole("heading", {
+    name: "Proven against real Stripe test mode.",
+  });
+  await smoothFocus(page, proofHeading);
+  await expect(proofHeading).toBeVisible();
+  await pause("Real Stripe proof band", "04-proof-band");
 
   const catalogHeading = page.getByRole("heading", {
     name: "Three tiers, monthly and annual billing.",
   });
   await smoothFocus(page, catalogHeading);
   await expect(catalogHeading).toBeVisible();
-  await pause("Reference catalog", "03-reference-catalog");
+  await pause("Reference catalog", "05-reference-catalog");
 
   const faqHeading = page.getByRole("heading", {
     name: "Stripe billing template FAQ",
@@ -69,7 +88,7 @@ test("open-source billing reference UI tour", async ({ page, baseURL }, testInfo
       exact: true,
     })
     .click();
-  await pause("Prorated upgrade scope", "04-prorated-upgrade-scope");
+  await pause("Prorated upgrade scope", "06-prorated-upgrade-scope");
 
   await page.getByRole("link", { name: "Pricing", exact: true }).click();
   await page.waitForLoadState("networkidle");
@@ -79,11 +98,11 @@ test("open-source billing reference UI tour", async ({ page, baseURL }, testInfo
       name: "Choose a plan without hiding the billing consequences.",
     }),
   ).toBeVisible();
-  await pause("Monthly pricing", "05-monthly-pricing");
+  await pause("Monthly pricing", "07-monthly-pricing");
 
   await page.getByRole("button", { name: "Yearly" }).click();
   await expect(page.getByText("Save $235.00/year", { exact: true })).toBeVisible();
-  await pause("Annual savings", "06-annual-savings", 1.25);
+  await pause("Annual savings", "08-annual-savings", 1.25);
 
   await page.getByRole("button", { name: "Monthly" }).click();
   const proButton = page.getByRole("button", { name: "Choose Pro month" });
@@ -97,19 +116,19 @@ test("open-source billing reference UI tour", async ({ page, baseURL }, testInfo
   ).toBeVisible();
   await pause(
     "Server-calculated plan-change preview",
-    "07-plan-change-preview",
+    "09-plan-change-preview",
     1.5,
   );
 
   await page.getByRole("checkbox").check();
-  await pause("Explicit billing acknowledgement", "08-billing-acknowledgement");
+  await pause("Explicit billing acknowledgement", "10-billing-acknowledgement");
   await page.getByRole("button", { name: "Cancel" }).click();
 
   await page.getByRole("link", { name: "Account" }).click();
   await page.waitForLoadState("networkidle");
   await cleanCapture(page);
   await expect(page.getByRole("heading", { name: "Your billing account" })).toBeVisible();
-  await pause("Webhook-authoritative account", "09-account-projection", 1.25);
+  await pause("Webhook-authoritative account", "11-account-projection", 1.25);
 
   const entitlementHeading = page.getByRole("heading", {
     name: "What the product may enforce",
@@ -118,7 +137,7 @@ test("open-source billing reference UI tour", async ({ page, baseURL }, testInfo
   await expect(page.getByText("214", { exact: true }).first()).toBeVisible();
   await pause(
     "Credits and structured entitlements",
-    "10-structured-entitlements",
+    "12-structured-entitlements",
     1.5,
   );
 

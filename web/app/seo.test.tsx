@@ -1,11 +1,24 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import HomePage, { metadata as homeMetadata } from "@/app/page";
+import RootLayout from "@/app/layout";
 import manifest from "@/app/manifest";
 import robots from "@/app/robots";
 import sitemap from "@/app/sitemap";
 
+vi.mock("next/font/google", () => ({
+  IBM_Plex_Mono: () => ({ variable: "font-mono" }),
+  IBM_Plex_Sans: () => ({ variable: "font-body" }),
+  Schibsted_Grotesk: () => ({ variable: "font-display" }),
+}));
+
 describe("public SEO surface", () => {
+  it("declares the global smooth-scroll contract for Next.js navigation", () => {
+    expect(RootLayout({ children: <div /> })).toMatchObject({
+      props: { "data-scroll-behavior": "smooth" },
+    });
+  });
+
   it("renders searchable project, plan, savings, and scope content", () => {
     const { container } = render(<HomePage />);
 
@@ -18,7 +31,39 @@ describe("public SEO surface", () => {
 
     expect(
       screen.getByRole("heading", {
-        name: /Race-safe Stripe billing for FastAPI/i,
+        name: /Billing events are chaos\. Your entitlements aren’t\./i,
+      }),
+    ).toBeInTheDocument();
+    // Binding SEO compensations for the slogan H1: the support paragraph
+    // keeps the full keyword phrase, and a below-the-fold h2 keeps
+    // "Stripe billing". Do not weaken these without updating the brief.
+    expect(
+      screen.getByText(
+        /Stripe billing reference for FastAPI, PostgreSQL, and Next\.js/i,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        level: 2,
+        name: /A Stripe billing reference built on invariants\./i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        level: 2,
+        name: /Out-of-order events in\. An ordered ledger out\./i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        level: 2,
+        name: /Proven against real Stripe test mode\./i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        level: 2,
+        name: /All 36 plan transitions, defined\./i,
       }),
     ).toBeInTheDocument();
     expect(
@@ -40,6 +85,11 @@ describe("public SEO surface", () => {
     expect(
       screen.getByText(/Does it support Stripe prorated subscription upgrades/i),
     ).toBeInTheDocument();
+    // The repository guarantees effectively-once PostgreSQL effects, not
+    // impossible end-to-end exactly-once delivery. Marketing content must also
+    // not invent event-volume evidence that no reproducible test produces.
+    expect(container.innerHTML).not.toMatch(/exactly.once|12,406|1,183/i);
+    expect(container.innerHTML).toMatch(/effectively-once PostgreSQL effects/i);
 
     const script = container.querySelector('script[type="application/ld+json"]');
     expect(script).not.toBeNull();

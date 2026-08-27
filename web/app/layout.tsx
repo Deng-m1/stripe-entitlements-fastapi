@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Sans, Space_Grotesk } from "next/font/google";
+import { IBM_Plex_Mono, IBM_Plex_Sans, Schibsted_Grotesk } from "next/font/google";
 import type { ReactNode } from "react";
 import { DemoNotice } from "@/components/DemoNotice";
 import { SiteHeader } from "@/components/SiteHeader";
@@ -20,10 +20,17 @@ const bodyFont = IBM_Plex_Sans({
   weight: ["400", "500", "600", "700"],
 });
 
-const displayFont = Space_Grotesk({
+const displayFont = Schibsted_Grotesk({
   display: "swap",
   subsets: ["latin"],
   variable: "--font-display",
+});
+
+const monoFont = IBM_Plex_Mono({
+  display: "swap",
+  subsets: ["latin"],
+  variable: "--font-mono",
+  weight: ["400", "500", "600"],
 });
 
 export const metadata: Metadata = {
@@ -87,7 +94,11 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html className={`${bodyFont.variable} ${displayFont.variable}`} lang="en">
+    <html
+      className={`${bodyFont.variable} ${displayFont.variable} ${monoFont.variable}`}
+      data-scroll-behavior="smooth"
+      lang="en"
+    >
       <body>
         <SiteHeader />
         <DemoNotice />
