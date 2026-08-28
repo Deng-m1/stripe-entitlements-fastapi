@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Bricolage_Grotesque, Instrument_Sans, Spline_Sans_Mono } from "next/font/google";
+import { IBM_Plex_Mono, Instrument_Sans } from "next/font/google";
 import type { ReactNode } from "react";
 import { DemoNotice } from "@/components/DemoNotice";
 import { SiteHeader } from "@/components/SiteHeader";
@@ -13,26 +13,21 @@ import {
 } from "@/lib/site";
 import "./globals.css";
 
-// Site typography (tokens in globals.css): a characterful grotesque for
-// display work, a quiet grotesque for body copy, and a mono for ledger
-// figures, eyebrows, and microcopy. All three load as variable fonts.
-const bodyFont = Instrument_Sans({
+// Site typography (stacks in globals.css, spec in DESIGN_SYSTEM.md §2.1):
+// ONE variable grotesque carries display and body — the single-family
+// discipline is what separates "product" from "template" — plus IBM Plex
+// Mono for code, ledger figures, eyebrows, and microcopy.
+const sansFont = Instrument_Sans({
   display: "swap",
   subsets: ["latin"],
-  variable: "--font-body",
+  variable: "--font-sans",
 });
 
-const displayFont = Bricolage_Grotesque({
-  axes: ["opsz"],
-  display: "swap",
-  subsets: ["latin"],
-  variable: "--font-display",
-});
-
-const monoFont = Spline_Sans_Mono({
+const monoFont = IBM_Plex_Mono({
   display: "swap",
   subsets: ["latin"],
   variable: "--font-mono",
+  weight: ["400", "500", "600"],
 });
 
 export const metadata: Metadata = {
@@ -97,7 +92,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html
-      className={`${bodyFont.variable} ${displayFont.variable} ${monoFont.variable}`}
+      className={`${sansFont.variable} ${monoFont.variable}`}
       data-scroll-behavior="smooth"
       lang="en"
     >
