@@ -7,9 +7,9 @@ import robots from "@/app/robots";
 import sitemap from "@/app/sitemap";
 
 vi.mock("next/font/google", () => ({
-  IBM_Plex_Mono: () => ({ variable: "font-mono" }),
-  IBM_Plex_Sans: () => ({ variable: "font-body" }),
-  Schibsted_Grotesk: () => ({ variable: "font-display" }),
+  Bricolage_Grotesque: () => ({ variable: "font-display" }),
+  Instrument_Sans: () => ({ variable: "font-body" }),
+  Spline_Sans_Mono: () => ({ variable: "font-mono" }),
 }));
 
 describe("public SEO surface", () => {

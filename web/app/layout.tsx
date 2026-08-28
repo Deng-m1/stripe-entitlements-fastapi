@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Mono, IBM_Plex_Sans, Schibsted_Grotesk } from "next/font/google";
+import { Bricolage_Grotesque, Instrument_Sans, Spline_Sans_Mono } from "next/font/google";
 import type { ReactNode } from "react";
 import { DemoNotice } from "@/components/DemoNotice";
 import { SiteHeader } from "@/components/SiteHeader";
@@ -13,24 +13,26 @@ import {
 } from "@/lib/site";
 import "./globals.css";
 
-const bodyFont = IBM_Plex_Sans({
+// Site typography (tokens in globals.css): a characterful grotesque for
+// display work, a quiet grotesque for body copy, and a mono for ledger
+// figures, eyebrows, and microcopy. All three load as variable fonts.
+const bodyFont = Instrument_Sans({
   display: "swap",
   subsets: ["latin"],
   variable: "--font-body",
-  weight: ["400", "500", "600", "700"],
 });
 
-const displayFont = Schibsted_Grotesk({
+const displayFont = Bricolage_Grotesque({
+  axes: ["opsz"],
   display: "swap",
   subsets: ["latin"],
   variable: "--font-display",
 });
 
-const monoFont = IBM_Plex_Mono({
+const monoFont = Spline_Sans_Mono({
   display: "swap",
   subsets: ["latin"],
   variable: "--font-mono",
-  weight: ["400", "500", "600"],
 });
 
 export const metadata: Metadata = {
