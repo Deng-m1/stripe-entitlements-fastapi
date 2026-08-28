@@ -41,15 +41,18 @@ const WAVE_FIELD_GLSL = /* glsl */ `
 // field behaves like a tide and slides the whole palette up and down with it,
 // which turns a stable violet-to-amber hero into a colour cycle.
 // Every time coefficient is a multiple of 0.01, so the whole field repeats
-// exactly every 200π seconds of uTime. The render loop wraps uTime on that
+// exactly every 200π seconds of clock. The render loop wraps uTime on that
 // period, which keeps sin() away from the large arguments where float32
 // precision (and with it the wave's shape) degrades on long sessions.
+// uTimeShift is a per-layer constant, so it cannot break the wrap: shifting
+// every sine argument by a constant leaves the field exactly periodic.
 float waveField(vec2 p) {
+  float t = uTime + uTimeShift;
   float w = 0.0;
-  w += sin(p.x * 2.05 + uTime * 0.42) * 0.48;
-  w += sin(p.y * 2.85 - uTime * 0.31 + 1.9) * 0.32;
-  w += sin((p.x * 1.35 + p.y * 1.72) * 1.45 + uTime * 0.55) * 0.28;
-  w += sin((p.x * 3.1 - p.y * 2.2) + uTime * 0.24 + 2.4) * 0.15;
+  w += sin(p.x * 2.05 + t * 0.42) * 0.48;
+  w += sin(p.y * 2.85 - t * 0.31 + 1.9) * 0.32;
+  w += sin((p.x * 1.35 + p.y * 1.72) * 1.45 + t * 0.55) * 0.28;
+  w += sin((p.x * 3.1 - p.y * 2.2) + t * 0.24 + 2.4) * 0.15;
   return w;
 }
 
@@ -75,6 +78,7 @@ const VERTEX_SHADER = /* glsl */ `
 attribute float fold;
 
 uniform float uTime;
+uniform float uTimeShift;
 uniform float uAmplitude;
 uniform vec2 uSheetSize;
 uniform vec2 uPointer;
@@ -115,6 +119,7 @@ void main() {
 const FRAGMENT_SHADER = /* glsl */ `
 uniform sampler2D uPalette;
 uniform float uTime;
+uniform float uTimeShift;
 uniform vec3 uKeyLight;
 uniform vec3 uFillLight;
 uniform vec3 uSheenColor;
@@ -127,6 +132,9 @@ uniform float uOpacity;
 uniform float uRampOrigin;
 uniform float uRampScale;
 uniform float uTroughFade;
+uniform float uTroughLow;
+uniform float uTroughHigh;
+uniform float uAlphaClip;
 
 varying vec2 vUv;
 varying vec3 vNormal;
@@ -164,7 +172,7 @@ void main() {
   // nudges it, so the hero keeps one identity while the surface moves. A very
   // slow, very shallow shimmer (period-exact with the wave field) lets hues
   // breathe along the band without ever cycling the palette.
-  float shimmer = 0.024 * sin(uTime * 0.05 + vUv.x * 2.1 + vUv.y * 1.3);
+  float shimmer = 0.024 * sin((uTime + uTimeShift) * 0.05 + vUv.x * 2.1 + vUv.y * 1.3);
   float ramp = clamp(
     (diagonal - uRampOrigin) * uRampScale +
       vFold * 0.26 + vLift * 0.05 + normal.y * 0.1 + shimmer,
@@ -213,13 +221,22 @@ void main() {
   // The window sits high in the fold range on purpose: only the upper part of
   // each crest carries colour, so the canvas between bands is bare white
   // rather than a low-alpha wash. Over the warm paper of earlier rounds a wash
-  // blended in; over pure white it reads as a stain.
+  // blended in; over pure white it reads as a stain. The window bounds are
+  // per-layer uniforms in the multi-sheet hero: rear sheets widen into soft
+  // washes, the front lace narrows to crest tops.
   alpha *= mix(
     1.0,
-    smoothstep(0.06, 0.42, vFold * 1.32 + vLift * 0.18 + widthVar),
+    smoothstep(uTroughLow, uTroughHigh, vFold * 1.32 + vLift * 0.18 + widthVar),
     uTroughFade
   );
   alpha *= 0.92 + 0.08 * keyWrap;
+
+  // Depth-threading contract for the ribbon stack: layers that write depth
+  // must never write it from an invisible trough, or they would punch silent
+  // holes into every sheet behind them. Discarding below the layer's clip
+  // keeps depth writes on the visibly solid ribbon cores only. The frontmost
+  // layer runs with a clip of 0.0, which discards nothing.
+  if (alpha < uAlphaClip) discard;
 
   vec3 output_ = linearToSrgb(shaded);
   // Ordered-free dither: 8-bit output banding is very visible across a ramp
@@ -234,6 +251,7 @@ void main() {
 export const HeroWaveMaterial = shaderMaterial(
   {
     uTime: 0,
+    uTimeShift: 0,
     uAmplitude: 0.2,
     uSheetSize: new Vector2(3.4, 2.05),
     uPointer: new Vector2(0, 0),
@@ -251,6 +269,9 @@ export const HeroWaveMaterial = shaderMaterial(
     uRampOrigin: 0.28,
     uRampScale: 1.9,
     uTroughFade: 0.97,
+    uTroughLow: 0.06,
+    uTroughHigh: 0.42,
+    uAlphaClip: 0,
   },
   VERTEX_SHADER,
   FRAGMENT_SHADER,
@@ -270,6 +291,7 @@ type HeroWaveMaterialElement = Omit<
 > & {
   ref?: Ref<HeroWaveMaterialImpl>;
   uTime?: number;
+  uTimeShift?: number;
   uAmplitude?: number;
   uSheetSize?: Vector2;
   uPointer?: Vector2;
@@ -287,6 +309,9 @@ type HeroWaveMaterialElement = Omit<
   uRampOrigin?: number;
   uRampScale?: number;
   uTroughFade?: number;
+  uTroughLow?: number;
+  uTroughHigh?: number;
+  uAlphaClip?: number;
 };
 
 declare module "@react-three/fiber" {

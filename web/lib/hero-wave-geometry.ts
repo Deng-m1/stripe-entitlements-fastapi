@@ -41,6 +41,14 @@ export interface WaveGeometryOptions {
    * (1). Stripe's sheet sits near 0.35: readable creases, no hard ridges.
    */
   crestSharpness: number;
+  /**
+   * Constant phase added to the fold argument, in radians. A multi-sheet hero
+   * bakes each ribbon layer from the same field with a different phase, so the
+   * layers share one visual language while their crests land in different
+   * places — without this every sheet folds in lockstep and the stack reads
+   * as one thick sheet with a drop shadow.
+   */
+  foldPhase: number;
 }
 
 export interface WaveGeometryData {
@@ -73,7 +81,221 @@ export const DEFAULT_WAVE_GEOMETRY: WaveGeometryOptions = {
   // hard is what turns the bands into curves.
   foldCurvature: 1.15,
   crestSharpness: 0.3,
+  foldPhase: 0,
 };
+
+/**
+ * One ribbon sheet of the multi-layer hero.
+ *
+ * stripe.com's hero is not a single folded surface: two or three translucent
+ * sheets thread over and under each other, so a crest of the back sheet can
+ * surface through a trough of the front one. Each layer here is the same
+ * analytic surface with its own fold recipe, transform, palette window, and
+ * blend discipline. The spec lives in this renderer-free module so the layer
+ * relationships (distinct phases, back-to-front depth order, opacity taper)
+ * stay unit-testable without a WebGL context.
+ */
+export interface HeroRibbonLayer {
+  id: "back" | "primary" | "front";
+  /** Fold recipe merged over `DEFAULT_WAVE_GEOMETRY` for this sheet. */
+  fold: Pick<
+    WaveGeometryOptions,
+    | "foldCount"
+    | "foldDepth"
+    | "foldSkew"
+    | "foldCurvature"
+    | "crestSharpness"
+    | "foldPhase"
+  >;
+  /**
+   * Per-axis multiplier on the quality tier's segment counts. Rear sheets are
+   * softer and mostly occluded, so they can carry far fewer vertices than the
+   * primary sheet without the difference ever reading on screen.
+   */
+  segmentScale: number;
+  /**
+   * Sheet-local z offset inside the shared hero group, in the same units as
+   * `foldDepth`. Kept well below the fold displacement range on purpose:
+   * layers must interpenetrate for crests to thread over and under each
+   * other, not float apart as parallel planes.
+   */
+  zLift: number;
+  /** Small per-layer rotation delta [x, y, z] over the group pose, radians. */
+  tilt: readonly [number, number, number];
+  /** Sheet-local [x, y] drift so the layers' compositions do not stack. */
+  drift: readonly [number, number];
+  /**
+   * Pointer parallax in sheet-local units per unit of eased pointer. The
+   * front sheet leans furthest, which is what sells the stack as depth.
+   */
+  parallax: number;
+  /** Layer opacity multiplier (uOpacity). */
+  opacity: number;
+  /**
+   * Extra opacity multiplier on narrow (portrait-ish) viewports, where all
+   * three sheets stack behind the headline column. The primary sheet keeps
+   * the round-11 mobile identity at 1; the companion layers duck so the
+   * lockup never sits on three sheets' worth of wash.
+   */
+  narrowOpacityScale: number;
+  /**
+   * Constant seconds added to the shared wrapped clock (uTimeShift). A pure
+   * offset keeps every sine argument period-exact under the 200π wrap while
+   * decorrelating the layers' travelling swells.
+   */
+  timeShift: number;
+  /** Travelling-swell amplitude (uAmplitude). */
+  amplitude: number;
+  /** Pointer swell strength (uPointerStrength). */
+  pointerStrength: number;
+  /** Palette window (uRampOrigin / uRampScale): rear cool, front warm. */
+  rampOrigin: number;
+  rampScale: number;
+  /**
+   * Fold-alpha window (uTroughLow / uTroughHigh). A wide window makes broad
+   * soft washes, a high narrow one slims the sheet to crest-top ribbons.
+   */
+  troughLow: number;
+  troughHigh: number;
+  /** Crest-core luminance mix (uCrestGlow). */
+  crestGlow: number;
+  /**
+   * Fragments below this alpha are discarded (uAlphaClip). Occluding layers
+   * need it: with plain depth-writing a sheet's invisible troughs would still
+   * write depth and punch holes into everything behind them.
+   */
+  alphaClip: number;
+  /**
+   * Whether the sheet's surviving fragments write depth. Depth-writing cores
+   * are what let a rear crest surface *through* a nearer sheet; the frontmost
+   * sheet skips the write so its translucent edges never occlude anything.
+   */
+  depthWrite: boolean;
+}
+
+/**
+ * Back-to-front. Draw order follows array order (explicit renderOrder), so
+ * blending stays deterministic regardless of three's distance sort.
+ */
+export const HERO_RIBBON_LAYERS: readonly HeroRibbonLayer[] = [
+  {
+    id: "back",
+    // Slightly more, tighter folds at a steeper skew: the rear sheet reads as
+    // a separate weave crossing behind the primary one, not as its echo. The
+    // alpha window is banded (not a wash): the first cut of this layer ran
+    // 0.02–0.5 and filled every white gap round 11 fought for with fog.
+    fold: {
+      foldCount: 2.5,
+      foldDepth: 0.5,
+      foldSkew: 0.7,
+      foldCurvature: 1.3,
+      crestSharpness: 0.26,
+      foldPhase: 2.7,
+    },
+    segmentScale: 0.62,
+    // Deep enough to cut the area where this sheet wins the depth test over
+    // the primary (a rear band that wins too often washes the hero pastel),
+    // shallow enough that crests still cross.
+    zLift: -0.36,
+    tilt: [0.1, -0.06, 0.14],
+    drift: [-0.14, 0.18],
+    parallax: 0.018,
+    // Near-solid where it does surface: a translucent rear band over white
+    // paper reads as pastel fog, not as a ribbon passing behind.
+    opacity: 0.72,
+    narrowOpacityScale: 0.4,
+    timeShift: 41.3,
+    amplitude: 0.15,
+    pointerStrength: 0.3,
+    // Cool window: the rear weave stays violet-to-magenta so the warm front
+    // ribbons separate from it instead of doubling it.
+    rampOrigin: 0.08,
+    rampScale: 1.55,
+    troughLow: 0.2,
+    troughHigh: 0.56,
+    crestGlow: 0.28,
+    alphaClip: 0.3,
+    depthWrite: true,
+  },
+  {
+    id: "primary",
+    // The round-11 hero identity, unchanged: broad two-to-three sweeps.
+    fold: {
+      foldCount: DEFAULT_WAVE_GEOMETRY.foldCount,
+      foldDepth: DEFAULT_WAVE_GEOMETRY.foldDepth,
+      foldSkew: DEFAULT_WAVE_GEOMETRY.foldSkew,
+      foldCurvature: DEFAULT_WAVE_GEOMETRY.foldCurvature,
+      crestSharpness: DEFAULT_WAVE_GEOMETRY.crestSharpness,
+      foldPhase: 0,
+    },
+    segmentScale: 1,
+    zLift: 0,
+    tilt: [0, 0, 0],
+    drift: [0, 0],
+    parallax: 0.032,
+    opacity: 1,
+    narrowOpacityScale: 1,
+    timeShift: 0,
+    amplitude: 0.2,
+    pointerStrength: 0.55,
+    rampOrigin: 0.28,
+    rampScale: 1.9,
+    troughLow: 0.06,
+    troughHigh: 0.42,
+    crestGlow: 0.4,
+    alphaClip: 0.24,
+    depthWrite: true,
+  },
+  {
+    id: "front",
+    // One long sweeping fold with a high alpha window: only the crest top
+    // survives, so this layer is a slim warm ribbon lacing across the stack.
+    fold: {
+      foldCount: 1.6,
+      foldDepth: 0.62,
+      foldSkew: 0.5,
+      foldCurvature: 0.95,
+      crestSharpness: 0.42,
+      foldPhase: 2.3,
+    },
+    segmentScale: 0.8,
+    zLift: 0.24,
+    tilt: [-0.05, 0.05, -0.1],
+    drift: [0.34, -0.22],
+    parallax: 0.05,
+    opacity: 0.72,
+    narrowOpacityScale: 0.55,
+    timeShift: 17.7,
+    amplitude: 0.26,
+    pointerStrength: 0.7,
+    // Warm window: pink through lemon, so the lace reads against both the
+    // primary sheet's mid-ramp and the rear weave's violets.
+    rampOrigin: 0.42,
+    rampScale: 2.2,
+    troughLow: 0.33,
+    troughHigh: 0.62,
+    crestGlow: 0.5,
+    alphaClip: 0,
+    depthWrite: false,
+  },
+];
+
+/**
+ * Full geometry options for one layer at one quality tier. Segment counts
+ * scale per axis and floor at one quad so a degenerate tier cannot throw.
+ */
+export function ribbonLayerGeometryOptions(
+  layer: HeroRibbonLayer,
+  segmentsX: number,
+  segmentsY: number,
+): WaveGeometryOptions {
+  return {
+    ...DEFAULT_WAVE_GEOMETRY,
+    ...layer.fold,
+    segmentsX: Math.max(1, Math.round(segmentsX * layer.segmentScale)),
+    segmentsY: Math.max(1, Math.round(segmentsY * layer.segmentScale)),
+  };
+}
 
 /**
  * Segment counts by rendered CSS width. Regenerating on tier change keeps a
@@ -105,15 +327,17 @@ export function waveQualityTier(width: number): {
  *
  * f(s)  = (w0·sin p + w1·sin(2p + 1.7) + w2·sin(φ⁻¹p + 0.6)) / (1 + w2)
  * f'(s) = q · (w0·cos p + 2w1·cos(2p + 1.7) + φ⁻¹w2·cos(φ⁻¹p + 0.6)) / (1 + w2)
- * where p = q·s and q = 2π·foldCount.
+ * where p = q·s + foldPhase and q = 2π·foldCount. The constant phase drops
+ * out of the derivative, so the slope expression is unchanged by it.
  */
 function foldField(
   s: number,
   foldCount: number,
   crestSharpness: number,
+  foldPhase: number,
 ): { value: number; slope: number } {
   const q = Math.PI * 2 * foldCount;
-  const p = q * s;
+  const p = q * s + foldPhase;
   const w0 = 1 - crestSharpness;
   const w1 = crestSharpness;
   const scale = 1 / (1 + DRIFT_WEIGHT);
@@ -164,6 +388,7 @@ export function sampleWaveSurface(
     foldSkew,
     foldCurvature,
     crestSharpness,
+    foldPhase,
   } = options;
   const skewU = Math.cos(foldSkew);
   // s(u, v) = u·cos θ + v·sin θ + c·(v − ½)², so ∂s/∂v picks up the 2c(v − ½).
@@ -171,7 +396,7 @@ export function sampleWaveSurface(
   const skewV = Math.sin(foldSkew) + 2 * foldCurvature * centred;
   const s = u * skewU + v * Math.sin(foldSkew) + foldCurvature * centred * centred;
 
-  const fold = foldField(s, foldCount, crestSharpness);
+  const fold = foldField(s, foldCount, crestSharpness, foldPhase);
   const envelope = camber(v);
 
   const x = (u - 0.5) * width;

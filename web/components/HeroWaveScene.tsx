@@ -10,6 +10,7 @@ import {
   DataTexture,
   DoubleSide,
   LinearFilter,
+  type Mesh,
   NoColorSpace,
   RGBAFormat,
   UnsignedByteType,
@@ -22,8 +23,9 @@ import {
 import {
   createWaveGeometryData,
   DEFAULT_WAVE_GEOMETRY,
+  HERO_RIBBON_LAYERS,
+  ribbonLayerGeometryOptions,
   type WaveGeometryData,
-  type WaveGeometryOptions,
 } from "@/lib/hero-wave-geometry";
 import type {
   WaveGeometryMessage,
@@ -42,7 +44,10 @@ export interface PointerTarget {
 }
 
 export interface HeroWaveSceneProps {
-  /** Quads per axis for this viewport tier; a change rebuilds the sheet. */
+  /**
+   * Quads per axis for the primary sheet at this viewport tier; the other
+   * ribbon layers derive their counts from it. A change rebuilds the stack.
+   */
   segmentsX: number;
   segmentsY: number;
   /** Live pointer in [-1, 1] sheet space, written by the host component. */
@@ -61,7 +66,8 @@ export interface HeroWaveSceneProps {
  * every sin() argument has advanced by a whole number of turns. Wrapping
  * uTime on this period is invisible on screen and keeps the float32 sine
  * arguments small on long-lived tabs, where precision loss would otherwise
- * warp the wave.
+ * warp the wave. Per-layer uTimeShift values are constants, so they shift the
+ * field without touching its period.
  */
 export const WAVE_TIME_PERIOD = Math.PI * 200;
 
@@ -77,32 +83,32 @@ function toBufferGeometry(data: WaveGeometryData): BufferGeometry {
 }
 
 /**
- * Builds the sheet in a Worker, falling back to inline generation when Workers
- * are unavailable or the module fails to load. Both routes call the same
- * generator, so the two can never drift apart visually.
+ * Builds every ribbon layer's sheet in one Worker batch, falling back to
+ * inline generation when Workers are unavailable or the module fails to load.
+ * Both routes call the same generator with the same per-layer options, so the
+ * two can never drift apart visually, and the stack always arrives as a
+ * complete generation — layers from different builds never mix.
  */
-function useWaveGeometry(segmentsX: number, segmentsY: number) {
-  const [geometry, setGeometry] = useState<BufferGeometry | null>(null);
+function useWaveGeometries(segmentsX: number, segmentsY: number) {
+  const [geometries, setGeometries] = useState<BufferGeometry[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     let settled = false;
     let worker: Worker | null = null;
-    const options: WaveGeometryOptions = {
-      ...DEFAULT_WAVE_GEOMETRY,
-      segmentsX,
-      segmentsY,
-    };
+    const sheets = HERO_RIBBON_LAYERS.map((layer) =>
+      ribbonLayerGeometryOptions(layer, segmentsX, segmentsY),
+    );
 
-    const accept = (data: WaveGeometryData) => {
+    const accept = (data: WaveGeometryData[]) => {
       if (cancelled || settled) return;
       settled = true;
-      setGeometry(toBufferGeometry(data));
+      setGeometries(data.map(toBufferGeometry));
     };
 
     const buildInline = () => {
       if (cancelled || settled) return;
-      accept(createWaveGeometryData(options));
+      accept(sheets.map((options) => createWaveGeometryData(options)));
     };
 
     try {
@@ -117,14 +123,14 @@ function useWaveGeometry(segmentsX: number, segmentsY: number) {
             buildInline();
             return;
           }
-          accept(event.data.data);
+          accept(event.data.sheets);
         },
       );
       worker.addEventListener("error", buildInline);
       worker.addEventListener("messageerror", buildInline);
       worker.postMessage({
         requestId: 1,
-        options,
+        sheets,
       } satisfies WaveGeometryRequest);
     } catch {
       buildInline();
@@ -136,10 +142,13 @@ function useWaveGeometry(segmentsX: number, segmentsY: number) {
     };
   }, [segmentsX, segmentsY]);
 
-  // Releases the previous sheet's GPU buffers on a tier change and on unmount.
-  useEffect(() => () => geometry?.dispose(), [geometry]);
+  // Releases the previous stack's GPU buffers on a tier change and on unmount.
+  useEffect(
+    () => () => geometries?.forEach((geometry) => geometry.dispose()),
+    [geometries],
+  );
 
-  return geometry;
+  return geometries;
 }
 
 function usePaletteTexture(): DataTexture {
@@ -166,15 +175,24 @@ function usePaletteTexture(): DataTexture {
   return texture;
 }
 
-function WaveSheet({
+/**
+ * The layered ribbon stack. Every layer shares one wrapped clock and one
+ * eased pointer, so the sheets read as one weather system; each mesh carries
+ * its own fold recipe, palette window, and depth discipline from
+ * `HERO_RIBBON_LAYERS`, which is what lets crests thread over and under the
+ * neighbouring sheets instead of compositing as a single thick wash.
+ */
+function RibbonField({
   segmentsX,
   segmentsY,
   pointer,
   onDrawn,
   onContextLost,
 }: Omit<HeroWaveSceneProps, "active">) {
-  const material = useRef<HeroWaveMaterialImpl>(null);
-  const geometry = useWaveGeometry(segmentsX, segmentsY);
+  const materials = useRef<(HeroWaveMaterialImpl | null)[]>([]);
+  const meshes = useRef<(Mesh | null)[]>([]);
+  const clock = useRef(0);
+  const geometries = useWaveGeometries(segmentsX, segmentsY);
   const palette = usePaletteTexture();
   const eased = useRef({ x: 0, y: 0 });
   const drawnFrames = useRef(0);
@@ -191,19 +209,39 @@ function WaveSheet({
   }, [gl, onContextLost]);
 
   useFrame((_, delta) => {
-    const impl = material.current;
-    if (!impl) return;
-
     // Clamped so a tab returning from the background advances the wave by one
     // frame instead of by the whole time it spent hidden; wrapped on the
     // field's exact repeat period so long sessions never lose sine precision.
-    impl.uTime = (impl.uTime + Math.min(delta, 1 / 30)) % WAVE_TIME_PERIOD;
+    // One clock feeds every layer — the stack must never desynchronise.
+    clock.current =
+      (clock.current + Math.min(delta, 1 / 30)) % WAVE_TIME_PERIOD;
 
     // Frame-rate independent exponential easing toward the live pointer.
     const blend = 1 - Math.pow(0.0016, delta);
     eased.current.x += (pointer.current.x - eased.current.x) * blend;
     eased.current.y += (pointer.current.y - eased.current.y) * blend;
-    impl.uPointer.set(eased.current.x, eased.current.y);
+
+    let anyDrawn = false;
+    for (let index = 0; index < HERO_RIBBON_LAYERS.length; index += 1) {
+      const impl = materials.current[index];
+      if (impl) {
+        impl.uTime = clock.current;
+        impl.uPointer.set(eased.current.x, eased.current.y);
+        anyDrawn = true;
+      }
+      const mesh = meshes.current[index];
+      const layer = HERO_RIBBON_LAYERS[index];
+      if (mesh) {
+        // Pointer parallax: the front lace leans furthest, the rear weave
+        // barely moves. This differential motion — not the z offsets, which
+        // are invisible from a fixed camera — is what sells the stack as
+        // physically separated sheets.
+        mesh.position.x = layer.drift[0] + eased.current.x * layer.parallax;
+        mesh.position.y =
+          layer.drift[1] + eased.current.y * layer.parallax * 0.6;
+      }
+    }
+    if (!anyDrawn) return;
 
     if (drawnFrames.current < 3) {
       drawnFrames.current += 1;
@@ -211,44 +249,74 @@ function WaveSheet({
     }
   });
 
-  if (!geometry) return null;
+  if (!geometries) return null;
 
-  // Fit the whole sheet into the frustum, then overscale so its long edges
-  // bleed past the layer instead of floating inside it. Without this the sheet
-  // is cropped to a single fold and reads as a flat wash.
+  // Fit the whole primary sheet into the frustum, then overscale so its long
+  // edges bleed past the layer instead of floating inside it. Without this
+  // the stack is cropped to a single fold and reads as a flat wash.
   const contain = Math.min(
     viewport.width / DEFAULT_WAVE_GEOMETRY.width,
     viewport.height / DEFAULT_WAVE_GEOMETRY.height,
   );
   const wide = viewport.aspect > 1.15;
-  // Overscale pushes the sheet's rectangular border out of the layer on every
+  // Overscale pushes each sheet's rectangular border out of the layer on every
   // side that a crest can cross: any border that stays inside the crop draws a
   // ruled line wherever it cuts a saturated band, no matter how wide the uv
   // fade is. The fold count rose with the overscale so the visible window
   // still holds two to three crest bands.
   const scale = contain * (wide ? 1.66 : 2.05);
-  // The shader dissolves the sheet's left half, so a narrow layer has to slide
-  // the dense right half back into frame or the band all but disappears.
+  // The shader dissolves each sheet's left half, so a narrow layer has to
+  // slide the dense right half back into frame or the band all but disappears.
   const offsetX = wide ? 0.34 : -0.2 * DEFAULT_WAVE_GEOMETRY.width * scale;
 
   return (
-    <mesh
-      frustumCulled={false}
-      geometry={geometry}
+    <group
       position={[offsetX, wide ? 0.04 : 0.12, 0]}
       rotation={[wide ? -0.34 : -0.46, 0.14, -0.2]}
       scale={scale}
     >
-      <heroWaveMaterial
-        depthWrite={false}
-        key={HeroWaveMaterial.key}
-        ref={material}
-        side={DoubleSide}
-        transparent
-        uPalette={palette}
-        uSheetSize={sheetSize}
-      />
-    </mesh>
+      {HERO_RIBBON_LAYERS.map((layer, index) => (
+        <mesh
+          frustumCulled={false}
+          geometry={geometries[index]}
+          key={layer.id}
+          position={[layer.drift[0], layer.drift[1], layer.zLift]}
+          ref={(instance) => {
+            meshes.current[index] = instance;
+          }}
+          // Blending must run back-to-front in layer order. Three's own
+          // transparent sort keys on bounding-sphere distance, which the
+          // interpenetrating, differently-rotated sheets would flip between
+          // frames; the explicit order pins it.
+          renderOrder={index}
+          rotation={[layer.tilt[0], layer.tilt[1], layer.tilt[2]]}
+        >
+          <heroWaveMaterial
+            depthWrite={layer.depthWrite}
+            key={HeroWaveMaterial.key}
+            ref={(instance: HeroWaveMaterialImpl | null) => {
+              materials.current[index] = instance;
+            }}
+            side={DoubleSide}
+            transparent
+            uAlphaClip={layer.alphaClip}
+            uAmplitude={layer.amplitude}
+            uCrestGlow={layer.crestGlow}
+            uOpacity={
+              layer.opacity * (wide ? 1 : layer.narrowOpacityScale)
+            }
+            uPalette={palette}
+            uPointerStrength={layer.pointerStrength}
+            uRampOrigin={layer.rampOrigin}
+            uRampScale={layer.rampScale}
+            uSheetSize={sheetSize}
+            uTimeShift={layer.timeShift}
+            uTroughHigh={layer.troughHigh}
+            uTroughLow={layer.troughLow}
+          />
+        </mesh>
+      ))}
+    </group>
   );
 }
 
@@ -294,7 +362,7 @@ export function HeroWaveScene({
         onDecline={() => setDpr(1)}
         onIncline={() => setDpr(ceiling)}
       />
-      <WaveSheet
+      <RibbonField
         onContextLost={onContextLost}
         onDrawn={onDrawn}
         pointer={pointer}

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   createWaveGeometryData,
   DEFAULT_WAVE_GEOMETRY,
+  HERO_RIBBON_LAYERS,
+  ribbonLayerGeometryOptions,
   sampleWaveSurface,
   waveGeometryTransferables,
   waveQualityTier,
@@ -83,39 +85,73 @@ describe("hero wave geometry", () => {
 
   it("matches central finite differences of the same surface", () => {
     // Guards the hand-derived chain-rule slopes in sampleWaveSurface. A wrong
-    // derivative still renders, it just lights the folds incorrectly.
+    // derivative still renders, it just lights the folds incorrectly. Every
+    // ribbon layer's fold recipe is checked, not just the default sheet: the
+    // phased, re-curved rear and front layers exercise terms (foldPhase, the
+    // steeper skew, the deeper curvature) that the default never reaches.
     const epsilon = 1e-4;
+    const surfaces: WaveGeometryOptions[] = [
+      DEFAULT_WAVE_GEOMETRY,
+      ...HERO_RIBBON_LAYERS.map((layer) => ({
+        ...DEFAULT_WAVE_GEOMETRY,
+        ...layer.fold,
+      })),
+    ];
 
-    for (const u of [0.08, 0.31, 0.5, 0.77, 0.94]) {
-      for (const v of [0.12, 0.4, 0.63, 0.88]) {
-        const exact = sampleWaveSurface(u, v, DEFAULT_WAVE_GEOMETRY);
-        const uPlus = sampleWaveSurface(u + epsilon, v, DEFAULT_WAVE_GEOMETRY);
-        const uMinus = sampleWaveSurface(u - epsilon, v, DEFAULT_WAVE_GEOMETRY);
-        const vPlus = sampleWaveSurface(u, v + epsilon, DEFAULT_WAVE_GEOMETRY);
-        const vMinus = sampleWaveSurface(u, v - epsilon, DEFAULT_WAVE_GEOMETRY);
+    for (const surface of surfaces) {
+      for (const u of [0.08, 0.31, 0.5, 0.77, 0.94]) {
+        for (const v of [0.12, 0.4, 0.63, 0.88]) {
+          const exact = sampleWaveSurface(u, v, surface);
+          const uPlus = sampleWaveSurface(u + epsilon, v, surface);
+          const uMinus = sampleWaveSurface(u - epsilon, v, surface);
+          const vPlus = sampleWaveSurface(u, v + epsilon, surface);
+          const vMinus = sampleWaveSurface(u, v - epsilon, surface);
 
-        const tangentU = [
-          (uPlus.x - uMinus.x) / (2 * epsilon),
-          (uPlus.y - uMinus.y) / (2 * epsilon),
-          (uPlus.z - uMinus.z) / (2 * epsilon),
-        ];
-        const tangentV = [
-          (vPlus.x - vMinus.x) / (2 * epsilon),
-          (vPlus.y - vMinus.y) / (2 * epsilon),
-          (vPlus.z - vMinus.z) / (2 * epsilon),
-        ];
-        const cross = [
-          tangentU[1] * tangentV[2] - tangentU[2] * tangentV[1],
-          tangentU[2] * tangentV[0] - tangentU[0] * tangentV[2],
-          tangentU[0] * tangentV[1] - tangentU[1] * tangentV[0],
-        ];
-        const length = Math.hypot(...cross);
+          const tangentU = [
+            (uPlus.x - uMinus.x) / (2 * epsilon),
+            (uPlus.y - uMinus.y) / (2 * epsilon),
+            (uPlus.z - uMinus.z) / (2 * epsilon),
+          ];
+          const tangentV = [
+            (vPlus.x - vMinus.x) / (2 * epsilon),
+            (vPlus.y - vMinus.y) / (2 * epsilon),
+            (vPlus.z - vMinus.z) / (2 * epsilon),
+          ];
+          const cross = [
+            tangentU[1] * tangentV[2] - tangentU[2] * tangentV[1],
+            tangentU[2] * tangentV[0] - tangentU[0] * tangentV[2],
+            tangentU[0] * tangentV[1] - tangentU[1] * tangentV[0],
+          ];
+          const length = Math.hypot(...cross);
 
-        expect(cross[0] / length).toBeCloseTo(exact.nx, 4);
-        expect(cross[1] / length).toBeCloseTo(exact.ny, 4);
-        expect(cross[2] / length).toBeCloseTo(exact.nz, 4);
+          expect(cross[0] / length).toBeCloseTo(exact.nx, 4);
+          expect(cross[1] / length).toBeCloseTo(exact.ny, 4);
+          expect(cross[2] / length).toBeCloseTo(exact.nz, 4);
+        }
       }
     }
+  });
+
+  it("shifts the fold field with foldPhase without moving the footprint", () => {
+    const phased: WaveGeometryOptions = {
+      ...DEFAULT_WAVE_GEOMETRY,
+      foldPhase: Math.PI * 0.75,
+    };
+    let anyFoldMoved = false;
+
+    for (const u of [0.1, 0.35, 0.6, 0.85]) {
+      for (const v of [0.2, 0.5, 0.8]) {
+        const base = sampleWaveSurface(u, v, DEFAULT_WAVE_GEOMETRY);
+        const shifted = sampleWaveSurface(u, v, phased);
+        // The phase re-lands the crests…
+        if (Math.abs(base.fold - shifted.fold) > 1e-3) anyFoldMoved = true;
+        // …but must not move the sheet's planar footprint.
+        expect(shifted.x).toBe(base.x);
+        expect(shifted.y).toBe(base.y);
+        expect(Math.abs(shifted.fold)).toBeLessThanOrEqual(1 + 1e-5);
+      }
+    }
+    expect(anyFoldMoved).toBe(true);
   });
 
   it("rejects segment counts that cannot form quads", () => {
@@ -146,5 +182,78 @@ describe("hero wave geometry", () => {
     expect(laptop.segmentsX).toBeLessThan(desktop.segmentsX);
     expect(waveQualityTier(700)).toEqual(phone);
     expect(waveQualityTier(701)).toEqual(laptop);
+  });
+});
+
+describe("hero ribbon layers", () => {
+  it("stacks two to three sheets back to front", () => {
+    expect(HERO_RIBBON_LAYERS.length).toBeGreaterThanOrEqual(2);
+    expect(HERO_RIBBON_LAYERS.length).toBeLessThanOrEqual(3);
+    expect(HERO_RIBBON_LAYERS.map((layer) => layer.id)).toEqual([
+      "back",
+      "primary",
+      "front",
+    ]);
+    for (let index = 1; index < HERO_RIBBON_LAYERS.length; index += 1) {
+      expect(HERO_RIBBON_LAYERS[index].zLift).toBeGreaterThan(
+        HERO_RIBBON_LAYERS[index - 1].zLift,
+      );
+    }
+  });
+
+  it("gives every sheet its own fold phase and clock shift", () => {
+    // Layers folding or swelling in lockstep collapse into one thick sheet
+    // with a drop shadow — the exact failure the multi-sheet hero replaces.
+    const phases = HERO_RIBBON_LAYERS.map((layer) => layer.fold.foldPhase);
+    const shifts = HERO_RIBBON_LAYERS.map((layer) => layer.timeShift);
+    expect(new Set(phases).size).toBe(HERO_RIBBON_LAYERS.length);
+    expect(new Set(shifts).size).toBe(HERO_RIBBON_LAYERS.length);
+  });
+
+  it("keeps adjacent sheets close enough in z to interpenetrate", () => {
+    // Crests can only thread over and under a neighbour whose plane sits
+    // within the combined fold displacement; farther apart, the stack reads
+    // as parallel planes with no crossings at all.
+    for (let index = 1; index < HERO_RIBBON_LAYERS.length; index += 1) {
+      const near = HERO_RIBBON_LAYERS[index];
+      const far = HERO_RIBBON_LAYERS[index - 1];
+      expect(near.zLift - far.zLift).toBeLessThan(
+        near.fold.foldDepth + far.fold.foldDepth,
+      );
+    }
+  });
+
+  it("lets only depth-writing sheets clip fragments, and keeps the front open", () => {
+    for (const layer of HERO_RIBBON_LAYERS) {
+      expect(layer.troughLow).toBeLessThan(layer.troughHigh);
+      expect(layer.opacity).toBeGreaterThan(0);
+      expect(layer.opacity).toBeLessThanOrEqual(1);
+      expect(layer.narrowOpacityScale).toBeGreaterThan(0);
+      expect(layer.narrowOpacityScale).toBeLessThanOrEqual(1);
+      if (layer.depthWrite) {
+        // A depth-writing sheet with no alpha clip writes depth from its
+        // invisible troughs and punches holes into everything behind it.
+        expect(layer.alphaClip).toBeGreaterThan(0);
+      }
+    }
+    const front = HERO_RIBBON_LAYERS[HERO_RIBBON_LAYERS.length - 1];
+    expect(front.depthWrite).toBe(false);
+    expect(front.alphaClip).toBe(0);
+  });
+
+  it("derives per-layer segment counts that always form quads", () => {
+    for (const layer of HERO_RIBBON_LAYERS) {
+      expect(layer.segmentScale).toBeGreaterThan(0);
+      expect(layer.segmentScale).toBeLessThanOrEqual(1);
+      const scaled = ribbonLayerGeometryOptions(layer, 288, 196);
+      expect(scaled.segmentsX).toBe(Math.round(288 * layer.segmentScale));
+      expect(scaled.segmentsY).toBe(Math.round(196 * layer.segmentScale));
+      expect(scaled.foldPhase).toBe(layer.fold.foldPhase);
+      // A degenerate tier must floor at one quad instead of throwing.
+      const floor = ribbonLayerGeometryOptions(layer, 1, 1);
+      expect(floor.segmentsX).toBeGreaterThanOrEqual(1);
+      expect(floor.segmentsY).toBeGreaterThanOrEqual(1);
+      expect(() => createWaveGeometryData(floor)).not.toThrow();
+    }
   });
 });
