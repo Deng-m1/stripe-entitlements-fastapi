@@ -2246,8 +2246,19 @@ h2 {
   background: var(--danger-soft);
   color: var(--danger);
   display: flex;
+  /* The message often ends in an unbreakable token (an env-var name or event
+     id); without wrapping the flex row propagates its min-content width and
+     pans the whole page sideways at 390px. */
+  flex-wrap: wrap;
   gap: 12px;
   justify-content: space-between;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.inline-error span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .account-loading {
