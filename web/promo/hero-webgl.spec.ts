@@ -61,6 +61,72 @@ test("the default profile renders the hero through a WebGL context", async ({
   });
 });
 
+test("the renderer hands back to the poster when reduced motion arrives mid-session", async ({
+  page,
+  baseURL,
+}) => {
+  await openLanding(page, baseURL);
+  const layer = page.locator(".hero-wave");
+  await expect(layer).toHaveAttribute("data-drawn", "true", {
+    timeout: 30_000,
+  });
+
+  // Flipping the OS motion preference while the canvas is live must not
+  // leave the hero blank: the canvas unmounts, `data-drawn` releases, and
+  // the poster returns at full opacity in the same frame.
+  await page.emulateMedia({ reducedMotion: "reduce" });
+
+  await expect(layer.locator("canvas")).toHaveCount(0);
+  await expect(layer).not.toHaveAttribute("data-drawn", "true");
+  await expect(layer.locator(".hero-wave-fallback")).toHaveCSS("opacity", "1");
+
+  // And the handover must recover when the preference is withdrawn.
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await expect(layer).toHaveAttribute("data-drawn", "true", {
+    timeout: 30_000,
+  });
+  await expect(layer.locator("canvas")).toHaveCount(1);
+});
+
+test("the headline lockup strands no orphan word at 1440px", async ({
+  page,
+  baseURL,
+}) => {
+  // Review P1-5: at this width "Billing events are" and the headline column
+  // are within a few pixels of each other, so greedy wrapping used to flip
+  // between "…events / are chaos." and "…events are / chaos." on font-metric
+  // noise, stranding "chaos." alone on its own line.
+  await openLanding(page, baseURL);
+
+  const lockup = await page.evaluate(() => {
+    const hold = document.querySelector(".h1-hold");
+    const heading = document.getElementById("hero-heading");
+    if (!hold || !heading) return null;
+    const lineCount = (element: Element) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      const tops = new Set<number>();
+      for (const rect of range.getClientRects()) {
+        if (rect.width === 0) continue;
+        // Quantise: fragments of one line share a top within subpixel noise.
+        tops.add(Math.round(rect.top));
+      }
+      return tops.size;
+    };
+    return {
+      holdLines: lineCount(hold),
+      headingLines: lineCount(heading),
+    };
+  });
+
+  expect(lockup).not.toBeNull();
+  // "are chaos." renders as one unbroken fragment, so "chaos." cannot orphan.
+  expect(lockup?.holdLines).toBe(1);
+  // The whole lockup holds the intended four lines — a fifth line means a
+  // shattered rag (the laptop-width failure class).
+  expect(lockup?.headingLines).toBeLessThanOrEqual(4);
+});
+
 test("the wave keeps moving between frames", async ({ page, baseURL }) => {
   await openLanding(page, baseURL);
   const layer = page.locator(".hero-wave");
