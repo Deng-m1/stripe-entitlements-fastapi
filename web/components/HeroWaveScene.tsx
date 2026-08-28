@@ -197,7 +197,10 @@ function WaveSheet({
     viewport.height / DEFAULT_WAVE_GEOMETRY.height,
   );
   const wide = viewport.aspect > 1.15;
-  const scale = contain * (wide ? 1.34 : 1.72);
+  // A stacked hero gets a short, wide layer, so the sheet has to be pushed
+  // further past it than on desktop — at desktop overscale its rectangular
+  // corner lands inside the band and reads as a ruled diagonal.
+  const scale = contain * (wide ? 1.34 : 2.05);
   // The shader dissolves the sheet's left half, so a narrow layer has to slide
   // the dense right half back into frame or the band all but disappears.
   const offsetX = wide ? 0.24 : -0.2 * DEFAULT_WAVE_GEOMETRY.width * scale;

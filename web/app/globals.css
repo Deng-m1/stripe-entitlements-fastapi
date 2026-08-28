@@ -2640,23 +2640,25 @@ dd {
     transform: rotate(1.2deg);
   }
 
-  /* Stacked hero: the wave becomes a top band instead of a right column, so
-     the diagonal headline mask is replaced by a plain vertical fade. */
+  /* Stacked hero: the wave becomes a band across the top rather than a right
+     column. The desktop mask cuts hard on the left to clear the headline
+     column, which does not exist here — applied as-is it stacks with the
+     shader's own left dissolve and leaves nothing but a corner smudge. Keep a
+     lateral gradient for shape, but never let it reach full transparency. */
   .hero-wave {
-    height: 62%;
-    inset: -20% -12% auto -6%;
+    height: 64%;
+    inset: -10% -10% auto -14%;
     --hero-wave-mask: linear-gradient(
         to bottom,
-        #000 58%,
-        rgba(0, 0, 0, 0.38) 84%,
+        #000 54%,
+        rgba(0, 0, 0, 0.42) 82%,
         transparent 100%
       ),
-      linear-gradient(
-        105deg,
-        transparent 2%,
-        rgba(0, 0, 0, 0.4) 26%,
-        #000 62%
-      );
+      linear-gradient(100deg, rgba(0, 0, 0, 0.5) 0%, #000 40%),
+      /* The stacked band puts the sheet's turning crest on a diagonal across
+         the headline. Fade the corner it runs into so the crest ends as a
+         gradient rather than as a stroke drawn over the copy. */
+        linear-gradient(48deg, #000 44%, rgba(0, 0, 0, 0.4) 76%, transparent 100%);
   }
 
   .hero-pills {
@@ -2716,8 +2718,8 @@ dd {
   }
 
   .hero-wave {
-    height: 50%;
-    inset: -18% -14% auto -8%;
+    height: 58%;
+    inset: -8% -12% auto -16%;
   }
 
   .paper-band {

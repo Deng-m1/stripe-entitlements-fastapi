@@ -143,9 +143,12 @@ void main() {
   float specular = pow(clamp(dot(normal, normalize(key + view)), 0.0, 1.0), uShininess);
   float rim = pow(1.0 - clamp(dot(normal, view), 0.0, 1.0), 2.6);
 
-  // Violet at the far corner, amber at the near one. The sheet is overscaled
-  // past the layer, so the ramp is remapped onto the part actually on screen —
-  // otherwise the visible band never leaves the magenta middle.
+  // Violet at the far corner, lemon at the near one. The sheet is overscaled
+  // past the layer and its outer band is dissolved by the alpha term below, so
+  // the ramp is remapped onto the window that survives both — origin and scale
+  // are chosen to put ramp 0 at the first opaque column and ramp 1 at the last.
+  // Mapped over the whole sheet instead, violet and lemon land in the dissolved
+  // margins and the hero never leaves the magenta middle.
   float diagonal = vUv.x * 0.66 + (1.0 - vUv.y) * 0.34;
   // Position and the baked folds own the ramp; the travelling lift only
   // nudges it, so the hero keeps one identity while the surface moves.
@@ -160,24 +163,31 @@ void main() {
   // Over a light paper canvas a darkened trough reads as an olive smudge
   // rather than as shadow, so shading stays close to unity and the shadow is
   // spent on transparency instead (see the alpha term below).
-  vec3 shaded = base * (0.80 + 0.28 * keyWrap + 0.20 * lambert);
+  vec3 shaded = base * (0.78 + 0.26 * keyWrap + 0.16 * lambert);
   shaded += base * 0.1 * fillWrap;
   shaded += srgbToLinear(uSheenColor) * specular * uSpecularStrength;
+  // Rim light peaks exactly on silhouettes. Over a dark canvas that reads as
+  // glow; over paper it outlines the sheet, so it is kept low enough to warm
+  // the turning crest without drawing it.
   shaded += srgbToLinear(uRimColor) * rim * uRimStrength;
 
   // Dissolve toward the headline side and the sheet's long edges so the wave
-  // meets the paper canvas without a seam.
+  // meets the paper canvas without a seam. Every fade has to be wide enough to
+  // hide a straight line: the sheet is a rectangle, and any edge that reaches
+  // visible alpha reads as a ruled crop across the hero rather than as a fold.
   float alpha = uOpacity;
-  alpha *= smoothstep(0.0, 0.34, vUv.x) * smoothstep(0.0, 0.13, 1.0 - vUv.x);
-  alpha *= smoothstep(0.0, 0.3, vUv.y) * smoothstep(0.0, 0.34, 1.0 - vUv.y);
+  alpha *= smoothstep(0.0, 0.30, vUv.x) * smoothstep(0.0, 0.26, 1.0 - vUv.x);
+  alpha *= smoothstep(0.0, 0.28, vUv.y) * smoothstep(0.0, 0.30, 1.0 - vUv.y);
   // Troughs sink back into the paper and crests carry the colour, which is
-  // what separates a folded sheet from a blurred wash.
+  // what separates a folded sheet from a blurred wash. The window is wide on
+  // purpose: against a light canvas a short one turns the outermost crest into
+  // a drawn silhouette instead of letting it melt into the page.
   alpha *= mix(
     1.0,
-    smoothstep(-0.8, 0.85, vFold * 1.15 + vLift * 0.5),
+    smoothstep(-1.15, 1.1, vFold * 1.15 + vLift * 0.5),
     uTroughFade
   );
-  alpha *= 0.7 + 0.3 * keyWrap;
+  alpha *= 0.84 + 0.16 * keyWrap;
 
   vec3 output_ = linearToSrgb(shaded);
   // Ordered-free dither: 8-bit output banding is very visible across a ramp
@@ -201,13 +211,13 @@ export const HeroWaveMaterial = shaderMaterial(
     uFillLight: new Vector3(0.68, -0.36, 0.5),
     uSheenColor: new Color("#fff3d6"),
     uRimColor: new Color("#ffd0f0"),
-    uSpecularStrength: 0.44,
+    uSpecularStrength: 0.36,
     uShininess: 58,
-    uRimStrength: 0.24,
+    uRimStrength: 0.12,
     uOpacity: 1,
-    uRampOrigin: 0.2,
-    uRampScale: 1.45,
-    uTroughFade: 0.5,
+    uRampOrigin: 0.34,
+    uRampScale: 2.15,
+    uTroughFade: 0.4,
   },
   VERTEX_SHADER,
   FRAGMENT_SHADER,
