@@ -103,13 +103,20 @@ test("the headline lockup strands no orphan word at 1440px", async ({
     const heading = document.getElementById("hero-heading");
     if (!hold || !heading) return null;
     const lineCount = (element: Element) => {
-      const range = document.createRange();
-      range.selectNodeContents(element);
+      // Measure text-node fragments only. A range over the whole element also
+      // returns the border boxes of block-level children (the `.h1-line`
+      // spans), and those container rects sit a few pixels above their first
+      // line fragment, so they would count as phantom extra lines.
       const tops = new Set<number>();
-      for (const rect of range.getClientRects()) {
-        if (rect.width === 0) continue;
-        // Quantise: fragments of one line share a top within subpixel noise.
-        tops.add(Math.round(rect.top));
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        for (const rect of range.getClientRects()) {
+          if (rect.width === 0) continue;
+          // Quantise: fragments of one line share a top within subpixel noise.
+          tops.add(Math.round(rect.top));
+        }
       }
       return tops.size;
     };
