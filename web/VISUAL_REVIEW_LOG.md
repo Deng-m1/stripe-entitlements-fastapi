@@ -376,3 +376,80 @@ P2-10 terminal legibility at 390 px.
   the shared token.
 - `visual-review-pages.mjs` now includes `/billing/error?code=payment_failed`
   so future full-site rounds cover both settlement routes.
+
+---
+
+## Round 6 — scroll motion (§3.2): hero drift + sitewide progress — 2026-08-28
+
+- Reviewer/implementer: fable 5 (scroll-motion owner)
+- Reviewed against: production `next start` builds of this branch before
+  (`fa69bc9`) and after (`b3ac861` + the in-flight depth-composite diff)
+- Evidence: `/tmp/scroll-motion-v2/{before,after}/` — a scroll-through
+  screen recording (`scroll-through-{before,after}.webm`), hero frames at
+  scrollY 0/260/520/780, per-section low/high poses, and machine-readable
+  computed-transform probes (`parallax-probe.json`,
+  `reduced-motion-probe.json`) captured by the new
+  `scripts/scroll-motion-shots.mjs` rig.
+
+### What landed
+
+- **Two scroll-progress contracts, one sitewide driver.** `ScrollMotion`
+  (mounted once in the root layout) owns `[data-parallax]` →
+  `--scroll-progress` (view cover range, 0.5 = centered pose) and
+  `[data-scroll-drift]` → `--scroll-exit` (leave-through-the-top range).
+  Browsers with CSS scroll timelines animate both properties natively
+  (registered `@property` + `animation-timeline: view()`); everywhere else
+  the component is the brief-sanctioned small polyfill — a rAF-synced
+  scroll listener writing the same variables from offsetTop chains (layout
+  boxes, so the driven transforms cannot feed back into measurement).
+  `ScrollReveal` keeps the IntersectionObserver entry reveals and its own
+  px-valued `[data-depth]` layer shifts; the attribute namespaces are
+  deliberately disjoint.
+- **Hero gradient responds to scroll (§3.2 bullet 3).** The `.hero-wave`
+  wrapper — canvas and poster together, the shader untouched — drifts
+  down-right and thins on `--scroll-exit`; the terminal artifact floats
+  ahead on `--scroll-progress`. Probe on the after build (native timeline
+  path, Chromium): wave translate (0,0) → (26.3, 86.3)px with opacity
+  1 → 0.68 across scrollY 0 → 780; terminal +2.5px → −18px over the same
+  travel. Before build: `transform: none`, opacity 1 at every offset.
+- **≥2 distinct parallax rates in the artifact sections (§3.2 bullet 2),**
+  from the depth-composite stream's `[data-depth]` layers, verified moving
+  in the same probe: ledger glow −9.9px vs ledger card stack +14.3px
+  (opposite directions), matrix glow −8.1px vs stack +12.8px, proof
+  popover +14.2px against a static proof table.
+
+### Reduced motion / degradation
+
+- `prefers-reduced-motion: reduce` probe at scrollY 0 and 520: every
+  scroll-driven transform reads `none`; the only non-none transforms are
+  the static §3.3 perspective poses (ledger/matrix card tilts) and the
+  popover's own `-50%` centering, byte-identical at both offsets — the
+  page is fully static. Both drivers also stand down (JS bails, consumer
+  CSS sits behind `no-preference`), and a mid-session flip clears every
+  inline variable (unit-tested).
+- No-JS legacy browsers hold the zero-offset pose through the registered
+  initial values (0.5 cover / 0 exit).
+
+### Gates run this round
+
+- `vitest` 147/147 (8 new `ScrollMotion.test.tsx` cases: cover/exit math,
+  clamping, native-support and reduced-motion inertness, mid-session
+  flips, MutationObserver pickup of late-mounted consumers, unmount
+  cleanup), ESLint and `tsc --noEmit` clean.
+- `overflow-probe.mjs`: 0px horizontal overflow on all six routes at
+  390px against the after build.
+- `hero-webgl.spec.ts`: 5/6 pass. The failing one — headline lockup
+  ≤4 lines at 1440px — is **independent of this round**: removing
+  `data-scroll-drift`/`data-parallax` from the live DOM leaves the H1 at
+  6 lines in an unchanged 539px column. Owned by the hero-lockup stream;
+  also expected to shift again when the remote type-unification commits
+  (Instrument Sans display) integrate.
+
+### Open items carried forward
+
+- The branch has three concurrent streams (this one, the local hero/depth
+  stream, and a remote chrome/type stream); the lockup gate and these
+  motion probes should be re-run once the streams converge on one head.
+- `scroll-motion-shots.mjs` probes `.ledger-stage-glow`/`.matrix-stack`
+  and friends by class; if the depth-composite stream renames its layers,
+  update the probe list in the same commit.
