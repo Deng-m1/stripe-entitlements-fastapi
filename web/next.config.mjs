@@ -24,6 +24,11 @@ validatePublicBillingBuildEnvironment(
 /** @type {import("next").NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Next 16 blocks dev-resource requests from origins other than localhost.
+  // Without this, a dev preview opened via 127.0.0.1 serves HTML but never
+  // hydrates (no errors; effects and clicks are silently dead), which breaks
+  // every mock-mode review of /pricing and /account. Dev-only setting.
+  allowedDevOrigins: ["127.0.0.1"],
   async headers() {
     return [
       {
