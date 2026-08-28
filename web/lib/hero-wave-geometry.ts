@@ -62,11 +62,17 @@ export const DEFAULT_WAVE_GEOMETRY: WaveGeometryOptions = {
   height: 2.35,
   segmentsX: 256,
   segmentsY: 176,
-  foldCount: 3.1,
-  foldDepth: 0.5,
-  foldSkew: 0.55,
-  foldCurvature: 0.62,
-  crestSharpness: 0.34,
+  // Fewer, broader ribbons: the zh-us hero is two or three wide overlapping
+  // sweeps, not a comb of thin bands. A high fold count reads as corrugation.
+  foldCount: 2.2,
+  foldDepth: 0.56,
+  foldSkew: 0.62,
+  // Round 3: the crease lines used to read as near-straight diagonals, which
+  // over a white canvas look like ruled creases in paper rather than the
+  // sweeping arcs of the stripe.com/zh-us ribbon. Bending the fold axis this
+  // hard is what turns the bands into curves.
+  foldCurvature: 1.15,
+  crestSharpness: 0.3,
 };
 
 /**
