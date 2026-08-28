@@ -328,7 +328,12 @@ export default function HomePage() {
               </span>
             </a>
           </div>
-          <PipelineNodeGraph />
+          {/* The band's own gradient is painted on the section, so giving
+              the node cards a rate of their own is what separates the two
+              layers as the section scrolls (brief §3.2). */}
+          <div className="node-graph-layer" data-parallax="0.04">
+            <PipelineNodeGraph />
+          </div>
           <ol className="capability-grid">
             {capabilities.map((capability, index) => (
               <li
@@ -448,13 +453,18 @@ export default function HomePage() {
             </p>
           </div>
           <div className="catalog-tiles">
-            {referencePlans.map((plan) => {
+            {referencePlans.map((plan, index) => {
               const saving = annualSavings(plan);
               const credits = plan.entitlements.find(
                 (item) => item.key === "monthly_credits",
               )?.value;
               return (
-                <div className="catalog-tile" key={plan.key}>
+                <div
+                  className="catalog-tile"
+                  data-reveal-step
+                  key={plan.key}
+                  style={{ "--reveal-step": index } as CSSProperties}
+                >
                   <h3>{plan.name}</h3>
                   <p className="catalog-price">
                     {formatMoney(
@@ -546,8 +556,12 @@ export default function HomePage() {
             <h2 id="faq-heading">Stripe billing template FAQ</h2>
           </div>
           <div className="faq-list">
-            {frequentlyAskedQuestions.map((item) => (
-              <details key={item.question}>
+            {frequentlyAskedQuestions.map((item, index) => (
+              <details
+                data-reveal-step
+                key={item.question}
+                style={{ "--reveal-step": index } as CSSProperties}
+              >
                 <summary>{item.question}</summary>
                 <p>{item.answer}</p>
               </details>

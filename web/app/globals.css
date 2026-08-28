@@ -1680,9 +1680,15 @@ h2 {
   overflow: hidden;
   padding: var(--space-6);
   position: relative;
+  /* The hover lift uses `translate` so it never shares a property with the
+     reveal's `transform`, and the reveal longhands are restated here: a
+     `transition` shorthand on the tile would otherwise replace the
+     transition-property/-delay that [data-reveal-step] set for the stagger. */
   transition:
     box-shadow 0.3s var(--ease-out-soft),
-    transform 0.3s var(--ease-out-soft);
+    translate 0.3s var(--ease-out-soft),
+    opacity 0.72s var(--ease-out-soft) calc(var(--reveal-step, 0) * 90ms),
+    transform 0.72s var(--ease-out-soft) calc(var(--reveal-step, 0) * 90ms);
 }
 
 /* A 2px mesh edge lights up on hover — the tiles' only decorative ramp use. */
@@ -1698,7 +1704,7 @@ h2 {
 
 .catalog-tile:hover {
   box-shadow: var(--shadow-float);
-  transform: translateY(-3px);
+  translate: 0 -3px;
 }
 
 .catalog-tile:hover::before {
