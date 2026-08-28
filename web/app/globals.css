@@ -299,6 +299,10 @@ input {
 .demo-notice-detail {
   min-width: 0;
   overflow: hidden;
+  /* Containing block for the hidden tail below: without it the tail resolves
+     against the initial containing block, and its static position — past the
+     end of an unwrapped sentence — widened the document to 640px at 390px. */
+  position: relative;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -310,6 +314,8 @@ input {
     clip: rect(0 0 0 0);
     clip-path: inset(50%);
     height: 1px;
+    inset-block-start: 0;
+    inset-inline-start: 0;
     overflow: hidden;
     position: absolute;
     white-space: nowrap;
