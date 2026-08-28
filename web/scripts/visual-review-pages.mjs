@@ -18,6 +18,7 @@ const pages = [
     route: "/billing/success?expected_plan=starter&expected_interval=month",
     slug: "success",
   },
+  { route: "/billing/error?code=payment_failed", slug: "billing-error" },
 ];
 
 const browser = await chromium.launch();

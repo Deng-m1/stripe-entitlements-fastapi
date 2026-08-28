@@ -8,6 +8,8 @@ const routes = [
   "/pricing",
   "/account",
   "/billing/success?expected_plan=starter&expected_interval=month",
+  "/billing/error?code=payment_failed",
+  "/billing/error",
 ];
 
 const browser = await chromium.launch();

@@ -14,6 +14,23 @@ interface SuccessScreenProps {
   maxAttempts?: number;
 }
 
+type ScreenState =
+  | "validating"
+  | "polling"
+  | "confirmed"
+  | "timed_out"
+  | "invalid";
+
+// Settlement status chip (DESIGN_SYSTEM.md §5.4): success semantics only
+// after the webhook projection is confirmed; a bare redirect stays pending.
+const chipByState: Record<ScreenState, { label: string; tone: string }> = {
+  validating: { label: "Verifying return", tone: "chip-pending" },
+  polling: { label: "Awaiting webhook", tone: "chip-pending" },
+  confirmed: { label: "Webhook verified", tone: "chip-confirmed" },
+  timed_out: { label: "Unconfirmed", tone: "chip-pending" },
+  invalid: { label: "Unverifiable", tone: "chip-stopped" },
+};
+
 export function SuccessScreen({
   expectedPlan,
   expectedInterval,
@@ -21,9 +38,7 @@ export function SuccessScreen({
   pollIntervalMs = 1500,
   maxAttempts = 12,
 }: SuccessScreenProps) {
-  const [state, setState] = useState<
-    "validating" | "polling" | "confirmed" | "timed_out" | "invalid"
-  >("validating");
+  const [state, setState] = useState<ScreenState>("validating");
   const [attempt, setAttempt] = useState(0);
   const [account, setAccount] = useState<AccountResponse | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
@@ -123,90 +138,112 @@ export function SuccessScreen({
           ? "Payment may still be processing"
           : "Waiting for webhook confirmation";
 
+  const chip = chipByState[state];
+
   return (
     <section
       aria-busy={state === "validating" || state === "polling"}
       aria-live="polite"
-      className="success-card"
+      className="settlement-band"
     >
       <style>{successLocalStyles}</style>
-      <div className={`success-mark ${state}`} aria-hidden="true">
-        {state === "confirmed" ? "✓" : state === "timed_out" ? "!" : "↻"}
-      </div>
-      <p className="eyebrow">Checkout returned</p>
-      <h1>{heading}</h1>
-      {state !== "invalid" ? (
-        <ol className="success-steps">
-          <li className="done">Returned from checkout</li>
-          <li
-            aria-current={state === "confirmed" ? undefined : "step"}
-            className={state === "confirmed" ? "done" : "active"}
-          >
-            Webhook projection applied
-          </li>
-          <li className={state === "confirmed" ? "done" : ""}>
-            Entitlements enforceable
-          </li>
-        </ol>
-      ) : null}
-      {state === "confirmed" ? (
-        <p>
-          The account API now reports {account?.plan_key}/{account?.plan_interval} as
-          active. The success redirect itself was not treated as proof of entitlement.
-        </p>
-      ) : state === "invalid" ? (
-        <p>
-          The return URL is missing a valid catalog plan and interval. Review the
-          account state directly; this page will not infer a successful purchase.
-        </p>
-      ) : state === "timed_out" ? (
-        <p>
-          {maxAttempts} polls finished without a webhook-projected{" "}
-          {expectedPlan}/{expectedInterval} account. No entitlement is assumed from
-          the redirect; Stripe may still be processing. Checking again is safe and
-          repeatable.
-        </p>
-      ) : (
-        <p>
-          Poll {attempt} of {maxAttempts}. Entitlements are granted only after the
-          backend processes Stripe state; refreshing this page is safe.
-        </p>
-      )}
-      {state === "confirmed" && account ? (
-        <dl className="success-facts">
-          <div>
-            <dt>Plan</dt>
-            <dd>
-              {account.plan_key} · {account.plan_interval}
-            </dd>
+      <div className="settlement-inner">
+        <div className="settlement-card">
+          {state === "confirmed" ? (
+            <div aria-hidden="true" className="settlement-medallion">
+              <span>✓</span>
+            </div>
+          ) : (
+            <div aria-hidden="true" className={`settlement-mark ${state}`}>
+              {state === "timed_out" || state === "invalid" ? "!" : "↻"}
+            </div>
+          )}
+          <span className={`settlement-chip ${chip.tone}`}>{chip.label}</span>
+          <p className="eyebrow">Checkout returned</p>
+          <h1>{heading}</h1>
+          {state !== "invalid" ? (
+            <ol className="success-steps">
+              <li className="done">Returned from checkout</li>
+              <li
+                aria-current={state === "confirmed" ? undefined : "step"}
+                className={state === "confirmed" ? "done" : "active"}
+              >
+                Webhook projection applied
+              </li>
+              <li className={state === "confirmed" ? "done" : ""}>
+                Entitlements enforceable
+              </li>
+            </ol>
+          ) : null}
+          {state === "confirmed" ? (
+            <p>
+              The account API now reports {account?.plan_key}/{account?.plan_interval} as
+              active. The success redirect itself was not treated as proof of entitlement.
+            </p>
+          ) : state === "invalid" ? (
+            <p>
+              The return URL is missing a valid catalog plan and interval. Review the
+              account state directly; this page will not infer a successful purchase.
+            </p>
+          ) : state === "timed_out" ? (
+            <p>
+              {maxAttempts} polls finished without a webhook-projected{" "}
+              {expectedPlan}/{expectedInterval} account. No entitlement is assumed from
+              the redirect; Stripe may still be processing. Checking again is safe and
+              repeatable.
+            </p>
+          ) : (
+            <p>
+              Poll {attempt} of {maxAttempts}. Entitlements are granted only after the
+              backend processes Stripe state; refreshing this page is safe.
+            </p>
+          )}
+          {state === "confirmed" && account ? (
+            <dl className="success-facts">
+              <div>
+                <dt>Plan</dt>
+                <dd>
+                  {account.plan_key} · {account.plan_interval}
+                </dd>
+              </div>
+              <div>
+                <dt>Subscription</dt>
+                <dd>{account.subscription_status}</dd>
+              </div>
+              <div>
+                <dt>Credit balance</dt>
+                <dd>{account.credits.balance.toLocaleString("en-US")} credits</dd>
+              </div>
+            </dl>
+          ) : null}
+          {lastError ? <p className="inline-error" role="alert">{lastError}</p> : null}
+          <div className="account-actions">
+            {state === "timed_out" ? (
+              <button
+                className="button primary"
+                onClick={restartPolling}
+                type="button"
+              >
+                Check account state again
+              </button>
+            ) : null}
+            <Link
+              className={state === "timed_out" ? "button secondary" : "button primary"}
+              href="/account"
+            >
+              View account
+            </Link>
+            <Link
+              className={state === "timed_out" ? "button ghost" : "button secondary"}
+              href="/pricing"
+            >
+              Back to pricing
+            </Link>
           </div>
-          <div>
-            <dt>Subscription</dt>
-            <dd>{account.subscription_status}</dd>
-          </div>
-          <div>
-            <dt>Credit balance</dt>
-            <dd>{account.credits.balance.toLocaleString("en-US")} credits</dd>
-          </div>
-        </dl>
-      ) : null}
-      {lastError ? <p className="inline-error" role="alert">{lastError}</p> : null}
-      <div className="account-actions">
-        {state === "timed_out" ? (
-          <button
-            className="button secondary"
-            onClick={restartPolling}
-            type="button"
-          >
-            Check account state again
-          </button>
-        ) : null}
-        <Link className="button primary" href="/account">
-          View account
-        </Link>
-        <Link className="button ghost" href="/pricing">
-          Back to pricing
-        </Link>
+        </div>
+        <p className="settlement-note">
+          Entitlements change only on verified Stripe webhooks — never on redirects
+        </p>
       </div>
     </section>
   );
@@ -260,6 +297,7 @@ const successLocalStyles = `
   display: grid;
   gap: 10px 22px;
   grid-template-columns: repeat(3, minmax(0, auto));
+  justify-content: center;
   margin: 0;
 }
 

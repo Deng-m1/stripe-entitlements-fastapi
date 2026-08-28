@@ -229,6 +229,24 @@ routes are visibly one site.
   the confirmation chip. `error`: identical layout, `--danger` semantics,
   no gradient celebration.
 - These screens land mid-checkout: LCP-critical, zero heavy JS.
+- Settlement-band framing (settlement round, 2026-08-28): both routes render
+  ONE full-bleed gradient band over `--band-deep` (§3.5, mesh-tinted — the
+  proof-band/M5 grammar) with the white settlement card centered on it, a
+  gradient shadow base under the card (§4.3), and one mono microcopy line on
+  the band below the card. Pure CSS; the zero-heavy-JS clause above holds.
+- Display hold-back (same round, §2.2 amendment): inside the ≤ 640px card
+  the H1 is `clamp(2.05rem, 1.6rem + 1.9vw, 2.85rem)` — the headline here is
+  a full status sentence, and the unmoderated Display clamp shatters it into
+  four to five ragged lines at 390px and inside the card column.
+- Chip semantics: webhook-confirmed → `--success`; awaiting/unconfirmed
+  (polling, timed out) → `--warning`; unverifiable return and stopped
+  billing actions → `--danger` (§3.4: red only for error semantics — a
+  timed-out poll is pending, not failed). A timed-out return may promote the
+  safe retry action to the primary CTA slot.
+- Accent note: settlement CTAs bind to the sitewide interactive accent token
+  (`--accent`, currently settlement orange from the v2.1 paper system); they
+  inherit iris automatically when the §3.3 token migration lands — no
+  hardcoded colors on these routes.
 
 ## 6. Assets and derivatives
 

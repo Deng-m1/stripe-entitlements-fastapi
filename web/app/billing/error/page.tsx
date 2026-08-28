@@ -56,20 +56,28 @@ export default async function BillingErrorPage({
   const knownCode = query.code && errorCopy[query.code] ? query.code : null;
   const copy = knownCode ? errorCopy[knownCode] : fallbackCopy;
   return (
-    <section className="success-card error-card" role="alert">
-      <div className="success-mark timed_out" aria-hidden="true">!</div>
-      <p className="eyebrow">Billing action stopped</p>
-      <h1>{copy.title}</h1>
-      <p>{copy.detail}</p>
-      <p>
-        Nothing was assumed about your entitlement state: plans and credits change
-        only after the backend verifies the matching Stripe webhook.
-      </p>
-      <p>{copy.guidance}</p>
-      {knownCode ? <code>Error code: {knownCode}</code> : null}
-      <div className="account-actions">
-        <Link className="button primary" href="/account">Review account</Link>
-        <Link className="button ghost" href="/pricing">Back to pricing</Link>
+    <section className="settlement-band" role="alert">
+      <div className="settlement-inner">
+        <div className="settlement-card">
+          <div className="settlement-mark stopped" aria-hidden="true">!</div>
+          <span className="settlement-chip chip-stopped">No state change</span>
+          <p className="eyebrow">Billing action stopped</p>
+          <h1>{copy.title}</h1>
+          <p>{copy.detail}</p>
+          <p>
+            Nothing was assumed about your entitlement state: plans and credits change
+            only after the backend verifies the matching Stripe webhook.
+          </p>
+          <p>{copy.guidance}</p>
+          {knownCode ? <code>Error code: {knownCode}</code> : null}
+          <div className="account-actions">
+            <Link className="button primary" href="/account">Review account</Link>
+            <Link className="button secondary" href="/pricing">Back to pricing</Link>
+          </div>
+        </div>
+        <p className="settlement-note">
+          Entitlements change only on verified Stripe webhooks — never on redirects
+        </p>
       </div>
     </section>
   );
