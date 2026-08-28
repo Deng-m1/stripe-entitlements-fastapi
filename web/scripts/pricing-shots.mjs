@@ -1,12 +1,13 @@
-// Screenshot rig for the /pricing product-page round: desktop and mobile
-// captures of both billing intervals, the featured plan, and the striped
-// comparison table with its pinned row-header column, plus the landing
-// viewport for the shared display-token comparison.
+// Screenshot rig for the /pricing product-page rounds: desktop and mobile
+// captures of both billing intervals, the featured plan, the grouped
+// comparison table with its pinned row-header column, the closing CTA
+// band, plus the landing viewport and catalog tiles for the shared
+// display-token and price-lockup comparisons.
 // Usage: node scripts/pricing-shots.mjs <outDir> [baseUrl]
 import { mkdir } from "node:fs/promises";
 import { chromium } from "@playwright/test";
 
-const outDir = process.argv[2] ?? "/tmp/pricing-v2";
+const outDir = process.argv[2] ?? "/tmp/pricing-v3";
 const baseUrl = process.argv[3] ?? "http://127.0.0.1:4321";
 await mkdir(outDir, { recursive: true });
 
@@ -32,13 +33,22 @@ await desktop.screenshot({ path: `${outDir}/pricing-desktop-yearly-full.png`, fu
 await desktop
   .locator(".pricing-compare")
   .screenshot({ path: `${outDir}/pricing-desktop-compare.png` });
+await desktop
+  .locator(".pricing-cta")
+  .screenshot({ path: `${outDir}/pricing-desktop-cta.png` });
 await desktop.close();
 
-// Landing viewport: the H1 must visibly share the /pricing display tokens.
+// Landing viewport: the H1 must visibly share the /pricing display tokens,
+// and the catalog tiles must carry the same price lockup as the plan cards.
 const landing = await browser.newPage({ viewport: { width: 1440, height: 900 } });
 await settle(landing, "/");
 await landing.waitForTimeout(3200);
 await landing.screenshot({ path: `${outDir}/landing-desktop-viewport.png` });
+await landing.locator(".catalog-tiles").scrollIntoViewIfNeeded();
+await landing.waitForTimeout(900);
+await landing
+  .locator(".catalog-tiles")
+  .screenshot({ path: `${outDir}/landing-catalog-tiles.png` });
 await landing.close();
 
 // Mobile: full page plus the panned comparison table with its pinned

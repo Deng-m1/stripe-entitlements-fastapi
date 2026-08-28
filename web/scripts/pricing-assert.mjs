@@ -1,4 +1,6 @@
-// One-shot structural assertions for the /pricing product-page round.
+// One-shot structural assertions for the /pricing product-page rounds
+// (round one: hero/featured/table; round two: bento card depth, the dark
+// CTA band, comparison groups, and the unified sitewide price lockup).
 // Checks bind to token relationships (shared scales, layered shadows,
 // stripe contrast) rather than literal palette values so they survive
 // theme-token flips like the paper -> white-canvas move.
@@ -25,6 +27,10 @@ const pricing = await page.evaluate(() => {
   const accentStyle = accent ? getComputedStyle(accent) : null;
   const flag = document.querySelector(".pricing-flag");
   const featuredShadow = featured ? getComputedStyle(featured).boxShadow : "";
+  const priceFigure = document.querySelector(".pricing-page .price-row strong");
+  const priceStyle = priceFigure ? getComputedStyle(priceFigure) : null;
+  const cta = document.querySelector(".pricing-cta");
+  const ctaStyle = cta ? getComputedStyle(cta) : null;
   return {
     h1Size: h1 ? getComputedStyle(h1).fontSize : "",
     ribbonPresent: Boolean(ribbon),
@@ -36,6 +42,7 @@ const pricing = await page.evaluate(() => {
     featuredShadow,
     featuredShadowLayers: featuredShadow.match(/rgba?\(/g)?.length ?? 0,
     plainShadow: plain ? getComputedStyle(plain).boxShadow : "",
+    plainBorderColor: plain ? getComputedStyle(plain).borderTopColor : "",
     featuredHalo: featured
       ? getComputedStyle(featured, "::before").filter
       : "",
@@ -49,13 +56,32 @@ const pricing = await page.evaluate(() => {
     flagCard: flag
       ? flag.closest("article")?.querySelector("h2")?.textContent
       : "",
+    priceFont: priceStyle ? priceStyle.fontFamily : "",
+    priceFigures: priceStyle ? priceStyle.fontVariantNumeric : "",
+    groupRows: document.querySelectorAll(
+      ".comparison-table tbody tr.compare-group",
+    ).length,
+    ctaBandGradient: ctaStyle
+      ? ctaStyle.backgroundImage.includes("radial-gradient")
+      : false,
+    ctaBandBase: ctaStyle ? ctaStyle.backgroundColor : "",
+    ctaFullBleed: cta
+      ? Math.round(cta.getBoundingClientRect().width) >= window.innerWidth
+      : false,
   };
 });
 await page.goto(baseUrl + "/", { waitUntil: "networkidle" });
-const landingH1 = await page.evaluate(() => {
+const landing = await page.evaluate(() => {
   const h1 = document.querySelector("h1");
-  return h1 ? getComputedStyle(h1).fontSize : "";
+  const catalogPrice = document.querySelector(".catalog-price");
+  const catalogStyle = catalogPrice ? getComputedStyle(catalogPrice) : null;
+  return {
+    h1Size: h1 ? getComputedStyle(h1).fontSize : "",
+    catalogFont: catalogStyle ? catalogStyle.fontFamily : "",
+    catalogFigures: catalogStyle ? catalogStyle.fontVariantNumeric : "",
+  };
 });
+const landingH1 = landing.h1Size;
 
 report(
   "pricing h1 shares the landing display token",
@@ -87,6 +113,30 @@ report(
   pricing.flagText === "Recommended" && pricing.flagCard === "Pro",
   `${pricing.flagText} on ${pricing.flagCard}`,
 );
+report(
+  "plan cards are depth-framed, not outlined",
+  pricing.plainBorderColor === "rgba(0, 0, 0, 0)",
+  pricing.plainBorderColor,
+);
+report(
+  "catalog tiles share the pricing price lockup",
+  landing.catalogFont === pricing.priceFont &&
+    landing.catalogFigures === "normal" &&
+    pricing.priceFigures === "normal",
+  `${landing.catalogFigures}/${pricing.priceFigures}`,
+);
+report(
+  "comparison table opens price and entitlement groups",
+  pricing.groupRows === 2,
+  `${pricing.groupRows} group rows`,
+);
+report(
+  "closing CTA rides the full-bleed dark band grammar",
+  pricing.ctaBandGradient &&
+    pricing.ctaFullBleed &&
+    pricing.ctaBandBase !== "rgba(0, 0, 0, 0)",
+  `gradient=${pricing.ctaBandGradient}, fullBleed=${pricing.ctaFullBleed}, base=${pricing.ctaBandBase}`,
+);
 await page.close();
 
 const mobile = await browser.newPage({
@@ -99,12 +149,12 @@ const table = await mobile.evaluate(() => {
   const rowHeader = document.querySelector(
     ".comparison-table tbody th[scope='row']",
   );
-  const oddRow = document.querySelector(
-    ".comparison-table tbody tr:nth-child(1)",
+  // Stripes count data rows only; group label rows sit outside the cadence.
+  const dataRows = document.querySelectorAll(
+    ".comparison-table tbody tr:not(.compare-group)",
   );
-  const evenRow = document.querySelector(
-    ".comparison-table tbody tr:nth-child(2)",
-  );
+  const oddRow = dataRows[0] ?? null;
+  const evenRow = dataRows[1] ?? null;
   const wrap = document.querySelector(".comparison-table-wrap");
   return {
     sticky: rowHeader ? getComputedStyle(rowHeader).position : "",

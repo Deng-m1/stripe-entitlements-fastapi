@@ -103,6 +103,35 @@ describe("billing screens", () => {
     ).toBeDisabled();
   });
 
+  it("settles plan CTAs into the unavailable state when the account load fails", async () => {
+    const api = testApi({});
+    api.getAccount = vi.fn(async () => {
+      throw new Error("Billing API is not configured");
+    });
+
+    render(
+      <PricingScreen
+        api={api}
+        initialCatalog={demoCatalog()}
+        billingRedirect={vi.fn()}
+        internalRedirect={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByText("Billing API is not configured"),
+    ).toBeInTheDocument();
+    const buttons = screen.getAllByRole("button", {
+      name: /Choose .* month/,
+    });
+    expect(buttons).toHaveLength(3);
+    for (const button of buttons) {
+      expect(button).toBeDisabled();
+      expect(button).toHaveTextContent("Account unavailable");
+    }
+    expect(screen.queryByText("Loading account…")).not.toBeInTheDocument();
+  });
+
   it("shows annual total, equivalent monthly price, and savings", async () => {
     const user = userEvent.setup();
     render(
@@ -149,6 +178,8 @@ describe("billing screens", () => {
     expect(
       within(table).getByRole("columnheader", { name: "Ultra" }),
     ).toBeInTheDocument();
+    expect(within(table).getByText("Price")).toBeInTheDocument();
+    expect(within(table).getByText("Entitlements")).toBeInTheDocument();
     const savingsRow = within(table).getByRole("row", {
       name: /Yearly savings vs monthly/,
     });
