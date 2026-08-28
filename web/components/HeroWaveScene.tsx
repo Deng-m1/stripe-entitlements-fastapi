@@ -9,6 +9,7 @@ import {
   ClampToEdgeWrapping,
   DataTexture,
   DoubleSide,
+  type Group,
   LinearFilter,
   NoColorSpace,
   RGBAFormat,
@@ -42,11 +43,18 @@ export interface PointerTarget {
 }
 
 export interface HeroWaveSceneProps {
-  /** Quads per axis for this viewport tier; a change rebuilds the sheet. */
-  segmentsX: number;
-  segmentsY: number;
+  /** Quads per axis for this viewport tier; a change rebuilds the bundle. */
+  segmentsAlong: number;
+  segmentsAcross: number;
   /** Live pointer in [-1, 1] sheet space, written by the host component. */
   pointer: RefObject<PointerTarget>;
+  /**
+   * True when the hero is in its stacked layout, read from the same media
+   * query the stylesheet uses. Not inferred from the canvas aspect ratio: at
+   * 1024px the hero is still two columns but its wave layer is taller than it
+   * is wide, so an aspect test would compose it as if it had stacked.
+   */
+  stacked: boolean;
   /** False while the hero is offscreen or the tab is hidden. */
   active: boolean;
   /** Fires once the renderer has actually put pixels on the canvas. */
@@ -58,7 +66,11 @@ function toBufferGeometry(data: WaveGeometryData): BufferGeometry {
   geometry.setAttribute("position", new BufferAttribute(data.position, 3));
   geometry.setAttribute("normal", new BufferAttribute(data.normal, 3));
   geometry.setAttribute("uv", new BufferAttribute(data.uv, 2));
-  geometry.setAttribute("fold", new BufferAttribute(data.fold, 1));
+  // Prefixed, because three reserves the bare name `tangent` for its own
+  // tangent-space attribute and would rewrite the declaration out from under
+  // this shader.
+  geometry.setAttribute("aSpine", new BufferAttribute(data.tangent, 3));
+  geometry.setAttribute("aBlade", new BufferAttribute(data.blade, 1));
   geometry.setIndex(new BufferAttribute(data.index, 1));
   geometry.computeBoundingSphere();
   return geometry;
@@ -69,7 +81,7 @@ function toBufferGeometry(data: WaveGeometryData): BufferGeometry {
  * are unavailable or the module fails to load. Both routes call the same
  * generator, so the two can never drift apart visually.
  */
-function useWaveGeometry(segmentsX: number, segmentsY: number) {
+function useWaveGeometry(segmentsAlong: number, segmentsAcross: number) {
   const [geometry, setGeometry] = useState<BufferGeometry | null>(null);
 
   useEffect(() => {
@@ -78,8 +90,8 @@ function useWaveGeometry(segmentsX: number, segmentsY: number) {
     let worker: Worker | null = null;
     const options: WaveGeometryOptions = {
       ...DEFAULT_WAVE_GEOMETRY,
-      segmentsX,
-      segmentsY,
+      segmentsAlong,
+      segmentsAcross,
     };
 
     const accept = (data: WaveGeometryData) => {
@@ -122,7 +134,7 @@ function useWaveGeometry(segmentsX: number, segmentsY: number) {
       cancelled = true;
       worker?.terminate();
     };
-  }, [segmentsX, segmentsY]);
+  }, [segmentsAlong, segmentsAcross]);
 
   // Releases the previous sheet's GPU buffers on a tier change and on unmount.
   useEffect(() => () => geometry?.dispose(), [geometry]);
@@ -154,18 +166,66 @@ function usePaletteTexture(): DataTexture {
   return texture;
 }
 
-function WaveSheet({
-  segmentsX,
-  segmentsY,
+/**
+ * Where the bundle sits, per layout.
+ *
+ * The ribbons are anchored by their common root, which is pushed off the
+ * bottom-right corner so only the fan's open end is on screen — the same
+ * composition as the reference, and the reason the hero needs no mask to keep
+ * its shape off the headline column. `spin` is the bundle's own roll: it turns
+ * the fan from "pointing right" to "sweeping up and to the left", and `fit` is
+ * the longest ribbon's span as a fraction of the layer's diagonal — the
+ * diagonal, not either axis, because the bundle is placed corner to corner and
+ * a width-based fit collapses it on a layer taller than it is wide.
+ */
+const DESKTOP_LAYOUT = {
+  root: [1.0, -1.12] as const,
+  spin: 1.95,
+  tilt: [-0.16, 0.2] as const,
+  fit: 1.14,
+};
+
+/**
+ * Stacked: rooted past the top-right corner with the fan opening left, so the
+ * bundle crosses the hero as a band and its tips leave through the left edge.
+ *
+ * The tips are why the band runs across rather than down. They carry a long
+ * alpha feather — the desktop layout aims them off the top of the frame, where
+ * nobody sees them resolve. Rooting the bundle at the top-right and letting it
+ * sweep down-left instead, which is closer to what the reference does on a
+ * narrow viewport, lands that feather squarely on the headline and the body
+ * copy: a half-transparent periwinkle tail over warm paper reads as an olive
+ * smudge across the text, not as a ribbon. Across the top the tips exit
+ * sideways and the copy sits on paper.
+ *
+ * The stacked hero pays for the band in vertical space; see the padding this
+ * layout's breakpoint adds to `.hero-copy`.
+ */
+const STACKED_LAYOUT = {
+  root: [0.86, 1.14] as const,
+  spin: 3.42,
+  tilt: [-0.12, 0.16] as const,
+  fit: 0.84,
+};
+
+function RibbonBundle({
+  segmentsAlong,
+  segmentsAcross,
+  stacked,
   pointer,
   onDrawn,
 }: Omit<HeroWaveSceneProps, "active">) {
   const material = useRef<HeroWaveMaterialImpl>(null);
-  const geometry = useWaveGeometry(segmentsX, segmentsY);
+  const group = useRef<Group>(null);
+  const geometry = useWaveGeometry(segmentsAlong, segmentsAcross);
   const palette = usePaletteTexture();
   const eased = useRef({ x: 0, y: 0 });
   const drawnFrames = useRef(0);
   const viewport = useThree((state) => state.viewport);
+
+  const layout = stacked ? STACKED_LAYOUT : DESKTOP_LAYOUT;
+  const diagonal = Math.hypot(viewport.width, viewport.height);
+  const scale = (diagonal / DEFAULT_WAVE_GEOMETRY.length) * layout.fit;
 
   useFrame((_, delta) => {
     const impl = material.current;
@@ -181,6 +241,18 @@ function WaveSheet({
     eased.current.y += (pointer.current.y - eased.current.y) * blend;
     impl.uPointer.set(eased.current.x, eased.current.y);
 
+    // A slow roll of the whole bundle, on a period long enough that it never
+    // resolves into a loop. Without it the silhouettes are fixed and only the
+    // light inside them moves, which reads as a video texture on a still.
+    const node = group.current;
+    if (node) {
+      const time = impl.uTime;
+      node.rotation.z =
+        layout.spin + Math.sin(time * 0.11) * 0.035 + Math.sin(time * 0.047) * 0.02;
+      node.rotation.x = layout.tilt[0] + Math.sin(time * 0.083 + 1.4) * 0.03;
+      node.rotation.y = layout.tilt[1] + Math.sin(time * 0.062 + 0.6) * 0.04;
+    }
+
     if (drawnFrames.current < 3) {
       drawnFrames.current += 1;
       if (drawnFrames.current === 3) onDrawn();
@@ -189,51 +261,45 @@ function WaveSheet({
 
   if (!geometry) return null;
 
-  // Fit the whole sheet into the frustum, then overscale so its long edges
-  // bleed past the layer instead of floating inside it. Without this the sheet
-  // is cropped to a single fold and reads as a flat wash.
-  const contain = Math.min(
-    viewport.width / DEFAULT_WAVE_GEOMETRY.width,
-    viewport.height / DEFAULT_WAVE_GEOMETRY.height,
-  );
-  const wide = viewport.aspect > 1.15;
-  // A stacked hero gets a short, wide layer, so the sheet has to be pushed
-  // further past it than on desktop — at desktop overscale its rectangular
-  // corner lands inside the band and reads as a ruled diagonal.
-  const scale = contain * (wide ? 1.34 : 2.05);
-  // The shader dissolves the sheet's left half, so a narrow layer has to slide
-  // the dense right half back into frame or the band all but disappears.
-  const offsetX = wide ? 0.24 : -0.2 * DEFAULT_WAVE_GEOMETRY.width * scale;
-
   return (
-    <mesh
-      frustumCulled={false}
-      geometry={geometry}
-      position={[offsetX, wide ? 0.04 : 0.12, 0]}
-      rotation={[wide ? -0.34 : -0.46, 0.14, -0.2]}
+    <group
+      position={[
+        layout.root[0] * viewport.width * 0.5,
+        layout.root[1] * viewport.height * 0.5,
+        0,
+      ]}
+      ref={group}
+      rotation={[layout.tilt[0], layout.tilt[1], layout.spin]}
       scale={scale}
     >
-      <heroWaveMaterial
-        depthWrite={false}
-        key={HeroWaveMaterial.key}
-        ref={material}
-        side={DoubleSide}
-        transparent
-        uPalette={palette}
-        uSheetSize={sheetSize}
-      />
-    </mesh>
+      <mesh frustumCulled={false} geometry={geometry}>
+        {/* Opaque body, depth-tested: the ribbons overlap, and which one is in
+            front has to be decided by depth rather than by index order. Only
+            the feathered ends are actually blended, which is why the material
+            can keep `depthWrite` on without punching holes in the fan. */}
+        <heroWaveMaterial
+          depthWrite
+          key={HeroWaveMaterial.key}
+          ref={material}
+          side={DoubleSide}
+          transparent
+          uFieldSize={fieldSize}
+          uPalette={palette}
+        />
+      </mesh>
+    </group>
   );
 }
 
-const sheetSize = new Vector2(
-  DEFAULT_WAVE_GEOMETRY.width,
-  DEFAULT_WAVE_GEOMETRY.height,
+const fieldSize = new Vector2(
+  DEFAULT_WAVE_GEOMETRY.length,
+  DEFAULT_WAVE_GEOMETRY.length * 0.6,
 );
 
 export function HeroWaveScene({
-  segmentsX,
-  segmentsY,
+  segmentsAlong,
+  segmentsAcross,
+  stacked,
   pointer,
   active,
   onDrawn,
@@ -267,11 +333,12 @@ export function HeroWaveScene({
         onDecline={() => setDpr(1)}
         onIncline={() => setDpr(ceiling)}
       />
-      <WaveSheet
+      <RibbonBundle
         onDrawn={onDrawn}
         pointer={pointer}
-        segmentsX={segmentsX}
-        segmentsY={segmentsY}
+        segmentsAcross={segmentsAcross}
+        segmentsAlong={segmentsAlong}
+        stacked={stacked}
       />
     </Canvas>
   );

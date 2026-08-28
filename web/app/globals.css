@@ -383,24 +383,33 @@ h2 {
   width: 100vw;
 }
 
-/* WebGL hero wave — see components/HeroWaveCanvas.tsx. The layer starts past
-   the headline column so the sheet's dense end never sits under body copy. */
+/* WebGL hero wave — see components/HeroWaveCanvas.tsx.
+
+   No lateral mask. Round 3 masked the layer with three stacked gradients to
+   hide the corner of a rectangular sheet, and the mask itself was the source
+   of the ruled diagonal it was meant to hide: a gradient cut across a shape
+   that already had its own alpha falloff leaves a visible ridge wherever the
+   two disagree. The bundle's ribbons taper to points, so the silhouette on the
+   headline side is drawn by the geometry and needs no help. What remains is a
+   single fade at the bottom, where the hero has to hand over to the section
+   below it rather than stop mid-colour. */
 
 .hero-wave {
-  inset: -20% -4% -26% 9%;
-  /* The sheet is overscaled past the layer so its edges bleed. The mask keeps
-     that bleed from landing as a straight cut beside the headline column. */
+  /* Only the right edge bleeds. Round 3 pushed the layer 14% past the hero on
+     every side, and `.paper-hero`'s clip threw a fifth of the rendered pixels
+     away — paid for on the GPU, never seen, and impossible to reason about
+     when placing the bundle, because the canvas and the visible hero were
+     different rectangles. */
+  inset: 0 -8% 0 0;
   mask-image: var(--hero-wave-mask);
-  mask-composite: intersect;
   pointer-events: none;
   position: absolute;
   --hero-wave-mask: linear-gradient(
-      100deg,
-      transparent 4%,
-      rgba(0, 0, 0, 0.26) 22%,
-      #000 52%
-    ),
-    linear-gradient(to bottom, #000 66%, rgba(0, 0, 0, 0.4) 88%, transparent 100%);
+    to bottom,
+    #000 89%,
+    rgba(0, 0, 0, 0.55) 96%,
+    transparent 100%
+  );
   z-index: 0;
 }
 
@@ -2640,25 +2649,28 @@ dd {
     transform: rotate(1.2deg);
   }
 
-  /* Stacked hero: the wave becomes a band across the top rather than a right
-     column. The desktop mask cuts hard on the left to clear the headline
-     column, which does not exist here — applied as-is it stacks with the
-     shader's own left dissolve and leaves nothing but a corner smudge. Keep a
-     lateral gradient for shape, but never let it reach full transparency. */
+  /* Stacked hero: the bundle becomes a band across the top. The scene switches
+     to its stacked layout off the same breakpoint, so the only thing the CSS
+     has to change is how much of the hero the layer covers — no extra lateral
+     gradients, which is what previously left a corner smudge here. */
   .hero-wave {
-    height: 64%;
-    inset: -10% -10% auto -14%;
+    height: 34%;
+    inset: 0 -6% auto -6%;
     --hero-wave-mask: linear-gradient(
-        to bottom,
-        #000 54%,
-        rgba(0, 0, 0, 0.42) 82%,
-        transparent 100%
-      ),
-      linear-gradient(100deg, rgba(0, 0, 0, 0.5) 0%, #000 40%),
-      /* The stacked band puts the sheet's turning crest on a diagonal across
-         the headline. Fade the corner it runs into so the crest ends as a
-         gradient rather than as a stroke drawn over the copy. */
-        linear-gradient(48deg, #000 44%, rgba(0, 0, 0, 0.4) 76%, transparent 100%);
+      to bottom,
+      #000 74%,
+      rgba(0, 0, 0, 0.4) 91%,
+      transparent 100%
+    );
+  }
+
+  /* The band's own zone. Stacked, the wave has no second column to live in, so
+     it takes the top of the hero and the copy starts underneath it. Letting
+     them share the space instead puts the eyebrow — small, letterspaced, and
+     the lightest text on the page — on top of the most saturated pixels in
+     it. */
+  .hero-copy {
+    padding-top: 124px;
   }
 
   .hero-pills {
@@ -2718,8 +2730,8 @@ dd {
   }
 
   .hero-wave {
-    height: 58%;
-    inset: -8% -12% auto -16%;
+    height: 44%;
+    inset: 0 -6% auto -8%;
   }
 
   .paper-band {

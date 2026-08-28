@@ -40,6 +40,9 @@ function supportsWebGl(): boolean {
   }
 }
 
+/** Mirrors the `max-width: 850px` hero breakpoint in app/globals.css. */
+const HERO_STACKED_QUERY = "(max-width: 850px)";
+
 function prefersLessData(): boolean {
   const connection = (
     navigator as Navigator & { connection?: { saveData?: boolean } }
@@ -54,6 +57,7 @@ export function HeroWaveCanvas() {
   const [visible, setVisible] = useState(true);
   const [pageVisible, setPageVisible] = useState(true);
   const [tier, setTier] = useState(() => waveQualityTier(1440));
+  const [stacked, setStacked] = useState(false);
   const [drawn, setDrawn] = useState(false);
 
   // Motion consent and renderer capability. Re-evaluated when the visitor
@@ -69,6 +73,19 @@ export function HeroWaveCanvas() {
     return () => query.removeEventListener("change", evaluate);
   }, []);
 
+  // The scene composes the bundle differently once the hero stacks, and it has
+  // to change over on exactly the breakpoint the stylesheet uses. Inferring it
+  // from the canvas aspect ratio instead puts a 1024px two-column hero on the
+  // stacked composition, because that hero's wave layer is taller than wide.
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia(HERO_STACKED_QUERY);
+    const sync = () => setStacked(query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  }, []);
+
   // Subdivision follows the rendered width, so a phone never builds a sheet
   // sized for a 27-inch display.
   useEffect(() => {
@@ -77,8 +94,8 @@ export function HeroWaveCanvas() {
     const measure = (width: number) => {
       const next = waveQualityTier(width);
       setTier((current) =>
-        current.segmentsX === next.segmentsX &&
-        current.segmentsY === next.segmentsY
+        current.segmentsAlong === next.segmentsAlong &&
+        current.segmentsAcross === next.segmentsAcross
           ? current
           : next,
       );
@@ -166,8 +183,9 @@ export function HeroWaveCanvas() {
           active={visible && pageVisible}
           onDrawn={handleDrawn}
           pointer={pointer}
-          segmentsX={tier.segmentsX}
-          segmentsY={tier.segmentsY}
+          segmentsAcross={tier.segmentsAcross}
+          segmentsAlong={tier.segmentsAlong}
+          stacked={stacked}
         />
       ) : null}
     </div>

@@ -1,5 +1,7 @@
 .next/
 node_modules/
+# Scratch thumbnails written by the hero review scripts.
+.review/
 coverage/
 playwright-report/
 test-results/

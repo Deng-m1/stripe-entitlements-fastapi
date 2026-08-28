@@ -7,6 +7,17 @@
 // console so a silently-failing shader cannot pass as a good screenshot.
 import { mkdir, writeFile } from "node:fs/promises";
 import { chromium } from "@playwright/test";
+import sharp from "sharp";
+
+// Hides the page and leaves the wave layer painting on its own. Page copy on
+// top of the wave makes it very hard to tell a ribbon's own edge from a line
+// of type, and the edges are the thing this hero is judged on.
+const ISOLATE_CSS = `
+  html, body { background: none !important; }
+  body * { visibility: hidden !important; }
+  .hero-wave, .hero-wave * { visibility: visible !important; }
+  .hero-wave-fallback { display: none !important; }
+`;
 
 const outDir = process.argv[2] ?? "/tmp/hero-webgl-v1";
 const baseUrl = process.argv[3] ?? "http://127.0.0.1:4321";
@@ -64,6 +75,24 @@ async function capture(name, width, height, options = {}) {
   await page.screenshot({ path: `${outDir}/${name}.png` });
   const hero = page.locator(".paper-hero");
   await hero.screenshot({ path: `${outDir}/${name}-hero.png` });
+
+  if (canvasCount > 0) {
+    // The hero's own box, measured before the page is hidden: `.paper-hero`
+    // stops being a screenshot target once `visibility: hidden` reaches it, and
+    // `.hero-wave`'s own box overhangs the hero on every side, so neither
+    // locator frames what the visitor actually sees.
+    const box = await hero.boundingBox();
+    await page.addStyleTag({ content: ISOLATE_CSS });
+    await page.waitForTimeout(300);
+    const isolated = await page.screenshot({ clip: box, omitBackground: true });
+    // Flattened onto white rather than kept transparent: the wave is judged
+    // against paper, and an alpha channel viewed on a dark background makes a
+    // washed-out edge look like a crisp one.
+    await sharp(isolated)
+      .flatten({ background: "#ffffff" })
+      .png()
+      .toFile(`${outDir}/${name}-layer.png`);
+  }
 
   report.push({ name, width, height, drawn, canvasCount, renderer, messages });
   console.log(

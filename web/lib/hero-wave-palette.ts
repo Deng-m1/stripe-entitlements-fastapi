@@ -31,23 +31,53 @@ export const MESH_STOPS = {
 } as const satisfies Record<string, readonly [number, number, number]>;
 
 /**
- * The ramp the hero samples. The four anchors sit at their design-system
- * values; the interleaved stops only shape *where* the ramp spends its length,
- * pulling extra resolution into the violet-to-pink crossover that the fold
- * crests occupy on screen. A deep violet leads in so the sheet has somewhere
- * darker than `--mesh-violet` to fall away to.
+ * The ramp the hero samples, with the four design-system anchors in their
+ * fixed order and interleaved stops shaping where the ramp spends its length.
+ *
+ * The interleaved values are not invented. `scripts/stripe-hero-reference.mjs`
+ * and `scripts/hero-hue-histogram.mjs` reduce the reference hero to the hues
+ * it actually puts on screen and how much of the frame each covers, and the
+ * two widest bands there are a magenta around hue 309 (16% of the reference's
+ * saturated pixels) and an amber around hue 37 (18%). Round 3's ramp ran
+ * straight from violet to pink and gave the magenta arc nowhere to live.
+ *
+ * The ramp also *leads in cool*. The reference spends roughly a fifth of its
+ * saturated pixels between hue 210 and 270 — a light periwinkle, not a deep
+ * indigo — which is the colour the ribbons turn where they tilt away from the
+ * key light. Round 3 led in with `#562ed6`, darker and more saturated than
+ * `--mesh-violet`, so the cool end of the ramp had nowhere to go but down into
+ * shadow and never read as a distinct hue at all.
  */
 export const HERO_WAVE_PALETTE: readonly PaletteStop[] = [
-  { offset: 0.0, color: [86, 46, 214] },
-  { offset: 0.16, color: MESH_STOPS.violet },
-  { offset: 0.32, color: [166, 78, 240] },
-  { offset: 0.46, color: [223, 83, 197] },
-  { offset: 0.58, color: MESH_STOPS.pink },
+  { offset: 0.0, color: [150, 176, 236] },
+  { offset: 0.07, color: [141, 154, 240] },
+  { offset: 0.15, color: MESH_STOPS.violet },
+  { offset: 0.24, color: [154, 106, 246] },
+  { offset: 0.33, color: [193, 118, 240] },
+  { offset: 0.43, color: [238, 116, 224] },
+  { offset: 0.52, color: [252, 106, 190] },
+  { offset: 0.6, color: MESH_STOPS.pink },
   { offset: 0.7, color: [255, 108, 98] },
   { offset: 0.82, color: MESH_STOPS.orange },
-  { offset: 0.92, color: [255, 175, 55] },
+  { offset: 0.92, color: [255, 163, 45] },
   { offset: 1.0, color: MESH_STOPS.lemon },
 ];
+
+/**
+ * How much of the ramp's length each arc of the wheel gets.
+ *
+ * The offsets above are spaced to these proportions rather than spread evenly,
+ * because ramp length is what decides on-screen area once the shader lays the
+ * ramp across the fan. Measured on the reference hero, its coloured pixels
+ * divide roughly 30% cool / 26% magenta / 39% warm; an evenly spaced ramp puts
+ * two thirds of the hero in the cool half and leaves the amber — the single
+ * widest band in the reference — as a stripe.
+ */
+export const RAMP_ARC_SHARE = {
+  cool: [0, 0.3],
+  magenta: [0.3, 0.6],
+  warm: [0.6, 1],
+} as const;
 
 export const PALETTE_TEXTURE_WIDTH = 256;
 
