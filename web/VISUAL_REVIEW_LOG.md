@@ -663,3 +663,86 @@ isolated worktree, as this round's evidence run already does.
 - The pipeline band's light-on-dark text pairs live in `globals.css`
   under `.pipeline-band`; any future recolor of the mesh ramp should
   re-check the band's eyebrow/lede contrast.
+
+---
+
+## Round 10 — /pricing product page — 2026-08-28
+
+- Stream: pricing product page (fable 5); ran in parallel with rounds
+  8–9 from the chrome-round tip and merged here (renumbered from its
+  original "Round 8" to keep the log's numbering unique)
+- Baseline: the rebuild itself landed as `e6e2468` (cut before the canvas
+  flip); this round's evidence run is from an isolated worktree at the
+  chrome-round tip (`301e3f9`)
+- Preview: production `next build` + `next start`; the catalog renders
+  from the reference fallback, so the pink API-not-configured banner in
+  the captures is a property of the shot environment, not the page
+- Screenshots: `/tmp/pricing-v2/` — `pricing-desktop-{monthly,yearly}-full`,
+  `pricing-desktop-{viewport,compare}`, `pricing-mobile-full`,
+  `pricing-mobile-compare-panned`, and `landing-desktop-viewport` for the
+  shared display-token comparison (`.png`, tip build)
+
+### Landed this round
+
+1. **/pricing reads as a product page, not a documentation table**
+   (`e6e2468`). A full-bleed hero band opens the route: the slim mesh-ramp
+   ribbon (one crisp band plus its blurred glow, masked before the
+   headline baseline), the display-token H1 with one gradient phrase
+   clipped to the warm two-thirds of the ramp, the interval toggle with a
+   savings pill, and a mono-caps guarantee strip. The route wrapper
+   collapses the shared page padding so the ribbon opens at the very top
+   even in loading and error states.
+2. **The featured tier earns its elevation.** Pro carries a mesh gradient
+   border, the `--shadow-float` layered shadow over a blurred gradient
+   underlay (§4.3), a navy `Recommended` pill riding the card edge, and on
+   desktop stands a step taller than its neighbours (the plain cards drop
+   26px). Price lockups lead with the display face on proportional lining
+   figures; the interval rides the baseline in the mono voice.
+3. **The comparison table scans on phones.** Sunken row stripes, the
+   featured column tinted with an accent top bar, and — below 850px — the
+   row-header column pinned with opaque paint so every panned value keeps
+   its label; the wrapper pans while the document keeps 0px overflow.
+4. **Regression: the canvas flip truncated `globals.css`.** `ec81911`
+   committed the file cut mid-declaration at `.pricing-page .price-row >
+   span { color: var(--muted` — the final 179 lines (price-lockup tail,
+   compare-plans styles, closing CTA, both pricing breakpoints) were gone
+   from four commits of history while builds stayed green, because CSS
+   parsers silently drop an unterminated final rule. Restored here on the
+   white-canvas tokens: everything was already token-routed and follows
+   the new palette automatically; the one literal — the featured column
+   tint — moved from settlement orange to iris
+   (`rgba(91, 76, 245, 0.05)`).
+
+### Verified green
+
+- `scripts/pricing-assert.mjs` 10/10 PASS against the tip production
+  build: pricing H1 sharing the landing display token (68px both), ribbon
+  present with the mesh band, featured card floating on a two-layer shadow
+  the plain cards lack, blurred gradient base, accent phrase clipping a
+  gradient, the flag on Pro, mobile row headers sticky over a pannable
+  wrapper with opaque paint, even-row stripe distinct from odd, and 0px
+  document overflow at 390px.
+- Unit suite 139/139, ESLint, `tsc --noEmit` clean at the tip plus this
+  restoration.
+- Desktop and panned-mobile captures re-read after the flip: iris featured
+  column and CTA, mesh ribbon and accent phrase over pure white.
+
+### Process note
+
+The truncation survived four rounds because nothing asserts the file's
+tail. `pricing-assert.mjs` now pins the rules that vanished (stripes,
+sticky column, CTA-adjacent layout), and its checks bind to token
+relationships — shared scales, layer counts, stripe contrast — rather
+than literal palette values, so it survives theme flips like
+paper → white-canvas. Worth considering: a stylelint pass in CI would
+have caught the unterminated rule at commit time.
+
+### Open items
+
+- The evidence captures carry the API-not-configured banner (no backend
+  in the shot environment). A mock-mode capture like the chrome round's
+  demo-notice run would show the resolved account CTAs instead.
+- The yearly-interval captures show the per-plan savings pill from the
+  catalog's explicit annual price; if the catalog ever drops a yearly
+  price, the toggle hides the pill silently — no visual guard asserts
+  that state.
