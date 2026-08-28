@@ -446,3 +446,66 @@ isolated worktree, as this round's evidence run already does.
   the grant meter and title rule bind to `--accent`/`--gradient-accent`,
   so they follow the token flip automatically, but mint/cream chip
   contrast should be re-checked on pure white.
+
+---
+
+## Round 7 — site chrome on the white canvas — 2026-08-28
+
+- Stream: chrome/token unification (fable 5)
+- Baseline: branch tip after Round 6 (`b05033e`), isolated worktree — per
+  Round 6's process note, no commit was cut from the shared checkout
+- Preview: production `next build` + `next start` for the header states
+  (hero renderer and poster handover differ under the dev overlay);
+  mock-mode `next dev` for the demo notice, which production `http` builds
+  never render
+- Screenshots: `/tmp/chrome-v2/` — `prod-{desktop-1440,mobile-390}-{top,
+  scrolled}[-header].png` (header transparent-over-hero vs white-blur bar)
+  and `mock-{desktop-1440,mobile-390}-demo-notice.png`
+
+### Landed this round
+
+1. **Paper tokens retired sitewide.** `:root` now carries the
+   DESIGN_SYSTEM.md §3 white-canvas system — navy ink, iris interactive
+   accent, retuned chip family, §4.3 layered shadows, §4.1 spacing scale —
+   with the old names (`--paper`, `--accent`, `--line`, …) kept as aliases
+   so every parallel stream's selectors resolve into the new palette. The
+   dotted-grid body texture is gone; settlement orange survives only as
+   `--data-orange` in the ledger chart and the matrix-highlight cell.
+2. **Chrome coordinated with the WebGL hero.** The header rests transparent
+   on the opening viewport and gains a `saturate(160%) blur(14px)` white
+   bar once scrolled (verified: `rgba(255, 255, 255, 0.82)` + flag at both
+   widths); the brand mark and nav underline speak in the mesh ramp.
+3. **Round 1 P2-7 closed.** The demo notice is a single-line pill — 29px
+   body, 0px overflow at 390px (was ≈4 lines) — with the trailing
+   production-rejection clause visually dropped below 860px but intact in
+   the accessibility tree (`DemoNotice.tsx` adopted from the polish
+   stream verbatim).
+4. **Type unified per §2.1.** Instrument Sans carries display and body
+   (Bricolage Grotesque retired), IBM Plex Mono replaces Spline Sans Mono;
+   `--font-display-stack`/`--font-body-stack` remain as aliases of
+   `--font-sans-stack`, so no selector changed.
+5. **Manifest, favicon, and social card re-skinned** to white + iris/mesh
+   in the same change as the tokens (§6), adopted verbatim from the polish
+   stream so the eventual merge is byte-identical.
+
+### Verified green
+
+- `scripts/pages-polish-assert.mjs` (retargeted at the white canvas and
+  the §2.1 fonts): 30/30 PASS across `/`, `/pricing`, `/account` — fonts
+  loaded and applied, white canvas, grid retired, header transparent at
+  top and white-blur on scroll, 0px overflow, gradient hero accent and 8
+  terminal lines intact.
+- Unit suite 139/139, ESLint, `tsc --noEmit` clean after rebasing over the
+  Round 5/6 and pricing-scorecard commits.
+
+### Open items
+
+- The hero ribbon must be re-read against pure white (inherited from
+  Round 4): the trough dissolve was tuned for warm paper. Owned by the
+  hero-v2 stream; no shader file was touched here.
+- The terminal window and proof band now sit on `--band-deep` flat fills
+  via the `--band-ink` alias; the gradient-over-band treatment (§3.5)
+  stays with the polish stream's landing rework.
+- The two dark-object foreground palettes (warm whites `#e8efe9`,
+  `#f0e2c8` in the terminal; `243, 246, 243` in the proof band) read fine
+  over the indigo base but should be retuned when those bands are redone.
