@@ -749,13 +749,83 @@ have caught the unterminated rule at commit time.
 
 ---
 
-## Round 11 — visual review round 4, ten-round merge head — 2026-08-28
+## Round 11 — hero WebGL v2, Stripe-parity pass — 2026-08-28
+
+- Stream: hero WebGL optimization (fable 5)
+- Scope: hero-only files — `HeroWaveCanvas.tsx`, `HeroWaveScene.tsx`,
+  `hero-wave-material.ts`, `hero-wave-geometry.ts`, `hero-wave-palette.ts`,
+  `app/page.tsx` (headline lockup markup), `globals.css` (hero rules only),
+  `promo/hero-webgl.spec.ts`, rebaked `public/hero-wave-*` posters
+- Screenshots: `/tmp/hero-webgl-v2/` — production `next build` +
+  `next start`, 1440/1024/390 plus a late-frame phase check and a
+  reduced-motion poster pass; evidence mirrored on branch
+  `hero-evidence-56a8` (iteration trail `i1`…`i5`)
+
+### What changed
+
+1. **Ribbon geometry toward Stripe's two-to-three broad sweeps.** Fold
+   count 3.1 → 2.2, curvature 0.62 → 1.15, skew 0.55 → 0.62, depth 0.5 →
+   0.56: fewer, wider diagonal ribbons with sweeping arcs instead of thin
+   parallel bands. The trough alpha window widened
+   (`smoothstep(0.06, 0.42)`) so bare white canvas reads between ribbons,
+   as on stripe.com.
+2. **Shading pass.** Palette rebalanced — indigo lead-in deepened
+   (`[70, 40, 210]`), pink anchored at 0.55, orange-to-lemon stretched
+   through the right edge; rim exponent 2.6 → 3.4 for crisper crest edges;
+   a luminous crest-core glow mixes toward white at fold peaks; a slow
+   `uTime` hue shimmer keeps the field alive between fold passes.
+3. **Phase stability.** `uTime` wraps at `WAVE_TIME_PERIOD` (200π) with a
+   capped frame delta, so multi-hour sessions and tab restores cannot
+   accumulate float error or jump phase.
+4. **Host hardening.** Pointer returns to rest on `pointerout`/`blur` (no
+   more frozen edge swell); `webglcontextlost` unmounts to the poster and
+   re-probes once after 1.5 s; `data-drawn` releases whenever the renderer
+   is denied mid-session, and the fallback's opacity transition now applies
+   only on the way out, so the poster returns instantly with no blank gap.
+5. **P1 headline rag closed.** `.h1-line` gets `text-wrap: balance` and
+   "are chaos." holds in an unbreakable `.h1-hold` span — "chaos." can no
+   longer strand alone at 1440 px and the lockup caps at four lines.
+6. **Posters rebaked from the final shader** via
+   `build-hero-wave-poster.mjs`, so the reduced-motion/no-JS frame and the
+   drawn canvas are near-indistinguishable and the 900 ms crossfade is
+   invisible.
+
+### Verified green
+
+- `promo/hero-webgl.spec.ts` 6/6 against the production build: WebGL2
+  context proof, mid-session reduced-motion handback and recovery, lockup
+  line-count, inter-frame motion, reduced-motion poster, no-JS server
+  HTML. This closes Round 8's 5/6 report: the lockup gate now renders
+  four visual lines under the Instrument Sans display face, and the
+  counter clusters fragment tops by half line-height — nested inline
+  rects (the hold span, the gradient em) overcounted 4 lines as 6 under
+  exact matching.
+- Unit suite 139/139, ESLint, `tsc --noEmit` clean.
+- Capture report: `drawn=true` with exactly one canvas at 1440/1024/390;
+  the reduced-motion run mounts zero canvases.
+
+### Stripe parity notes
+
+- Matched: white canvas left of the headline, broad warm diagonal sweep
+  with pink entering top-left, bare-canvas gaps between ribbons, seamless
+  poster handover, pointer swell.
+- Still short of stripe.com: their WebGL2 scene layers ribbons that thread
+  over/under each other with depth testing; ours is a single sheet with
+  fold-driven translucency. Their grain/dither pass is also finer. Both
+  would need a multi-sheet scene graph — noted for a future round.
+
+---
+
+## Round 12 — visual review round 4, ten-round merge head — 2026-08-28
 
 - Reviewer: fable 5 (visual review lead, round 4)
 - Baseline reviewed: merge `4faf9b9` (branch `cursor/landing-settlement-field`)
   — the head that converges rounds 5–10 (settlement band, account closure,
   white-canvas chrome/type, scroll motion, landing sections, pricing product
-  page) plus the hero shading rework — in an isolated worktree
+  page) plus the first hero shading rework — in an isolated worktree. The
+  hero v2 parity pass (Round 11) landed in parallel while this round ran and
+  is folded in by the merge that carries this entry; its convergences are
+  marked below and the gates were re-run on the merged head.
 - Preview: `next build` + `next start` (production, `http` mode: honest
   unconfigured-API states) on one port; `next dev` + mock on another for the
   hydrated pricing/account/success states — the Round 4 protocol
@@ -764,7 +834,7 @@ have caught the unterminated rule at commit time.
   round's fixes; five routes × 1440/390 × first-viewport/full/bottom),
   `mock/` (hydrated states), `hero/` + `hero2/` (hero rig with
   `report.json`, before/after), `sections/` (landing section motion frames),
-  `slices/` (390px full-page cuts)
+  `slices/` (390px full-page cuts), `merged/` (post-merge re-verification)
 
 ### Issues
 
@@ -780,11 +850,14 @@ have caught the unterminated rule at commit time.
    the animated canvas immediately contradicts on the poster→canvas fade.
    Evidence: `hero/desktop-1440-reduced-motion-hero.png` (stale) vs
    `hero/desktop-1440-late-hero.png` (live).
-   **Fixed: all four assets rebaked** from the merged shader via
-   `scripts/build-hero-wave-poster.mjs`; `hero2/…-reduced-motion-hero.png`
-   is again compositionally interchangeable with the live frame. Process
-   note: the bake belongs in any commit that retunes the shader — this is
-   the third round to relearn that.
+   **Fixed, converged:** this round rebaked all four assets from the
+   then-current shader (`scripts/build-hero-wave-poster.mjs`);
+   the parallel Round 11 retuned the shader again and rebaked from its
+   final version — the merge keeps Round 11's set, and the post-merge
+   reduced-motion capture (`merged/`) is compositionally interchangeable
+   with the live frame. Process note: the bake belongs in any commit that
+   retunes the shader — this is the third round to relearn that, and
+   Round 11 now does it in-stream.
 2. **`/pricing` at 390px: the ribbon's pill cap surfaced as a clipped dark
    blob and the eyebrow sat in the band's glow.** `left/right: -14%` is
    ~−55px at 390px — less than the pill's 84px cap radius — so the rounded
@@ -800,17 +873,18 @@ have caught the unterminated rule at commit time.
    byte-comparable); verified at 390px in
    `prod2/pricing-mobile-first-viewport.png` — caps off-frame, eyebrow on
    white.
-3. **The 1440px lockup gate failed on the merged head — a measurement bug,
-   not a rendering regression.** `hero-webgl.spec.ts` counted heading lines
-   with `Range.getClientRects()` over the whole H1; that range also returns
-   the border boxes of the two block-level `.h1-line` spans. The type
-   unification's new metrics separated those container tops from their
-   first line fragment's top (fragment tops 208/279/349/420 at 1440×810,
-   container tops 215/356), so the rounded-top count jumped 4 → 6 while
-   the rendered lockup stayed the intended four lines — every 1440px
-   capture this round concurs. **Fixed:** the counter now walks text nodes
-   and counts only line fragments; the full gate is 6/6 against the
-   production build.
+3. **The 1440px lockup gate failed on the `4faf9b9` head — a measurement
+   bug, not a rendering regression.** `hero-webgl.spec.ts` counted heading
+   lines from `Range.getClientRects()` over the whole H1, which also
+   returns the border boxes of the two block-level `.h1-line` spans; the
+   type unification's new metrics separated those container tops from
+   their first line fragment's top (fragment tops 208/279/349/420 at
+   1440×810, container tops 215/356), so the rounded-top count jumped
+   4 → 6 while the rendered lockup stayed the intended four lines — every
+   1440px capture this round concurs. **Fixed, converged:** this round
+   rewrote the counter to walk text-node fragments; the parallel Round 11
+   landed the equivalent half-line-height clustering first, so the merge
+   keeps that version. Gate 6/6 on the merged head.
 
 #### P2 (noted, not fixed here)
 
@@ -828,25 +902,24 @@ have caught the unterminated rule at commit time.
 7. The wordmark wraps to two lines at 390px and costs the header ~24px
    (`prod2/landing-mobile-first-viewport.png`).
 
-### Verified green on the merged head
+### Verified green
 
-- Rounds 5–10 claims re-verified against the production build: one design
-  system on all five routes (white canvas, Instrument Sans + IBM Plex Mono,
-  iris accents), single-line demo notice at 390px (mock), account
-  two-column workspace with the credits meter (Round 1 P2-8 stays closed),
-  settlement band on both billing returns with correct chip semantics
-  (timeout reads as pending, confirmed earns the medallion), pricing
-  product page with hydrated CTA states (`Current plan` pinned on Starter,
-  preview CTAs live), ledger/matrix/proof composites with staggered
-  reveals and opposed parallax rates.
-- Hero: `drawn=true` with exactly one canvas at 1440/1024/390;
-  reduced-motion mounts no canvas; after the rebake the poster path
-  matches the live composition; full `scripts/run_hero_webgl.sh` gate 6/6
-  against the production build.
-- 0px horizontal overflow at 390px on all six probe routes
-  (`overflow-probe.mjs`, production `http` mode — every banner renders) —
-  measured both before and after this round's CSS fix.
-- vitest 147/147; ESLint and `tsc --noEmit` clean.
+- Rounds 5–10 claims re-verified against the `4faf9b9` production build:
+  one design system on all five routes (white canvas, Instrument Sans +
+  IBM Plex Mono, iris accents), single-line demo notice at 390px (mock),
+  account two-column workspace with the credits meter (Round 1 P2-8 stays
+  closed), settlement band on both billing returns with correct chip
+  semantics (timeout reads as pending, confirmed earns the medallion),
+  pricing product page with hydrated CTA states (`Current plan` pinned on
+  Starter, preview CTAs live), ledger/matrix/proof composites with
+  staggered reveals and opposed parallax rates.
+- On the merged head (this entry's commit, Round 11 hero folded in):
+  hero rig `drawn=true` with exactly one canvas at 1440/1024/390 and no
+  canvas under reduced motion; poster path matches the live composition;
+  full `scripts/run_hero_webgl.sh` gate 6/6 against the production build;
+  0px horizontal overflow at 390px on all six probe routes
+  (`overflow-probe.mjs`, production `http` mode); vitest 147/147; ESLint
+  and `tsc --noEmit` clean; the 390px pricing ribbon fix re-verified.
 
 ### Open items carried forward
 
@@ -854,7 +927,5 @@ have caught the unterminated rule at commit time.
   Round 3; every rig in this log renders on SwiftShader).
 - P2 №4–7 above; the price-grammar unification and the CTA loading state
   are natural first items for the next polish stream.
-- Poster staleness has now bitten three rounds; if a future round touches
-  the shader again, consider asserting poster freshness (for example a
-  bake stamp committed beside the shader) instead of relying on review to
-  catch the drift.
+- Round 11's parity notes stand: multi-sheet ribbon layering and a finer
+  grain pass are the remaining gaps to stripe.com's hero.

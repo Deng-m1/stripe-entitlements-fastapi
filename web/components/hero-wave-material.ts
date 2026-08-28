@@ -181,7 +181,7 @@ void main() {
   // Stripe's ribbon carries a luminous, near-white core along each crest top —
   // the "silk" read. Mixing toward a lightened copy of the local ramp colour
   // (not plain white) keeps the highlight in the band's own hue family.
-  float crestCore = smoothstep(0.58, 1.02, vFold * 1.08 + vLift * 0.24);
+  float crestCore = smoothstep(0.66, 1.12, vFold * 1.08 + vLift * 0.24);
   shaded = mix(shaded, mix(base, vec3(1.0), 0.6), crestCore * uCrestGlow);
   shaded += srgbToLinear(uSheenColor) * specular * uSpecularStrength;
   // Rim light peaks exactly on silhouettes. Over a dark canvas that reads as
@@ -210,9 +210,13 @@ void main() {
   // open and close whole bands), and added a static width modulation along
   // the band so the ribbons taper organically the way Stripe's do.
   float widthVar = 0.07 * sin(vUv.x * 6.3 + vUv.y * 2.4 + 0.8);
+  // The window sits high in the fold range on purpose: only the upper part of
+  // each crest carries colour, so the canvas between bands is bare white
+  // rather than a low-alpha wash. Over the warm paper of earlier rounds a wash
+  // blended in; over pure white it reads as a stain.
   alpha *= mix(
     1.0,
-    smoothstep(0.18, 0.44, vFold * 1.32 + vLift * 0.18 + widthVar),
+    smoothstep(0.06, 0.42, vFold * 1.32 + vLift * 0.18 + widthVar),
     uTroughFade
   );
   alpha *= 0.92 + 0.08 * keyWrap;
