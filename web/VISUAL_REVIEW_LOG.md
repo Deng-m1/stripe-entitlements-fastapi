@@ -1007,3 +1007,38 @@ have caught the unterminated rule at commit time.
   (`b32d620`) between this round's baseline and evidence run; its
   desktop eyebrow-over-glow contrast deserves a look from that stream —
   out of this round's scope, noted here so it is not lost.
+
+---
+
+## Round 14 — motion v3: entrance stagger + hover micro-interactions — 2026-08-28
+
+- Owner: fable 5 (sitewide motion lead); scorecard §9 (Animations 2/10 in
+  Round 1) is the target. CSS plus the existing ScrollReveal/ScrollMotion
+  drivers only — no animation library. Ran in parallel with the pricing
+  round-two stream above on the shared branch head; the motion styles
+  themselves rode into `b32d620`, and this round's commits carry the
+  selector repairs plus the evidence rig.
+- Landed: matrix section (03) converted from a block reveal to the group
+  stagger grammar of sections 02–06 with `reveal-item`/`--stagger`;
+  `reveal-rise` picks up a 0.985 settle scale; hero event pills cascade in
+  after the copy (delays ride the li, the nudge rides the independent
+  `translate` channel so the static scatter transforms survive); pricing
+  plan cards cascade on load; hover micro-interactions on pills,
+  capability cards, gate rows, catalog tiles, and all button voices
+  (200–300ms, press-down acknowledgment on `:active`); the featured
+  pricing tier lifts −6px over its neighbours' −4px with the mesh-glow
+  underlay swelling (`.plan-card.pricing-featured` outranks the sitewide
+  −4px rule that source order would otherwise hand the win).
+- Reduced motion is fully parked: every new transform-bearing rule sits
+  behind `prefers-reduced-motion: no-preference`, and the global reduce
+  block now also zeroes the legacy hover lifts (buttons, catalog tiles,
+  plan cards), so hover feedback under reduce is color/shadow only.
+- Evidence: `scripts/motion-v3-shots.mjs` against the production build →
+  `/tmp/motion-v3/` — scroll-through + hover-tour recording, entrance
+  mid-flight/settled frames (hero pills, matrix reveal, pricing cascade),
+  rest/hover pairs, and machine probes: all nine hover targets report a
+  transform/translate delta in `hover-probe.json` (featured card
+  `translateY(-6px)`, side card `-4px`, pill `translate 0 -2px` composing
+  with its `+6px` scatter), and `reduced-probe.json` reports a zero hover
+  delta on every target. Vitest 151/151, ESLint and `tsc --noEmit` clean
+  on the isolated worktree build.
