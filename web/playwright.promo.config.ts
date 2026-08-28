@@ -23,7 +23,7 @@ const stepPause = positiveInteger("PROMO_STEP_PAUSE_MS", 1600, 300, 5000);
 
 export default defineConfig({
   testDir: "./promo",
-  testMatch: "ui-tour.spec.ts",
+  testMatch: ["ui-tour.spec.ts", "landing-responsive.spec.ts"],
   fullyParallel: false,
   workers: 1,
   retries: 0,

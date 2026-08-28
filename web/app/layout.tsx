@@ -96,6 +96,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html
       className={`${bodyFont.variable} ${displayFont.variable} ${monoFont.variable}`}
+      data-scroll-behavior="smooth"
       lang="en"
     >
       <body>
