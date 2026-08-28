@@ -53,10 +53,11 @@ considered contaminated by this and re-verified.
    the same catalog in paper style, which makes the mismatch obvious.
    Evidence: `round1-baseline/landing-desktop-full.png` vs
    `round1-baseline/pricing-desktop-full.png`, `account-desktop-full.png`.
-   **Status: open — needs token unification (canvas, accent, card, table
-   styles) on `/pricing` + `/account`; structural, deferred to the design
-   token stream / next round.** Not attempted here because billing-surface
-   styles live in `globals.css`, which the in-flight hero stream is editing.
+   **Status: resolved in parallel** — the design-token stream landed
+   `ce40159` ("promote paper tokens sitewide") during this round. Merged with
+   this round's fixes and re-verified: `/pricing` and `/account` now sit on
+   the warm paper canvas with settlement-orange accents and mono eyebrows,
+   coherent with the landing. Evidence: `/tmp/visual-review/round2-merged/`.
 2. **`/pricing` mobile pans 154 px of dead canvas.** The 640 px comparison
    table propagated layout overflow to the document even though its wrapper
    scrolls (`overflow-x: auto` on a static-positioned wrapper). Whole page
@@ -117,5 +118,13 @@ considered contaminated by this and re-verified.
 
 `/tmp/visual-review/round2/`: price typography tight, 0 px mobile overflow on
 all three pages, pricing/account fully hydrated with live CTAs via both
-`localhost` and `127.0.0.1`. Open items carried to Round 2 review: P0-1 design
-token unification, P1-5 hero rag (post-WebGL), P2 list.
+`localhost` and `127.0.0.1`.
+
+Post-merge verification (`/tmp/visual-review/round2-merged/`, after merging
+the parallel `ce40159` paper-token restyle): landing, pricing, and account now
+share one design system; this round's price-figure and table-overflow fixes
+survive the restyle; overflow still 0 px at 390 px on all three pages.
+
+Open items carried to the next round: P1-5 hero rag (re-check after the WebGL
+hero lands), P2-7 demo banner height on mobile, P2-8 sparse credits card,
+P2-10 terminal legibility at 390 px.
