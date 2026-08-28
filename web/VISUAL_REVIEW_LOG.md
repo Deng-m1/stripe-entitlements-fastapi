@@ -180,3 +180,68 @@ P2-10 terminal legibility at 390 px.
 - Frame cost is unmeasured on real GPUs. `PerformanceMonitor` drops DPR on
   decline, but no budget has been asserted against hardware.
 - P1-5 (hero headline rag at 1440 px) is still open and now unblocked.
+
+---
+
+## Round — full-site polish to DESIGN_BRIEF v3 / DESIGN_SYSTEM
+
+- Scope: every route, not just the landing. `/`, `/pricing`, `/account`,
+  `/billing/success`, `/billing/error`, plus the social card and icon.
+- Preview: `next dev` in mock mode on a private port; the hero gate runs
+  against `next build` + `next start` as before.
+- Screenshots: `/tmp/pages-polish-v2/` — desktop full page, desktop first
+  viewport, desktop scrolled header, and 390 px full page for all five
+  routes, plus the rendered `opengraph-image`.
+- Rigs: `scripts/pages-polish-shots.mjs` (captures) and
+  `scripts/pages-polish-assert.mjs` (structural assertions). The assertion rig
+  was still checking the retired paper canvas and dotted grid; it now checks
+  the v3 white canvas, the absence of page texture, the structured eyebrow on
+  every landing band, and the scroll system — including that the two stacked
+  ledger layers publish different parallax shifts.
+
+### Fixed this round
+
+1. **`/account` wasted a half-column.** The credits card stretched to the
+   subscription card's height in a two-cell grid. The page is now a workspace:
+   a main column carrying the projection people read (subscription,
+   entitlements) and a rail carrying the numbers and the controls that change
+   them (credits, manage). Each column packs its own cards, so neither is
+   stretched by its neighbour.
+2. **Empty entitlements rendered as a single tile in a grid**, which read as a
+   broken card. It is now a dashed field that states the absence.
+3. **The `/pricing` gradient ribbon drew a hard seam** across the white chrome
+   above it, because it is anchored to the page container rather than the
+   document. Both ends of its mask now fade.
+4. **The billing returns used a borderless secondary**, where
+   `DESIGN_SYSTEM.md` §5.4 asks for one iris CTA and one outline secondary.
+   On the success screen's timeout state the recovery action takes that
+   outline slot and the escape hatch goes quiet.
+5. **390 px landing overflowed the document by 250 px.** The visually-hidden
+   tail of the demo notice is absolutely positioned, and with no positioned
+   ancestor it resolved against the initial containing block — its static
+   position, past the end of an unwrapped sentence, widened the document to
+   640 px. Note that `document.body.scrollWidth` read 0 overflow throughout;
+   only `documentElement` exposed it.
+6. **The social card's copy sat on a grey wash** where the four ramp stops
+   overlapped at low alpha. White now fades back across the copy column and
+   the mesh stays in the corner the hero's wave occupies.
+7. **Catalog tiles and FAQ rows entered flat.** Both now stagger. The tile's
+   hover lift moved from `transform` to `translate` so it no longer shares a
+   property with the reveal, and the tile restates the reveal longhands its
+   own `transition` shorthand would otherwise drop.
+8. **The gradient band's white cards did not move against it.** Node graph and
+   capability cards now travel as one plane over the band.
+
+### Gate reliability
+
+`hero-webgl.spec.ts` failed once and passed on retry: the poster-handover
+assertion sampled `opacity` immediately after `data-drawn` flipped, mid-way
+through the 900 ms cross-fade (`0.25` against a `< 0.05` bound). It now polls
+for the same end state instead of racing the transition that produces it.
+
+### Known gaps
+
+- The hero's `hero-microcopy` list stacks to three mono-caps lines at 1440 px;
+  it was drawn as one row in earlier rounds.
+- Entitlement cards wrap to a ragged final row on `/account` at 1440 px when
+  the count is not a multiple of three.
