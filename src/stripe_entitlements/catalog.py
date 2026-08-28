@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .bounds import CATALOG_PRICE_MAJOR_UNIT_MAX, POSTGRES_BIGINT_MAX
+from .bounds import CATALOG_PRICE_MAJOR_UNIT_MAX, JSON_SAFE_INTEGER_MAX, POSTGRES_BIGINT_MAX
+from .credit_amount import CreditAmount
 
 _KEY = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 _ENTITLEMENT_KEY = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -20,7 +21,7 @@ class Plan:
     description: str
     currency: str
     rank: int
-    monthly_credits: int
+    monthly_credits: CreditAmount
     month_usd: int
     year_usd: int
     features: frozenset[str]
@@ -39,9 +40,15 @@ def _required_string(value: Any, *, field: str, max_bytes: int) -> str:
     return value
 
 
-def _required_integer(value: Any, *, field: str, minimum: int = 1) -> int:
-    if type(value) is not int or value < minimum or value > POSTGRES_BIGINT_MAX:
-        raise ValueError(f"{field} must be an integer between {minimum} and {POSTGRES_BIGINT_MAX}")
+def _required_integer(
+    value: Any,
+    *,
+    field: str,
+    minimum: int = 1,
+    maximum: int = POSTGRES_BIGINT_MAX,
+) -> int:
+    if type(value) is not int or value < minimum or value > maximum:
+        raise ValueError(f"{field} must be an integer between {minimum} and {maximum}")
     return value
 
 
@@ -70,6 +77,7 @@ def _parse_limits(value: Any, *, plan_key: str) -> dict[str, int]:
             raw_value,
             field=f"plans.{plan_key}.limits.{key}",
             minimum=0,
+            maximum=JSON_SAFE_INTEGER_MAX,
         )
     return limits
 
@@ -81,10 +89,10 @@ class PlanCatalog:
         if _KEY.fullmatch(lookup_prefix) is None:
             raise ValueError("lookup_prefix must match [a-z][a-z0-9-]{0,31}")
         ranks = [plan.rank for plan in plans.values()]
-        if any(type(rank) is not int or rank <= 0 for rank in ranks) or len(ranks) != len(
-            set(ranks)
-        ):
-            raise ValueError("plan ranks must be unique positive integers")
+        if any(
+            type(rank) is not int or rank <= 0 or rank > JSON_SAFE_INTEGER_MAX for rank in ranks
+        ) or len(ranks) != len(set(ranks)):
+            raise ValueError("plan ranks must be unique positive JSON-safe integers")
         for key, plan in plans.items():
             if key != plan.key or _KEY.fullmatch(key) is None:
                 raise ValueError("plan keys must match their mapping key and use lowercase slugs")
@@ -92,14 +100,20 @@ class PlanCatalog:
             _required_string(plan.description, field=f"plans.{key}.description", max_bytes=500)
             if plan.currency != "usd":
                 raise ValueError("the reference catalog supports USD only")
-            _required_integer(plan.monthly_credits, field=f"plans.{key}.monthly_credits")
+            if (
+                not isinstance(plan.monthly_credits, CreditAmount)
+                or plan.monthly_credits.atoms <= 0
+            ):
+                raise ValueError(
+                    f"plans.{key}.monthly_credits must be a positive exact credit amount"
+                )
             _required_integer(plan.month_usd, field=f"plans.{key}.month_usd")
             _required_integer(plan.year_usd, field=f"plans.{key}.year_usd")
             if (
                 plan.month_usd > CATALOG_PRICE_MAJOR_UNIT_MAX
                 or plan.year_usd > CATALOG_PRICE_MAJOR_UNIT_MAX
             ):
-                raise ValueError("catalog prices in minor units must fit a PostgreSQL bigint")
+                raise ValueError("catalog prices in minor units must remain JSON-safe integers")
             if plan.year_usd > plan.month_usd * 12:
                 raise ValueError(f"plans.{key}.year_usd cannot exceed twelve monthly payments")
             if not plan.features or any(
@@ -112,10 +126,12 @@ class PlanCatalog:
                 or _ENTITLEMENT_KEY.fullmatch(name) is None
                 or type(value) is not int
                 or value < 0
-                or value > POSTGRES_BIGINT_MAX
+                or value > JSON_SAFE_INTEGER_MAX
                 for name, value in plan.limits.items()
             ):
-                raise ValueError("every plan requires explicit valid non-negative limits")
+                raise ValueError(
+                    "every plan requires explicit valid non-negative JSON-safe limits"
+                )
         ordered = sorted(plans.values(), key=lambda plan: plan.rank)
         expected_limit_keys = set(ordered[0].limits)
         previous = ordered[0]
@@ -161,10 +177,15 @@ class PlanCatalog:
                     currency=_required_string(
                         raw_value["currency"], field=f"plans.{key}.currency", max_bytes=3
                     ),
-                    rank=_required_integer(raw_value["rank"], field=f"plans.{key}.rank"),
-                    monthly_credits=_required_integer(
+                    rank=_required_integer(
+                        raw_value["rank"],
+                        field=f"plans.{key}.rank",
+                        maximum=JSON_SAFE_INTEGER_MAX,
+                    ),
+                    monthly_credits=CreditAmount.parse(
                         raw_value["monthly_credits"],
                         field=f"plans.{key}.monthly_credits",
+                        allow_zero=False,
                     ),
                     month_usd=_required_integer(
                         raw_value["month_usd"], field=f"plans.{key}.month_usd"

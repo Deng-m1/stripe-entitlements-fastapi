@@ -8,11 +8,14 @@ import os
 import stat
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import asyncpg
 import stripe
+
+from stripe_entitlements.credit_amount import CreditAmount
 
 SUPPORTED_EVENTS = (
     "checkout.session.completed",
@@ -36,6 +39,53 @@ _MANIFEST_STRING_FIELDS = (
     "stripe_subscription_id",
 )
 _MANIFEST_FIELDS = frozenset((*_MANIFEST_STRING_FIELDS, "database_state_available"))
+
+
+def _exact_credit_amount(value: object, *, field: str) -> CreditAmount:
+    """Parse an E2E credit expectation without crossing a float boundary."""
+
+    if type(value) is not str:
+        raise ValueError(f"{field} must be an exact decimal string")
+    return CreditAmount.parse(value, field=field, allow_zero=False)
+
+
+@dataclass(frozen=True, slots=True)
+class _BrowserCreditExpectations:
+    balance: CreditAmount
+    initial_grant_atoms: int
+    settlement_reason: str
+    settlement_grant_atoms: int
+    allocation_atoms: int | None
+
+
+def _browser_credit_expectations(
+    expected_credits: object,
+    transition_policy: str,
+) -> _BrowserCreditExpectations:
+    balance = _exact_credit_amount(
+        expected_credits,
+        field="expected browser E2E credits",
+    )
+    starter_atoms = _exact_credit_amount("300", field="Starter E2E credits").atoms
+    pro_atoms = _exact_credit_amount("1000", field="Pro E2E credits").atoms
+    delta_atoms = _exact_credit_amount("700", field="Pro upgrade E2E delta").atoms
+    if transition_policy == "prorated_delta":
+        return _BrowserCreditExpectations(
+            balance,
+            starter_atoms,
+            "upgrade_delta_grant",
+            delta_atoms,
+            delta_atoms,
+        )
+    if transition_policy == "full_period_reset":
+        return _BrowserCreditExpectations(
+            balance,
+            starter_atoms,
+            "subscription_grant",
+            pro_atoms,
+            None,
+        )
+    raise ValueError("unknown browser E2E transition policy")
 
 
 def _test_key() -> str:
@@ -356,6 +406,10 @@ async def write_cleanup_manifest(args: argparse.Namespace) -> None:
 
 
 async def verify_database(args: argparse.Namespace) -> None:
+    credit_expectations = _browser_credit_expectations(
+        args.expected_credits,
+        args.transition_policy,
+    )
     conn = await asyncpg.connect(args.database_url)
     try:
         account = await conn.fetchrow(
@@ -367,7 +421,13 @@ async def verify_database(args: argparse.Namespace) -> None:
         )
         if account is None:
             raise RuntimeError("browser E2E account was not created")
-        expected = (args.expected_plan, "month", "active", args.expected_credits, False)
+        expected = (
+            args.expected_plan,
+            "month",
+            "active",
+            credit_expectations.balance.atoms,
+            False,
+        )
         projection = tuple(account)[3:]
         if projection != expected:
             raise RuntimeError(f"unexpected browser E2E account projection: {projection!r}")
@@ -412,7 +472,8 @@ async def verify_database(args: argparse.Namespace) -> None:
         if (
             len(initial_grants) != 1
             or initial_grants[0]["reason"] != "subscription_grant"
-            or int(initial_grants[0]["entitlement_units"]) != 300
+            or int(initial_grants[0]["entitlement_units"])
+            != credit_expectations.initial_grant_atoms
             or len(settlement_grants) != 1
         ):
             raise RuntimeError("browser E2E funding grants are ambiguous")
@@ -420,9 +481,8 @@ async def verify_database(args: argparse.Namespace) -> None:
         if not initial_invoice_id or initial_invoice_id == settlement_invoice_id:
             raise RuntimeError("initial and upgrade settlement Invoices must be distinct")
         expected_settlement_grant = (
-            ("upgrade_delta_grant", 700)
-            if args.transition_policy == "prorated_delta"
-            else ("subscription_grant", 1000)
+            credit_expectations.settlement_reason,
+            credit_expectations.settlement_grant_atoms,
         )
         if (
             settlement_grants[0]["reason"],
@@ -450,7 +510,7 @@ async def verify_database(args: argparse.Namespace) -> None:
             if len(allocations) != 1 or tuple(allocations[0])[:4] != (
                 "prorated_delta",
                 "pro",
-                700,
+                credit_expectations.allocation_atoms,
                 "active",
             ):
                 raise RuntimeError("browser delta funding allocation is missing or invalid")
@@ -571,7 +631,7 @@ async def verify_database(args: argparse.Namespace) -> None:
         unrelated_events = _require_isolated_event_inbox(total_events, len(events))
         print(
             "verified signed webhook projection: "
-            f"plan={args.expected_plan}/month credits={args.expected_credits} "
+            f"plan={args.expected_plan}/month credits={credit_expectations.balance} "
             f"policy={args.transition_policy} account_events={len(events)} "
             f"unrelated_events={unrelated_events} essential_events=3 "
             f"signed_delivery_transport={args.delivery_transport} "
@@ -1072,8 +1132,8 @@ def parser() -> argparse.ArgumentParser:
         choices=("endpoint", "stripe_cli"),
         default="endpoint",
     )
-    database.add_argument("--expected-plan", default="starter")
-    database.add_argument("--expected-credits", type=int, default=300)
+    database.add_argument("--expected-plan", default="pro")
+    database.add_argument("--expected-credits", default="1000")
     database.add_argument(
         "--transition-policy",
         choices=("full_period_reset", "prorated_delta"),

@@ -4,6 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 import { AccountScreen } from "@/components/AccountScreen";
 import { PricingScreen } from "@/components/PricingScreen";
 import { SuccessScreen } from "@/components/SuccessScreen";
+import {
+  CREDIT_SCALE,
+  creditAmountFromDecimal,
+} from "@/lib/credit-amount";
 import { BillingApiError } from "@/lib/http-api";
 import {
   completeIdempotentIntent,
@@ -24,7 +28,7 @@ import type {
 function preview(
   values: Partial<ChangePreview> = {},
 ): ChangePreview {
-  return {
+  const result: ChangePreview = {
     preview_id: "preview-test",
     current_plan_key: "starter",
     current_interval: "month",
@@ -38,9 +42,20 @@ function preview(
     amount_due_now: 35300,
     credit_applied: 0,
     entitlement_credit_delta: null,
+    entitlement_credit_delta_atoms: null,
+    credit_scale: CREDIT_SCALE,
     next_invoice_amount: 35300,
     ...values,
   };
+  if (
+    result.entitlement_credit_delta !== null &&
+    values.entitlement_credit_delta_atoms === undefined
+  ) {
+    result.entitlement_credit_delta_atoms = creditAmountFromDecimal(
+      result.entitlement_credit_delta,
+    ).atoms;
+  }
+  return result;
 }
 
 function testApi(options: {
@@ -220,7 +235,7 @@ describe("billing screens", () => {
         settlement_mode: "current_period_prorated_delta",
         amount_due_now: 1500,
         credit_applied: 950,
-        entitlement_credit_delta: 700,
+        entitlement_credit_delta: "700",
         next_invoice_amount: 4900,
       }),
     });

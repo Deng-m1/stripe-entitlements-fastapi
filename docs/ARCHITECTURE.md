@@ -41,9 +41,14 @@ Next.js reference UI
 ## Scope boundary
 
 The backend supports one recurring subscription item, USD, fixed plan keys,
-monthly/yearly intervals, fixed monthly credit grants, and two explicit transition
+monthly/yearly intervals, exact fixed-point monthly credit grants, and two explicit transition
 policies. The prorated template is bounded to same-interval monthly tier upgrades. It is
 not an arbitrary Invoice reducer. Unknown/ambiguous Invoice shapes fail closed.
+
+Product credits use a fixed protocol of one million integer atoms per displayed credit.
+Binary floating point never enters the catalog, API, PostgreSQL ledger, refund math or
+browser business state. Stripe currency remains a separate minor-unit integer dimension;
+see [Exact fractional product credits](CREDIT_PRECISION.md).
 
 The frontend is a reference consumer, not the system of record. Product services must
 enforce `entitlements_enforceable`, structured limits, and credit operations server-side.
@@ -105,6 +110,10 @@ Paths that touch account and invoice state lock account first, then invoice.
 - `billing_funding_allocations`: source-to-delta funding lineage;
 - `billing_clawback_debts`: uncollected current-epoch clawbacks; and
 - `billing_incidents`: deduplicated fail-closed operational work with causal timestamps.
+
+Every credit quantity in these tables is an integer atom count. Column names retain the
+domain wording (`credits_balance`, `delta`, `entitlement_delta`) while schema comments
+record the atom semantics. Cash amount columns remain Stripe currency minor units.
 
 The baseline also declares the immutable Invoice-owner trigger, all partial uniqueness
 guards, reconciliation/annual indexes, explicit foreign-key delete actions, and

@@ -17,6 +17,26 @@ const variants = [
 const rank = { starter: 1, pro: 2, ultra: 3 } as const;
 
 describe("mock billing contract", () => {
+  it("uses the exact decimal/atoms contract for account and catalog credits", async () => {
+    const account = demoAccount("pro", "month");
+    expect(account.credits).toMatchObject({
+      balance: "1000",
+      balance_atoms: "1000000000",
+      grant_amount: "1000",
+      grant_amount_atoms: "1000000000",
+      scale: 1_000_000,
+    });
+
+    const monthlyCredits = (await createMockBillingApi().getCatalog())
+      .plans.find((plan) => plan.key === "pro")
+      ?.entitlements.find((entitlement) => entitlement.key === "monthly_credits");
+    expect(monthlyCredits).toMatchObject({
+      value: "1000",
+      value_atoms: "1000000000",
+      scale: 1_000_000,
+    });
+  });
+
   it("implements the exhaustive safe 6×6 transition matrix", async () => {
     for (const [currentPlan, currentInterval] of variants) {
       for (const [targetPlan, targetInterval] of variants) {

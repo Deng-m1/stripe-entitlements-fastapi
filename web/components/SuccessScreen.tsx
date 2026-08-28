@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { completeIdempotentIntent } from "@/lib/idempotency";
+import { formatCreditDecimal } from "@/lib/credit-amount";
 import { getBillingApi } from "@/lib/runtime";
 import type { AccountResponse, BillingApi, BillingInterval } from "@/lib/types";
 
@@ -186,7 +187,7 @@ export function SuccessScreen({
           </div>
           <div>
             <dt>Credit balance</dt>
-            <dd>{account.credits.balance.toLocaleString("en-US")} credits</dd>
+            <dd>{formatCreditDecimal(account.credits.balance)} credits</dd>
           </div>
         </dl>
       ) : null}

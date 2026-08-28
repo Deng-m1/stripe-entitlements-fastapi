@@ -16,6 +16,7 @@ from stripe_entitlements.plan_changes import (
     PlanChangeUnavailableError,
     RemotePlanChange,
 )
+from tests.credit_helpers import PRO_CREDITS, STARTER_CREDITS, ULTRA_CREDITS
 
 PERIOD_START = datetime(2026, 7, 1, tzinfo=UTC)
 PERIOD_END = datetime(2030, 8, 1, tzinfo=UTC)
@@ -144,7 +145,11 @@ async def _seed_paid_account(
 ) -> str:
     account_id = await make_account()
     async with pool.acquire() as conn:
-        credits = {"starter": 300, "pro": 1000, "ultra": 4000}[plan]
+        credits = {
+            "starter": STARTER_CREDITS,
+            "pro": PRO_CREDITS,
+            "ultra": ULTRA_CREDITS,
+        }[plan]
         await conn.execute(
             """update billing_accounts set plan_key=$2,plan_interval=$3,
                  subscription_status='active',current_period_end=$4,
@@ -664,7 +669,7 @@ async def test_prorated_delta_preview_and_confirm_persist_one_settlement_contrac
         after = int(await conn.fetchval("select extract(epoch from now())::bigint"))
     assert preview.decision.timing == "immediate"
     assert preview.transition_policy == "prorated_delta"
-    assert preview.entitlement_credit_delta == 700
+    assert preview.entitlement_credit_delta == PRO_CREDITS - STARTER_CREDITS
     assert preview.estimated_amount_due == 1500
     assert preview.estimated_credit_applied == 950
     assert gateway.preview_policy == "prorated_delta"
@@ -681,7 +686,7 @@ async def test_prorated_delta_preview_and_confirm_persist_one_settlement_contrac
         )
     assert row is not None
     assert row["expected_source_invoice_id"] == f"in_seed_{account_id}"
-    assert row["expected_credit_delta"] == 700
+    assert row["expected_credit_delta"] == PRO_CREDITS - STARTER_CREDITS
     assert row["proration_date"] == gateway.preview_proration_date
 
 

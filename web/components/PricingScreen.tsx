@@ -4,6 +4,11 @@ import { useCallback, useEffect, useState } from "react";
 import { ChangePreviewDialog } from "@/components/ChangePreviewDialog";
 import { ErrorState, LoadingState } from "@/components/AsyncState";
 import {
+  creditAmountFromEntitlement,
+  formatCreditDecimal,
+  isZeroCreditDecimal,
+} from "@/lib/credit-amount";
+import {
   annualEquivalentMonthly,
   annualSavings,
   annualSavingsPercent,
@@ -282,7 +287,12 @@ export function PricingScreen({
             previous ? entitlementUpgrades(plan, previous) : plan.entitlements
           ).filter(
             (entitlement) =>
-              entitlement.value !== false && entitlement.value !== 0,
+              entitlement.value !== false &&
+              entitlement.value !== 0 &&
+              (entitlement.key !== "monthly_credits" ||
+                !isZeroCreditDecimal(
+                  creditAmountFromEntitlement(entitlement).decimal,
+                )),
           );
           const featured = plan.key === featuredPlanKey;
           const current =
@@ -506,7 +516,9 @@ function IncludedMark({ included }: { included: boolean }) {
 function entitlementLine(entitlement: Entitlement): string {
   if (entitlement.value === true) return entitlement.label;
   const value =
-    typeof entitlement.value === "number"
+    entitlement.key === "monthly_credits"
+      ? formatCreditDecimal(creditAmountFromEntitlement(entitlement).decimal)
+      : typeof entitlement.value === "number"
       ? entitlement.value.toLocaleString("en-US")
       : String(entitlement.value);
   return entitlement.unit
@@ -527,6 +539,8 @@ function entitlementUpgrades(
     return (
       !before ||
       before.value !== entitlement.value ||
+      before.value_atoms !== entitlement.value_atoms ||
+      before.scale !== entitlement.scale ||
       before.unit !== entitlement.unit
     );
   });
@@ -564,7 +578,9 @@ function comparisonRows(plans: CatalogPlan[]): ComparisonRow[] {
         if (!found) return null;
         if (typeof found.value === "boolean") return found.value;
         const value =
-          typeof found.value === "number"
+          found.key === "monthly_credits"
+            ? formatCreditDecimal(creditAmountFromEntitlement(found).decimal)
+            : typeof found.value === "number"
             ? found.value.toLocaleString("en-US")
             : String(found.value);
         return found.unit ? `${value} ${found.unit}` : value;

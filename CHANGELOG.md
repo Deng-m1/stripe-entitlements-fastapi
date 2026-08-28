@@ -2,6 +2,17 @@
 
 ## Unreleased (0.3.0)
 
+- Add exact fractional product credits with a fixed protocol of one million integer
+  atoms per credit. Catalog decimal strings, Python `CreditAmount`, PostgreSQL balances,
+  entitlement deltas, refunds, annual grants and clawback debts remain exact; HTTP and
+  TypeScript use validated decimal/atom strings instead of floating-point numbers.
+- Add a secret-safe, read-only `stripe-entitlements doctor` command with JSON output for
+  package, catalog, configuration, PostgreSQL schema and migration checks. Optional
+  Stripe Account/Portal retrieval requires explicit `--stripe-network` opt-in and does
+  not claim webhook endpoint or signed-delivery evidence.
+- Align source and distribution version metadata at `0.3.0`, constrain source-distribution
+  contents, and verify installed Wheel/sdist access to packaged catalog and migrations.
+
 - Replace the pre-release `001`-through-`006` upgrade lineage with one final-state
   `001_v3_baseline.sql` for fresh installations. The baseline directly declares all
   runtime tables, constraints, indexes, defaults, and the immutable Invoice-owner

@@ -6,6 +6,10 @@ import { PipelineNodeGraph } from "@/components/PipelineNodeGraph";
 import { ScrollReveal } from "@/components/ScrollReveal";
 import { SettlementChart } from "@/components/SettlementChart";
 import { UpgradeMatrix } from "@/components/UpgradeMatrix";
+import {
+  creditAmountFromEntitlement,
+  formatCreditDecimal,
+} from "@/lib/credit-amount";
 import { annualSavings, formatMoney } from "@/lib/money";
 import { referencePlans } from "@/lib/reference-catalog";
 import {
@@ -410,7 +414,7 @@ export default function HomePage() {
               const saving = annualSavings(plan);
               const credits = plan.entitlements.find(
                 (item) => item.key === "monthly_credits",
-              )?.value;
+              );
               return (
                 <div className="catalog-tile" key={plan.key}>
                   <h3>{plan.name}</h3>
@@ -422,7 +426,12 @@ export default function HomePage() {
                     <span>/month</span>
                   </p>
                   <p className="catalog-credits">
-                    {String(credits ?? "—")} credits per monthly grant
+                    {credits
+                      ? formatCreditDecimal(
+                          creditAmountFromEntitlement(credits).decimal,
+                        )
+                      : "—"}{" "}
+                    credits per monthly grant
                   </p>
                   <p className="catalog-saving">
                     {saving === null
@@ -460,7 +469,7 @@ export default function HomePage() {
                   const savings = annualSavings(plan);
                   const monthlyCredits = plan.entitlements.find(
                     (item) => item.key === "monthly_credits",
-                  )?.value;
+                  );
                   return (
                     <tr key={plan.key}>
                       <th scope="row">{plan.name}</th>
@@ -481,7 +490,13 @@ export default function HomePage() {
                           ? "No saving claimed"
                           : formatMoney(savings, plan.prices.year.currency)}
                       </td>
-                      <td>{String(monthlyCredits ?? "—")}</td>
+                      <td>
+                        {monthlyCredits
+                          ? formatCreditDecimal(
+                              creditAmountFromEntitlement(monthlyCredits).decimal,
+                            )
+                          : "—"}
+                      </td>
                     </tr>
                   );
                 })}

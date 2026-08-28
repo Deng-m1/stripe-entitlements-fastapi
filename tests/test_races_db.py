@@ -6,6 +6,7 @@ import asyncpg
 
 from stripe_entitlements.processor import EventProcessor
 from tests.builders import paid_invoice, payment_failed, refunded_charge, subscription_event
+from tests.credit_helpers import STARTER_CREDITS, atoms
 
 
 async def _balance(pool: asyncpg.Pool, account_id: str) -> int:
@@ -25,7 +26,7 @@ async def test_twenty_concurrent_same_event_deliveries_commit_once(
     results = await asyncio.gather(*(processor.process(payload) for _ in range(20)))
     assert sum(result.outcome == "handled" for result in results) == 1
     assert sum(result.outcome == "duplicate" for result in results) == 19
-    assert await _balance(pool, account_id) == 300
+    assert await _balance(pool, account_id) == STARTER_CREDITS
 
 
 async def test_concurrent_different_events_same_invoice_grant_once(
@@ -68,7 +69,7 @@ async def test_concurrent_paid_and_partial_refund_converge(
             )
         ),
     )
-    assert await _balance(pool, account_id) == 150
+    assert await _balance(pool, account_id) == atoms(150)
 
 
 async def test_concurrent_cumulative_refunds_keep_greatest_amount(
@@ -92,7 +93,7 @@ async def test_concurrent_cumulative_refunds_keep_greatest_amount(
             )
         ),
     )
-    assert await _balance(pool, account_id) == 150
+    assert await _balance(pool, account_id) == atoms(150)
     async with pool.acquire() as conn:
         assert (
             await conn.fetchval(
@@ -115,7 +116,7 @@ async def test_same_second_paid_and_failed_race_always_ends_active(
             "select subscription_status from billing_accounts where id=$1::uuid", account_id
         )
     assert status == "active"
-    assert await _balance(pool, account_id) == 300
+    assert await _balance(pool, account_id) == STARTER_CREDITS
 
 
 async def test_same_second_paid_and_deleted_race_always_ends_canceled(

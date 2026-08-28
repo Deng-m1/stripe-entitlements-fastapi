@@ -24,6 +24,8 @@
 - [ ] `uv run ruff check .`
 - [ ] `uv run mypy src`
 - [ ] `uv run pytest -m "not real_stripe"`
+- [ ] Run `stripe-entitlements doctor --json` against the release database and retain a
+      secret-free report; do not label it Stripe endpoint or payload evidence.
 - [ ] `cd web && npm ci`
 - [ ] `cd web && npm audit --omit=dev`
 - [ ] `cd web && npm run lint`
@@ -94,6 +96,13 @@
 - [ ] Record the actual Event `api_version`; do not infer it from request version.
 
 ## Database and deployment
+
+- [ ] Verify `1 credit = 1000000 atoms` across catalog, account API, plan-change delta,
+      annual grant, usage charge/refund and clawback paths.
+- [ ] Verify minimum `0.000001`, equivalent decimal spellings, values above JavaScript's
+      safe-integer range, explicit overflow rejection and concurrent fractional charges.
+- [ ] Confirm Stripe cash minor-unit columns were not scaled or reinterpreted as product
+      credits.
 
 - [ ] Back up all ten correctness tables together.
 - [ ] For 0.3, initialize a fresh database with `001_v3_baseline.sql`; do not attempt an

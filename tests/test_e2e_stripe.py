@@ -28,6 +28,74 @@ def _private_json(path: Path, payload: dict[str, Any]) -> None:
     path.chmod(0o600)
 
 
+@pytest.mark.parametrize(
+    ("value", "atoms", "canonical"),
+    [
+        ("1000", 1_000_000_000, "1000"),
+        ("0.125000", 125_000, "0.125"),
+        ("0.000001", 1, "0.000001"),
+    ],
+)
+def test_browser_database_credit_expectation_uses_exact_atoms(
+    value: str,
+    atoms: int,
+    canonical: str,
+) -> None:
+    amount = e2e_stripe._exact_credit_amount(value, field="test expectation")
+    assert amount.atoms == atoms
+    assert str(amount) == canonical
+
+
+@pytest.mark.parametrize(
+    "value",
+    [1000, 0.1, True, "1e3", "0.0000001", "01", "0"],
+)
+def test_browser_database_credit_expectation_rejects_lossy_or_noncanonical_input(
+    value: object,
+) -> None:
+    with pytest.raises(ValueError):
+        e2e_stripe._exact_credit_amount(value, field="test expectation")
+
+
+def test_verify_database_cli_preserves_exact_decimal_text() -> None:
+    args = e2e_stripe.parser().parse_args(
+        [
+            "verify-database",
+            "--database-url",
+            "postgresql://test",
+            "--external-ref",
+            "browser-e2e-subject",
+            "--event-api-version",
+            "2026-06-24.dahlia",
+            "--expected-credits",
+            "0.125000",
+        ]
+    )
+    assert args.expected_credits == "0.125000"
+
+
+@pytest.mark.parametrize(
+    ("policy", "reason", "settlement_atoms", "allocation_atoms"),
+    [
+        ("full_period_reset", "subscription_grant", 1_000_000_000, None),
+        ("prorated_delta", "upgrade_delta_grant", 700_000_000, 700_000_000),
+    ],
+)
+def test_verify_database_normalizes_every_nonzero_credit_fact_to_atoms(
+    policy: str,
+    reason: str,
+    settlement_atoms: int,
+    allocation_atoms: int | None,
+) -> None:
+    expected = e2e_stripe._browser_credit_expectations("1000.000000", policy)
+    assert expected.balance.atoms == 1_000_000_000
+    assert str(expected.balance) == "1000"
+    assert expected.initial_grant_atoms == 300_000_000
+    assert expected.settlement_reason == reason
+    assert expected.settlement_grant_atoms == settlement_atoms
+    assert expected.allocation_atoms == allocation_atoms
+
+
 class _ManifestConnection:
     def __init__(self, row: dict[str, Any] | None) -> None:
         self.row = row

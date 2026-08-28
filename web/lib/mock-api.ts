@@ -8,6 +8,11 @@ import type {
   ChangePreviewRequest,
 } from "@/lib/types";
 import {
+  CREDIT_SCALE,
+  creditAmountFromDecimal,
+  creditAmountFromEntitlement,
+} from "@/lib/credit-amount";
+import {
   referenceCatalog,
   referenceEntitlements,
   referencePlans,
@@ -24,9 +29,19 @@ function entitlementsFor(planKey: string) {
   return referenceEntitlements(planKey);
 }
 
+function planCreditAmount(plan: CatalogPlan) {
+  const entitlement = plan.entitlements.find(
+    (item) => item.key === "monthly_credits",
+  );
+  if (!entitlement) throw new Error(`Plan ${plan.key} has no monthly credit grant.`);
+  return creditAmountFromEntitlement(entitlement);
+}
+
 export function createMockBillingApi(
   initial?: Partial<AccountResponse>,
 ): BillingApi {
+  const initialBalance = creditAmountFromDecimal("214");
+  const starterGrant = creditAmountFromDecimal("300");
   let account: AccountResponse = {
     account_id: "00000000-0000-0000-0000-000000000001",
     transition_policy: catalog.transition_policy,
@@ -35,8 +50,11 @@ export function createMockBillingApi(
     subscription_status: "active",
     current_period_end: futureIso(21),
     credits: {
-      balance: 214,
-      grant_amount: 300,
+      balance: initialBalance.decimal,
+      balance_atoms: initialBalance.atoms,
+      grant_amount: starterGrant.decimal,
+      grant_amount_atoms: starterGrant.atoms,
+      scale: CREDIT_SCALE,
       next_grant_at: futureIso(21),
     },
     entitlements: entitlementsFor("starter"),
@@ -96,6 +114,8 @@ export function createMockBillingApi(
       amount_due_now: timing === "immediate" ? targetPrice.unit_amount : 0,
       credit_applied: creditApplied,
       entitlement_credit_delta: null,
+      entitlement_credit_delta_atoms: null,
+      credit_scale: CREDIT_SCALE,
       next_invoice_amount: targetPrice.unit_amount,
     };
   }
@@ -115,6 +135,7 @@ export function createMockBillingApi(
     },
     async createCheckout(input) {
       const target = plan(input.plan_key);
+      const targetCredits = planCreditAmount(target);
       pendingProjection = {
         ...account,
         plan_key: target.key,
@@ -122,8 +143,11 @@ export function createMockBillingApi(
         subscription_status: "active",
         current_period_end: futureIso(input.interval === "year" ? 365 : 30),
         credits: {
-          balance: Number(target.entitlements[0]?.value ?? 0),
-          grant_amount: Number(target.entitlements[0]?.value ?? 0),
+          balance: targetCredits.decimal,
+          balance_atoms: targetCredits.atoms,
+          grant_amount: targetCredits.decimal,
+          grant_amount_atoms: targetCredits.atoms,
+          scale: targetCredits.scale,
           next_grant_at: futureIso(30),
         },
         entitlements: target.entitlements,
@@ -151,6 +175,7 @@ export function createMockBillingApi(
       const result = previews.get(preview_id);
       if (!result) throw new Error("Demo preview expired. Request a new preview.");
       const target = plan(result.target_plan_key);
+      const targetCredits = planCreditAmount(target);
       if (result.timing === "immediate") {
         pendingProjection = {
           ...account,
@@ -162,7 +187,8 @@ export function createMockBillingApi(
           entitlements_enforceable: true,
           credits: {
             ...account.credits,
-            grant_amount: Number(target.entitlements[0]?.value ?? 0),
+            grant_amount: targetCredits.decimal,
+            grant_amount_atoms: targetCredits.atoms,
           },
           pending_change: null,
         };
@@ -200,6 +226,7 @@ export function demoAccount(
   interval: BillingInterval = "month",
 ): AccountResponse {
   const selected = plans.find((plan) => plan.key === planKey) ?? plans[0];
+  const selectedCredits = planCreditAmount(selected);
   return {
     account_id: "00000000-0000-0000-0000-000000000001",
     transition_policy: catalog.transition_policy,
@@ -208,8 +235,11 @@ export function demoAccount(
     subscription_status: "active",
     current_period_end: futureIso(21),
     credits: {
-      balance: Number(selected.entitlements[0]?.value ?? 0),
-      grant_amount: Number(selected.entitlements[0]?.value ?? 0),
+      balance: selectedCredits.decimal,
+      balance_atoms: selectedCredits.atoms,
+      grant_amount: selectedCredits.decimal,
+      grant_amount_atoms: selectedCredits.atoms,
+      scale: selectedCredits.scale,
       next_grant_at: futureIso(21),
     },
     entitlements: selected.entitlements,

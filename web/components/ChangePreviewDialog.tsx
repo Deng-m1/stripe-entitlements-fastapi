@@ -1,6 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import {
+  formatCreditDecimal,
+  parseExactCreditAmount,
+} from "@/lib/credit-amount";
 import { formatDate, formatMoney } from "@/lib/money";
 import type { ChangePreview } from "@/lib/types";
 
@@ -59,6 +63,14 @@ export function ChangePreviewDialog({
   const immediate = preview.timing === "immediate";
   const proratedDelta =
     preview.settlement_mode === "current_period_prorated_delta";
+  const exactCreditDelta =
+    preview.entitlement_credit_delta === null
+      ? null
+      : parseExactCreditAmount(
+          preview.entitlement_credit_delta,
+          preview.entitlement_credit_delta_atoms,
+          preview.credit_scale,
+        );
   const dialogRef = useRef<HTMLElement>(null);
   const busyRef = useRef(busy);
   const onCancelRef = useRef(onCancel);
@@ -168,7 +180,10 @@ export function ChangePreviewDialog({
               Your current billing-period end stays unchanged. Stripe credits the
               unused source tier and charges the target tier for the same remaining
               time. After the paid Invoice is verified, the server adds exactly {" "}
-              {(preview.entitlement_credit_delta ?? 0).toLocaleString()} credits—the
+              {exactCreditDelta
+                ? formatCreditDecimal(exactCreditDelta.decimal)
+                : "—"}{" "}
+              credits—the
               catalog entitlement difference, not a credit amount inferred from cash.
             </p>
           </div>

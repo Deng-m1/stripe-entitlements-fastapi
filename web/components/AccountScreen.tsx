@@ -4,6 +4,11 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ErrorState, LoadingState } from "@/components/AsyncState";
 import {
+  creditAmountFromEntitlement,
+  formatCreditDecimal,
+  isZeroCreditDecimal,
+} from "@/lib/credit-amount";
+import {
   completeIdempotentIntent,
   idempotencyKeyForIntent,
 } from "@/lib/idempotency";
@@ -250,9 +255,12 @@ export function AccountScreen({
 
         <section className="account-card">
           <p className="eyebrow">Credits</p>
-          <p className="credit-balance">{account.credits.balance.toLocaleString()}</p>
+          <p className="credit-balance">
+            {formatCreditDecimal(account.credits.balance)}
+          </p>
           <p>available credits</p>
-          {account.credits.balance === 0 && !account.credits.next_grant_at ? (
+          {isZeroCreditDecimal(account.credits.balance) &&
+          !account.credits.next_grant_at ? (
             <p>
               No grant is scheduled. Credit grants start with a paid subscription
               period and are recorded with database-enforced idempotency.
@@ -261,7 +269,7 @@ export function AccountScreen({
           <dl className="fact-list">
             <div>
               <dt>Grant amount</dt>
-              <dd>{account.credits.grant_amount.toLocaleString()}</dd>
+              <dd>{formatCreditDecimal(account.credits.grant_amount)}</dd>
             </div>
             <div>
               <dt>Next grant</dt>
@@ -348,7 +356,13 @@ function EntitlementCard({ entitlement }: { entitlement: Entitlement }) {
           ? entitlement.value
             ? "Included"
             : "Not included"
-          : String(entitlement.value)}{" "}
+          : entitlement.key === "monthly_credits"
+            ? formatCreditDecimal(
+                creditAmountFromEntitlement(entitlement).decimal,
+              )
+            : typeof entitlement.value === "number"
+              ? entitlement.value.toLocaleString("en-US")
+              : String(entitlement.value)}{" "}
         {entitlement.unit ?? ""}
       </strong>
       <small>{entitlement.key}</small>

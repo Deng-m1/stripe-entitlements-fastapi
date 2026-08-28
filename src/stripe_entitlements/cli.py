@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 import asyncpg
 
+from . import __version__
 from .annual import AnnualGrantService
 from .catalog import PlanCatalog
 from .config import Settings, get_settings
 from .database import Database
+from .doctor import run_doctor
 from .processor import EventProcessor
 from .reconcile import ReconciliationService
 from .resources import default_migration_directory
@@ -139,11 +142,47 @@ async def _reconcile() -> None:
         await db.close()
 
 
+async def _doctor(*, json_output: bool = False, stripe_network: bool = False) -> int:
+    report = await run_doctor(stripe_network=stripe_network)
+    if json_output:
+        print(json.dumps(report.as_dict(), ensure_ascii=False, sort_keys=True))
+    else:
+        labels = {"pass": "PASS", "warning": "WARN", "fail": "FAIL", "skipped": "SKIP"}
+        for check in report.checks:
+            print(f"{labels[check.status]:4} {check.name}: {check.summary}")
+        summary = report.as_dict()["summary"]
+        assert isinstance(summary, dict)
+        print(
+            "doctor summary: "
+            f"pass={summary['pass']} warning={summary['warning']} "
+            f"fail={summary['fail']} skipped={summary['skipped']}"
+        )
+    return 0 if report.ok else 1
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Stripe entitlements operations")
-    parser.add_argument("command", choices=["migrate", "grant-due", "reconcile"])
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("migrate")
+    subparsers.add_parser("grant-due")
+    subparsers.add_parser("reconcile")
+    doctor_parser = subparsers.add_parser("doctor")
+    doctor_parser.add_argument("--json", action="store_true", dest="json_output")
+    doctor_parser.add_argument(
+        "--stripe-network",
+        action="store_true",
+        help="opt in to read-only Stripe Account and Portal retrieval",
+    )
     args = parser.parse_args()
     commands = {"migrate": _migrate, "grant-due": _grant_due, "reconcile": _reconcile}
+    if args.command == "doctor":
+        exit_code = asyncio.run(
+            _doctor(json_output=args.json_output, stripe_network=args.stripe_network)
+        )
+        if exit_code:
+            raise SystemExit(exit_code)
+        return
     asyncio.run(commands[args.command]())
 
 

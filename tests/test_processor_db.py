@@ -19,6 +19,7 @@ from tests.builders import (
     refunded_charge,
     subscription_event,
 )
+from tests.credit_helpers import STARTER_CREDITS, atoms
 
 
 @pytest.mark.parametrize("drift", ["amount", "quantity", "currency"])
@@ -111,7 +112,7 @@ async def test_paid_invoice_treats_product_line_metadata_as_advisory(
             "select credits_balance from billing_accounts where id=$1::uuid", account_id
         )
     assert result.outcome == "handled"
-    assert balance == 300
+    assert balance == STARTER_CREDITS
 
 
 @pytest.mark.parametrize("customer", [None, 123, " padded ", "zero\u200bwidth"])
@@ -146,7 +147,7 @@ async def test_paid_invoice_can_use_an_archived_but_still_identified_price(
 
     result = await processor.process(payload)
     assert result.outcome == "handled"
-    assert (await _account(pool, account_id))["credits_balance"] == 300
+    assert (await _account(pool, account_id))["credits_balance"] == STARTER_CREDITS
 
 
 @pytest.mark.parametrize(
@@ -390,7 +391,7 @@ async def test_single_paid_invoice_payment_shape_is_supported(
         "has_more": False,
     }
     assert (await processor.process(payload)).outcome == "handled"
-    assert (await _account(pool, account_id))["credits_balance"] == 300
+    assert (await _account(pool, account_id))["credits_balance"] == STARTER_CREDITS
 
 
 async def test_incomplete_invoice_line_page_fails_closed(
@@ -598,10 +599,10 @@ async def test_paid_invoice_grants_from_invoice_snapshot(
     account = await _account(pool, account_id)
     assert (account["plan_key"], account["plan_interval"]) == ("starter", "month")
     assert account["subscription_status"] == "active"
-    assert account["credits_balance"] == 300
+    assert account["credits_balance"] == STARTER_CREDITS
     rows = await _ledger(pool, account_id)
     assert [(row["reason"], row["delta"], row["grant_slot"]) for row in rows] == [
-        ("subscription_grant", 300, 1)
+        ("subscription_grant", STARTER_CREDITS, 1)
     ]
 
 
@@ -674,7 +675,9 @@ async def test_new_cycle_resets_credits_instead_of_accumulating(
     await processor.process(paid_invoice(account_id, invoice_id="in_cycle_1"))
     async with pool.acquire() as conn:
         await conn.execute(
-            "update billing_accounts set credits_balance=125 where id=$1::uuid", account_id
+            "update billing_accounts set credits_balance=$2 where id=$1::uuid",
+            account_id,
+            atoms(125),
         )
     await processor.process(
         paid_invoice(
@@ -686,9 +689,9 @@ async def test_new_cycle_resets_credits_instead_of_accumulating(
         )
     )
     account = await _account(pool, account_id)
-    assert account["credits_balance"] == 300
+    assert account["credits_balance"] == STARTER_CREDITS
     rows = await _ledger(pool, account_id)
-    assert rows[-1]["delta"] == 175
+    assert rows[-1]["delta"] == atoms(175)
 
 
 async def test_unknown_price_fails_closed_and_records_incident(
@@ -757,7 +760,7 @@ async def test_multi_payment_clawback_shape_is_incident_only(
                  where kind='unsupported_invoice_payment_shape'"""
         )
     assert result.outcome == "ignored"
-    assert account["credits_balance"] == 300
+    assert account["credits_balance"] == STARTER_CREDITS
     assert state is not None and tuple(state) == (0, False, False)
     assert incident == 1
 
@@ -792,7 +795,7 @@ async def test_ambiguous_payment_intent_clawback_is_not_misclassified_as_missing
                  where invoice_id='in_untrusted_first_mapping'"""
         )
     assert result.outcome == "ignored"
-    assert account["credits_balance"] == 300
+    assert account["credits_balance"] == STARTER_CREDITS
     assert unsupported == 1
     assert missing == 0
     assert invoice_rows == 0
@@ -871,7 +874,7 @@ async def test_malformed_clawback_shape_is_incident_only(
             "select count(*) from billing_incidents where kind='invalid_clawback_shape'"
         )
     assert result.outcome == "ignored"
-    assert account is not None and account["credits_balance"] == 300
+    assert account is not None and account["credits_balance"] == STARTER_CREDITS
     assert state is not None and tuple(state) == (0, False, False)
     assert incident == 1
 
@@ -883,8 +886,11 @@ async def test_partial_refund_after_paid_claws_cumulative_ratio(
     await processor.process(paid_invoice(account_id))
     result = await processor.process(refunded_charge(amount_refunded=950))
     assert result.outcome == "handled"
-    assert (await _account(pool, account_id))["credits_balance"] == 150
-    assert [row["delta"] for row in await _ledger(pool, account_id)] == [300, -150]
+    assert (await _account(pool, account_id))["credits_balance"] == atoms(150)
+    assert [row["delta"] for row in await _ledger(pool, account_id)] == [
+        STARTER_CREDITS,
+        -atoms(150),
+    ]
 
 
 async def test_partial_refund_debt_absorbs_same_epoch_usage_refund(
@@ -893,17 +899,17 @@ async def test_partial_refund_debt_absorbs_same_epoch_usage_refund(
     account_id = await make_account()
     await processor.process(paid_invoice(account_id, invoice_id="in_spent_partial"))
     credits = CreditService(pool)
-    assert (await credits.charge(account_id, 300, "spent-before-refund")).balance == 0
+    assert (await credits.charge(account_id, 300, "spent-before-refund")).balance.atoms == 0
     await processor.process(refunded_charge(invoice_id="in_spent_partial", amount_refunded=950))
     refunded = await credits.refund("spent-before-refund")
-    assert refunded.balance == 150
+    assert refunded.balance.atoms == atoms(150)
     async with pool.acquire() as conn:
         debt = await conn.fetchrow(
             """select target_units,collected_units from billing_clawback_debts
                  where account_id=$1::uuid and stripe_invoice_id='in_spent_partial'""",
             account_id,
         )
-    assert debt is not None and tuple(debt) == (150, 150)
+    assert debt is not None and tuple(debt) == (atoms(150), atoms(150))
 
 
 async def test_cross_account_refund_cannot_mutate_invoice_or_balance(
@@ -944,7 +950,7 @@ async def test_cross_account_refund_cannot_mutate_invoice_or_balance(
             """select count(*) from billing_incidents
                  where kind='clawback_invoice_identity_conflict'"""
         )
-    assert owner is not None and owner["credits_balance"] == 300
+    assert owner is not None and owner["credits_balance"] == STARTER_CREDITS
     assert other is not None and other["credits_balance"] == 0
     assert state is not None
     assert (str(state["account_id"]), *tuple(state)[1:]) == (
@@ -1046,7 +1052,7 @@ async def test_concurrent_paid_and_cross_account_clawback_first_claim_is_atomic(
     assert state is not None and paid_account is not None and refund_account is not None
     if str(state["account_id"]) == paid_owner:
         assert tuple(state)[1:] == (1900, 0, False)
-        assert tuple(paid_account) == ("starter", 300)
+        assert tuple(paid_account) == ("starter", STARTER_CREDITS)
     else:
         assert str(state["account_id"]) == refund_owner
         assert tuple(state)[1:] == (4900, 4900, True)
@@ -1064,7 +1070,7 @@ async def test_partial_refund_order_converges(
     for payload in [refund, paid] if refund_first else [paid, refund]:
         await processor.process(payload)
     account = await _account(pool, account_id)
-    assert account["credits_balance"] == 225
+    assert account["credits_balance"] == atoms(225)
 
 
 @pytest.mark.parametrize("refund_first", [False, True])
@@ -1097,9 +1103,13 @@ async def test_multiple_partial_refunds_use_cumulative_amount(
     await processor.process(
         refunded_charge(invoice_id="in_multi_refund", amount_refunded=950, event_id="evt_refund_50")
     )
-    assert (await _account(pool, account_id))["credits_balance"] == 150
+    assert (await _account(pool, account_id))["credits_balance"] == atoms(150)
     rows = await _ledger(pool, account_id)
-    assert [row["delta"] for row in rows] == [300, -75, -75]
+    assert [row["delta"] for row in rows] == [
+        STARTER_CREDITS,
+        -atoms(75),
+        -atoms(75),
+    ]
 
 
 @pytest.mark.parametrize("dispute_first", [False, True])
@@ -1185,7 +1195,10 @@ async def test_payment_failure_with_unmodeled_billing_reason_cannot_freeze_accou
                  where kind='unexpected_payment_failed_reason'"""
         )
     assert result.outcome == "ignored"
-    assert (account["subscription_status"], account["credits_balance"]) == ("active", 300)
+    assert (account["subscription_status"], account["credits_balance"]) == (
+        "active",
+        STARTER_CREDITS,
+    )
     assert incident == 1
 
 
@@ -1564,8 +1577,8 @@ async def test_unbound_subscription_update_cannot_authorize_checkoutless_paid_in
 @pytest.mark.parametrize(
     ("kind", "expected"),
     [
-        ("payment_failed", ("sub_test", "starter", "past_due", 300)),
-        ("subscription_updated", ("sub_test", "starter", "active", 300)),
+        ("payment_failed", ("sub_test", "starter", "past_due", STARTER_CREDITS)),
+        ("subscription_updated", ("sub_test", "starter", "active", STARTER_CREDITS)),
         ("subscription_deleted", (None, "free", "canceled", 0)),
     ],
 )
@@ -1669,7 +1682,7 @@ async def test_subscription_events_require_customer_identity(
         account["plan_key"],
         account["subscription_status"],
         account["credits_balance"],
-    ) == ("sub_test", "starter", "active", 300)
+    ) == ("sub_test", "starter", "active", STARTER_CREDITS)
     assert incidents == 1
 
 
@@ -1691,7 +1704,10 @@ async def test_wrong_subscription_payment_failure_cannot_freeze_paid_access(
                  where kind='payment_failed_subscription_identity_conflict'"""
         )
     assert result.outcome == "ignored"
-    assert (account["subscription_status"], account["credits_balance"]) == ("active", 300)
+    assert (account["subscription_status"], account["credits_balance"]) == (
+        "active",
+        STARTER_CREDITS,
+    )
     assert incident == 1
 
 
@@ -1862,7 +1878,7 @@ async def test_deleted_annual_subscription_can_start_new_monthly_checkout_same_s
         account["plan_interval"],
         account["subscription_status"],
         account["credits_balance"],
-    ) == ("sub_replacement", "starter", "month", "active", 300)
+    ) == ("sub_replacement", "starter", "month", "active", STARTER_CREDITS)
 
 
 async def test_unhandled_event_is_audited_without_side_effects(
@@ -1934,4 +1950,4 @@ async def test_ledger_delta_sum_matches_current_balance(
                  from billing_accounts a where id=$1::uuid""",
             account_id,
         )
-    assert balance == ledger_sum == 225
+    assert balance == ledger_sum == atoms(225)

@@ -18,6 +18,7 @@ from stripe_entitlements.catalog import PlanCatalog
 from stripe_entitlements.plan_changes import PlanChangeCoordinator
 from stripe_entitlements.processor import EventProcessor
 from stripe_entitlements.stripe_gateway import StripeGateway
+from tests.credit_helpers import PRO_CREDITS, STARTER_CREDITS, atoms
 
 pytestmark = pytest.mark.real_stripe
 STRIPE_API_VERSION = "2026-06-24.dahlia"
@@ -555,7 +556,7 @@ async def test_real_paid_and_refund_events_converge_in_postgres(
                 await conn.fetchval(
                     "select credits_balance from billing_accounts where id=$1::uuid", account_id
                 )
-                == 300
+                == STARTER_CREDITS
             )
 
         charge_id = await _latest_charge_for_invoice(key, invoice_id)
@@ -565,12 +566,9 @@ async def test_real_paid_and_refund_events_converge_in_postgres(
         refund_result = await processor.process(prepared_refund)
         assert refund_result.outcome == "handled"
         async with pool.acquire() as conn:
-            assert (
-                await conn.fetchval(
-                    "select credits_balance from billing_accounts where id=$1::uuid", account_id
-                )
-                == 150
-            )
+            assert await conn.fetchval(
+                "select credits_balance from billing_accounts where id=$1::uuid", account_id
+            ) == atoms(150)
     finally:
         await _cleanup_standard_objects(
             cleanup_errors,
@@ -722,7 +720,7 @@ async def test_real_midcycle_upgrade_is_full_price_and_webhook_authoritative(
                 preview.change_id,
             )
         assert account is not None
-        assert tuple(account) == ("pro", "month", 1000)
+        assert tuple(account) == ("pro", "month", PRO_CREDITS)
         assert change_status == "completed"
     finally:
         await _cleanup_standard_objects(
@@ -854,7 +852,7 @@ async def test_real_prorated_delta_upgrade_and_refund_preserve_funding_lineage(
         )
         assert preview.decision.timing == "immediate"
         assert preview.transition_policy == "prorated_delta"
-        assert preview.entitlement_credit_delta == 700
+        assert preview.entitlement_credit_delta == PRO_CREDITS - STARTER_CREDITS
         assert preview.estimated_amount_due is not None
         assert preview.estimated_amount_due > 0
         assert preview.estimated_credit_applied is not None
@@ -887,9 +885,9 @@ async def test_real_prorated_delta_upgrade_and_refund_preserve_funding_lineage(
                 upgrade_invoice_id,
             )
         assert account is not None and allocation is not None
-        assert tuple(account) == ("pro", "month", 1000, 1, False)
+        assert tuple(account) == ("pro", "month", PRO_CREDITS, 1, False)
         assert allocation["source_invoice_id"] == initial_invoice_id
-        assert allocation["entitlement_delta"] == 700
+        assert allocation["entitlement_delta"] == PRO_CREDITS - STARTER_CREDITS
         assert allocation["amount_paid"] == preview.estimated_amount_due
 
         charge_id = await _latest_charge_for_invoice(key, upgrade_invoice_id)
@@ -913,8 +911,11 @@ async def test_real_prorated_delta_upgrade_and_refund_preserve_funding_lineage(
                 upgrade_invoice_id,
             )
         assert reverted is not None and allocation_status is not None
-        assert tuple(reverted) == ("starter", "month", 300, 2, False)
-        assert tuple(allocation_status) == ("closed", 700)
+        assert tuple(reverted) == ("starter", "month", STARTER_CREDITS, 2, False)
+        assert tuple(allocation_status) == (
+            "closed",
+            PRO_CREDITS - STARTER_CREDITS,
+        )
     finally:
         await _cleanup_standard_objects(
             cleanup_errors,
@@ -1055,7 +1056,7 @@ async def test_real_failed_immediate_change_keeps_old_entitlement(
             assert preview.estimated_amount_due > 0
             assert preview.estimated_credit_applied is not None
             assert preview.estimated_credit_applied > 0
-            assert preview.entitlement_credit_delta == 700
+            assert preview.entitlement_credit_delta == PRO_CREDITS - STARTER_CREDITS
         else:
             assert preview.estimated_amount_due == 4900
             assert preview.estimated_credit_applied == 0
@@ -1132,7 +1133,7 @@ async def test_real_failed_immediate_change_keeps_old_entitlement(
             "starter",
             "month",
             "active",
-            300,
+            STARTER_CREDITS,
             1,
             False,
             period_end,
@@ -1425,7 +1426,7 @@ async def test_real_test_clock_annual_slots_downtime_and_renewal(
             "starter",
             "year",
             "active",
-            300,
+            STARTER_CREDITS,
             1,
             1,
             initial_invoice_id,
@@ -1453,7 +1454,13 @@ async def test_real_test_clock_annual_slots_downtime_and_renewal(
                 account_id,
             )
         assert first_month_account is not None
-        assert tuple(first_month_account)[:5] == ("active", 300, 2, 2, False)
+        assert tuple(first_month_account)[:5] == (
+            "active",
+            STARTER_CREDITS,
+            2,
+            2,
+            False,
+        )
         assert first_month_account["credit_expires_at"] > datetime.fromtimestamp(
             first_month_target, tz=UTC
         )
@@ -1501,7 +1508,7 @@ async def test_real_test_clock_annual_slots_downtime_and_renewal(
         assert downtime_account is not None
         assert tuple(downtime_account)[:5] == (
             "active",
-            300,
+            STARTER_CREDITS,
             3,
             expected_jump_slot,
             False,
@@ -1540,7 +1547,7 @@ async def test_real_test_clock_annual_slots_downtime_and_renewal(
             "starter",
             "year",
             "active",
-            300,
+            STARTER_CREDITS,
             4,
             1,
             renewal_invoice_id,

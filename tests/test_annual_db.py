@@ -9,9 +9,11 @@ import pytest
 
 from stripe_entitlements.annual import AnnualGrantService
 from stripe_entitlements.catalog import PlanCatalog
+from stripe_entitlements.credits import CreditService
 from stripe_entitlements.processor import EventProcessor
 from stripe_entitlements.types import SubscriptionSnapshot
 from tests.builders import paid_invoice, refunded_charge, resolved_price
+from tests.credit_helpers import STARTER_CREDITS, atoms, catalog_with_credits
 
 ANCHOR = int(datetime(2026, 1, 1, tzinfo=UTC).timestamp())
 PERIOD_END = datetime(2027, 1, 1, tzinfo=UTC)
@@ -68,6 +70,61 @@ async def test_annual_invoice_issues_only_first_month(
     assert account["annual_grants_issued"] == 1
     assert account["annual_grants_allowed"] == 12
     assert [row["grant_slot"] for row in slots] == [1]
+
+
+async def test_fractional_annual_slot_resets_to_exact_catalog_atoms(
+    pool: asyncpg.Pool,
+    catalog: PlanCatalog,
+    make_account,
+) -> None:
+    fractional_catalog = catalog_with_credits(
+        catalog,
+        starter="300.000001",
+        pro="1000.000003",
+        ultra="4000.000005",
+    )
+    processor = EventProcessor(
+        pool,
+        fractional_catalog,
+        "example-entitlements",
+        expected_api_version="2026-06-24.dahlia",
+    )
+    account_id = await make_account()
+    await _annual_setup(processor, account_id, invoice_id="in_fractional_annual")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "update billing_accounts set credit_expires_at=now()+interval '1 hour' "
+            "where id=$1::uuid",
+            account_id,
+        )
+    charged = await CreditService(pool).charge(
+        account_id,
+        "0.125",
+        "fractional-annual-use",
+    )
+    assert charged.balance.atoms == atoms("299.875001")
+
+    result = await AnnualGrantService(pool, fractional_catalog, processor).grant_due(
+        account_id,
+        datetime(2026, 2, 2, tzinfo=UTC),
+        _snapshot(),
+    )
+    assert result.outcome == "handled"
+    async with pool.acquire() as conn:
+        account = await conn.fetchrow(
+            "select credits_balance,annual_grants_issued from billing_accounts where id=$1::uuid",
+            account_id,
+        )
+        slot = await conn.fetchrow(
+            "select delta,balance_after,entitlement_units from credit_ledger "
+            "where stripe_invoice_id='in_fractional_annual' and grant_slot=2"
+        )
+    assert account is not None and tuple(account) == (atoms("300.000001"), 2)
+    assert slot is not None and tuple(slot) == (
+        atoms("0.125"),
+        atoms("300.000001"),
+        atoms("300.000001"),
+    )
 
 
 async def test_many_workers_issue_one_due_slot(
@@ -322,7 +379,7 @@ async def test_partial_annual_refund_reduces_slots_but_keeps_full_allowed_grants
         )
     assert account is not None
     assert account["annual_grants_allowed"] == 6
-    assert account["credits_balance"] == 300
+    assert account["credits_balance"] == STARTER_CREDITS
 
 
 @pytest.mark.parametrize("state", ["revoked", "expired"])
@@ -441,7 +498,7 @@ async def test_full_annual_refund_business_replay_does_not_create_new_epoch_debt
             "where invoice_id='in_annual_closed_replay'"
         )
     assert account is not None and tuple(account) == (0, 2, True)
-    assert [tuple(row) for row in debts] == [(1, 300, 300)]
+    assert [tuple(row) for row in debts] == [(1, STARTER_CREDITS, STARTER_CREDITS)]
     assert closure_applied is True
 
 
@@ -483,7 +540,7 @@ async def test_annual_partial_refund_has_one_slot_dimension_only(
         assert account["credits_balance"] == 0
     else:
         assert account["entitlement_revoked"] is False
-        assert account["credits_balance"] == 300
+        assert account["credits_balance"] == STARTER_CREDITS
 
 
 @pytest.mark.parametrize("refund_first", [False, True])

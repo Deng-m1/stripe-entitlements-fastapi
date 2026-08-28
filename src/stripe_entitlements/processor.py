@@ -12,6 +12,7 @@ import asyncpg
 from .bounds import POSTGRES_BIGINT_MAX
 from .catalog import Plan, PlanCatalog
 from .clawbacks import collect_clawback_debts
+from .credit_amount import checked_add_atoms, credit_decimal
 from .event_audit import redacted_event_snapshot
 from .invoice_policy import (
     has_unsupported_invoice_adjustments,
@@ -967,7 +968,7 @@ class EventProcessor:
             return ProcessResult("ignored", "invoice is owned by another account", account_id)
         closed = bool(state["fully_refunded"] or state["disputed"])
         old_balance = int(account["credits_balance"])
-        credits = plan.monthly_credits
+        credits = plan.monthly_credits.atoms
         if interval == "year":
             funded_allowed = (
                 0
@@ -1214,7 +1215,9 @@ class EventProcessor:
             return ProcessResult("ignored", str(exc), account_id)
 
         expected_delta = int(transition["expected_credit_delta"] or 0)
-        actual_delta = shape.target_plan.monthly_credits - shape.source_plan.monthly_credits
+        actual_delta = (
+            shape.target_plan.monthly_credits.atoms - shape.source_plan.monthly_credits.atoms
+        )
         if expected_delta <= 0 or actual_delta != expected_delta:
             await self._incident(
                 conn,
@@ -1223,7 +1226,10 @@ class EventProcessor:
                 dedupe_key=invoice_id,
                 invoice_id=invoice_id,
                 account_id=account["id"],
-                detail={"expected_delta": expected_delta, "actual_delta": actual_delta},
+                detail={
+                    "expected_delta_atoms": expected_delta,
+                    "actual_delta_atoms": actual_delta,
+                },
             )
             return ProcessResult("ignored", "entitlement delta does not match intent", account_id)
 
@@ -1374,7 +1380,9 @@ class EventProcessor:
             if projection_wins
             else (int(account["event_created"]), int(account["event_rank"]))
         )
-        new_balance = old_balance + expected_delta
+        new_balance = checked_add_atoms(
+            old_balance, expected_delta, field="prorated upgrade credit balance"
+        )
         await conn.execute(
             """update billing_accounts set
                    stripe_customer_id=coalesce(stripe_customer_id,$2),
@@ -2135,7 +2143,7 @@ class EventProcessor:
                      where invoice_id=$1""",
                 invoice_id,
             )
-        return ProcessResult("handled", f"removed {removed} credits", account_id)
+        return ProcessResult("handled", f"removed {credit_decimal(removed)} credits", account_id)
 
     @staticmethod
     async def _invoice_in_active_lineage(

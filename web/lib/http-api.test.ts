@@ -3,6 +3,8 @@ import {
   createHttpBillingApi,
   normalizeBillingApiBaseUrl,
 } from "@/lib/http-api";
+import { CREDIT_SCALE, creditAmountFromAtoms } from "@/lib/credit-amount";
+import { demoAccount, demoCatalog } from "@/lib/mock-api";
 import type { AuthAdapter } from "@/lib/auth";
 
 const auth: AuthAdapter = {
@@ -10,6 +12,25 @@ const auth: AuthAdapter = {
   async getAccessToken() {
     return "verified-session-token";
   },
+};
+
+const validPreview = {
+  preview_id: "preview-1",
+  current_plan_key: "starter",
+  current_interval: "month",
+  target_plan_key: "pro",
+  target_interval: "year",
+  timing: "immediate",
+  transition_policy: "full_period_reset",
+  settlement_mode: "new_period_full_price",
+  effective_at: "2026-07-31T00:00:00Z",
+  currency: "USD",
+  amount_due_now: 100,
+  credit_applied: 0,
+  entitlement_credit_delta: null,
+  entitlement_credit_delta_atoms: null,
+  credit_scale: CREDIT_SCALE,
+  next_invoice_amount: 35300,
 };
 
 describe("HTTP billing API", () => {
@@ -22,19 +43,7 @@ describe("HTTP billing API", () => {
         JSON.stringify(
           kind === "checkout"
             ? { url: "https://checkout.stripe.test/session" }
-            : {
-                preview_id: "preview-1",
-                current_plan_key: "starter",
-                current_interval: "month",
-                target_plan_key: "pro",
-                target_interval: "year",
-                timing: "immediate",
-                effective_at: "2026-07-31T00:00:00Z",
-                currency: "USD",
-                amount_due_now: 100,
-                credit_applied: 0,
-                next_invoice_amount: 35300,
-              },
+            : validPreview,
         ),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
@@ -109,12 +118,20 @@ describe("HTTP billing API", () => {
   });
 
   it("uses the backend's six canonical API paths", async () => {
-    const fetchImpl = vi.fn(async () =>
-      new Response(JSON.stringify({}), {
+    const fetchImpl = vi.fn(async (request: RequestInfo | URL) => {
+      const path = new URL(request.toString()).pathname;
+      const body = path.endsWith("/api/catalog")
+        ? demoCatalog()
+        : path.endsWith("/api/account")
+          ? demoAccount()
+          : path.endsWith("/api/billing/change/preview")
+            ? validPreview
+            : {};
+      return new Response(JSON.stringify(body), {
         status: 200,
         headers: { "Content-Type": "application/json" },
-      }),
-    );
+      });
+    });
     const api = createHttpBillingApi({
       baseUrl: "https://billing-api.example/root/",
       auth,
@@ -236,6 +253,56 @@ describe("HTTP billing API", () => {
     });
   });
 
+  it("preserves an exact fractional entitlement delta in plan previews", async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          ...validPreview,
+          entitlement_credit_delta: "0.000001",
+          entitlement_credit_delta_atoms: "1",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    const api = createHttpBillingApi({
+      baseUrl: "https://billing-api.example",
+      auth,
+      fetchImpl,
+    });
+
+    const result = await api.previewPlanChange({
+      plan_key: "pro",
+      interval: "month",
+    });
+    expect(result.entitlement_credit_delta).toBe("0.000001");
+    expect(result.entitlement_credit_delta_atoms).toBe("1");
+  });
+
+  it("rejects a numeric entitlement delta from the production API", async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          ...validPreview,
+          entitlement_credit_delta: 0.000001,
+          entitlement_credit_delta_atoms: "1",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    const api = createHttpBillingApi({
+      baseUrl: "https://billing-api.example",
+      auth,
+      fetchImpl,
+    });
+
+    await expect(
+      api.previewPlanChange({ plan_key: "pro", interval: "month" }),
+    ).rejects.toMatchObject({
+      message: "Billing API returned an invalid exact-credit contract.",
+      status: 502,
+    });
+  });
+
   it("does not reflect network exception details", async () => {
     const fetchImpl = vi.fn(async () => {
       throw new Error("sk_test_should_never_be_rendered");
@@ -248,6 +315,59 @@ describe("HTTP billing API", () => {
     await expect(api.getAccount()).rejects.toMatchObject({
       message: "Billing API is temporarily unavailable.",
       status: 503,
+    });
+  });
+
+  it("preserves exact account atoms beyond Number.MAX_SAFE_INTEGER", async () => {
+    const exact = creditAmountFromAtoms("9007199254740993");
+    const account = demoAccount();
+    account.credits = {
+      ...account.credits,
+      balance: exact.decimal,
+      balance_atoms: exact.atoms,
+      scale: exact.scale,
+    };
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify(account), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const api = createHttpBillingApi({
+      baseUrl: "https://billing-api.example",
+      auth,
+      fetchImpl,
+    });
+
+    const result = await api.getAccount();
+    expect(result.credits.balance).toBe("9007199254.740993");
+    expect(result.credits.balance_atoms).toBe("9007199254740993");
+  });
+
+  it.each([
+    ["legacy numeric balance", { balance: 300 }],
+    ["mismatched atoms", { balance: "300.5", balance_atoms: "300500001" }],
+    ["wrong scale", { scale: 1000 }],
+  ])("rejects an invalid production credit response: %s", async (_label, override) => {
+    const account = demoAccount();
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          ...account,
+          credits: { ...account.credits, ...override },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    const api = createHttpBillingApi({
+      baseUrl: "https://billing-api.example",
+      auth,
+      fetchImpl,
+    });
+
+    await expect(api.getAccount()).rejects.toMatchObject({
+      message: "Billing API returned an invalid exact-credit contract.",
+      status: 502,
     });
   });
 

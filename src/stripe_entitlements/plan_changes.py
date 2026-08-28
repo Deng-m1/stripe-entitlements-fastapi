@@ -547,7 +547,7 @@ class PlanChangeCoordinator:
                     raise PlanChangeUnavailableError(
                         "the active entitlement has no immutable funding invoice"
                     )
-                expected_credit_delta = target.monthly_credits - current.monthly_credits
+                expected_credit_delta = target.monthly_credits.atoms - current.monthly_credits.atoms
                 if expected_credit_delta <= 0:
                     raise PlanChangeConflictError(
                         "a prorated upgrade requires a positive entitlement delta"

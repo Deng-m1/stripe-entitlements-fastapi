@@ -17,6 +17,7 @@ from stripe_entitlements.plan_changes import (
     RemotePlanChange,
 )
 from tests.conftest import TEST_DSN
+from tests.credit_helpers import PRO_CREDITS, STARTER_CREDITS
 
 
 @pytest.fixture(autouse=True)
@@ -492,7 +493,7 @@ async def test_account_entitlements_fail_closed_without_database_clock(
             await conn.execute(
                 """update billing_accounts set plan_key='starter',plan_interval='month',
                        subscription_status='active',entitlement_revoked=false,
-                       credits_balance=300,credit_expires_at=now()+interval '1 hour'
+                       credits_balance=300000000,credit_expires_at=now()+interval '1 hour'
                      where id=$1::uuid""",
                 account["id"],
             )
@@ -581,13 +582,23 @@ async def test_http_contract_catalog_account_checkout_and_portal(
     assert entitlements["monthly_credits"] == {
         "key": "monthly_credits",
         "label": "Credits per monthly grant",
-        "value": 300,
+        "value": "300",
+        "value_atoms": str(STARTER_CREDITS),
+        "scale": 1_000_000,
         "unit": "credits",
     }
     assert entitlements["pdf_to_ppt"]["label"] == "PDF to PowerPoint"
     assert entitlements["max_file_mb"]["unit"] == "MB"
     assert entitlements["max_pages_per_job"]["unit"] == "pages"
     assert account.json()["plan_key"] == "free"
+    assert account.json()["credits"] == {
+        "balance": "0",
+        "balance_atoms": "0",
+        "grant_amount": "0",
+        "grant_amount_atoms": "0",
+        "scale": 1_000_000,
+        "next_grant_at": None,
+    }
     for response in (catalog, account, checkout, invalid_redirect, portal):
         assert response.headers["cache-control"] == "no-store"
         assert response.headers["pragma"] == "no-cache"
@@ -845,18 +856,20 @@ async def test_http_prorated_delta_contract_is_explicit_and_server_calculated(
             await conn.execute(
                 """update billing_accounts set stripe_customer_id='cus_api',
                      stripe_subscription_id='sub_api',plan_key='starter',plan_interval='month',
-                     subscription_status='active',credits_balance=300,grant_epoch=1,
+                     subscription_status='active',credits_balance=$3,grant_epoch=1,
                      current_period_end=$2,entitlement_period_end=$2,credit_expires_at=$2,
                      entitlement_revoked=false where id=$1""",
                 account["id"],
                 period_end,
+                STARTER_CREDITS,
             )
             await conn.execute(
                 """insert into credit_ledger(
                        account_id,delta,balance_after,entitlement_units,reason,grant_epoch,
                        stripe_invoice_id,grant_slot)
-                     values($1,300,300,300,'subscription_grant',1,'in_api_source',1)""",
+                     values($1,$2,$2,$2,'subscription_grant',1,'in_api_source',1)""",
                 account["id"],
+                STARTER_CREDITS,
             )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -885,7 +898,9 @@ async def test_http_prorated_delta_contract_is_explicit_and_server_calculated(
     assert body["settlement_mode"] == "current_period_prorated_delta"
     assert body["amount_due_now"] == 1500
     assert body["credit_applied"] == 950
-    assert body["entitlement_credit_delta"] == 700
+    assert body["entitlement_credit_delta"] == "700"
+    assert body["entitlement_credit_delta_atoms"] == str(PRO_CREDITS - STARTER_CREDITS)
+    assert body["credit_scale"] == 1_000_000
     assert confirm.status_code == 200, confirm.text
     assert confirm.json()["transition_policy"] == "prorated_delta"
     assert gateway.last_apply_kwargs is not None

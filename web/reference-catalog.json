@@ -6,7 +6,7 @@
       "description": "Core conversion tools for individual workflows.",
       "currency": "USD",
       "rank": 10,
-      "monthly_credits": 300,
+      "monthly_credits": "300",
       "month_usd": 19,
       "year_usd": 137,
       "features": ["pdf_to_ppt", "image_to_ppt"],
@@ -23,7 +23,7 @@
       "description": "Higher limits, batch conversion, and API access.",
       "currency": "USD",
       "rank": 20,
-      "monthly_credits": 1000,
+      "monthly_credits": "1000",
       "month_usd": 49,
       "year_usd": 353,
       "features": [
@@ -45,7 +45,7 @@
       "description": "Priority processing and high-volume automation limits.",
       "currency": "USD",
       "rank": 30,
-      "monthly_credits": 4000,
+      "monthly_credits": "4000",
       "month_usd": 149,
       "year_usd": 1073,
       "features": [

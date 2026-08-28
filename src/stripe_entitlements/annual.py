@@ -205,7 +205,7 @@ class AnnualGrantService:
                        annual_anchor + make_interval(months => ($4::smallint)::integer)),
                      updated_at=now() where id=$1""",
                 account["id"],
-                plan.monthly_credits,
+                plan.monthly_credits.atoms,
                 new_epoch,
                 target_slot,
             )
@@ -216,9 +216,9 @@ class AnnualGrantService:
                    values($1,$2,$3,$4,'subscription_grant',$5,$6,$7,$8)
                    """,
                 account["id"],
-                plan.monthly_credits - old_balance,
-                plan.monthly_credits,
-                plan.monthly_credits,
+                plan.monthly_credits.atoms - old_balance,
+                plan.monthly_credits.atoms,
+                plan.monthly_credits.atoms,
                 new_epoch,
                 event_id,
                 invoice_id,

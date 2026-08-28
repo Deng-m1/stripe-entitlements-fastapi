@@ -18,6 +18,7 @@ from tests.builders import (
     resolved_price,
     subscription_event,
 )
+from tests.credit_helpers import PRO_CREDITS, STARTER_CREDITS, atoms
 
 
 class FakeGateway:
@@ -210,7 +211,7 @@ async def test_reconcile_recovers_lost_paid_event_even_after_newer_local_failure
     assert row is not None
     assert (row["subscription_status"], row["credits_balance"], row["event_rank"]) == (
         "active",
-        300,
+        STARTER_CREDITS,
         20,
     )
     assert before <= row["event_created"] <= after
@@ -758,7 +759,7 @@ async def test_many_reconcilers_share_business_idempotency(
             await conn.fetchval(
                 "select credits_balance from billing_accounts where id=$1::uuid", account_id
             )
-            == 300
+            == STARTER_CREDITS
         )
         unresolved = await conn.fetchval(
             """select count(*) from billing_incidents
@@ -885,7 +886,7 @@ async def test_cross_epoch_reconcilers_retry_paid_cas_and_resolve_only_failed_at
                    and kind in ('stale_paid_event','reconciliation_failed')""",
             account_id,
         )
-    assert account is not None and tuple(account) == (300, "starter", "active")
+    assert account is not None and tuple(account) == (STARTER_CREDITS, "starter", "active")
     assert grant_count == 1
     assert [row["outcome"] for row in paid_audits] == ["ignored", "handled"]
     ignored_event_id = next(row["id"] for row in paid_audits if row["outcome"] == "ignored")
@@ -1038,7 +1039,7 @@ async def test_reconcile_recovers_lost_prorated_delta_invoice(
                    estimated_period_end,estimate_currency)
                  values($1,$2::uuid,'reconcile-delta','sub_test','starter','month',
                         'pro','month','immediate','applied',$3,$4,$5,$6,false,
-                        'prorated_delta','in_reconcile_delta_source',700,false,
+                        'prorated_delta','in_reconcile_delta_source',$7,false,
                         1801000000,950,2450,1500,
                         to_timestamp(1801000000),$5,'usd')""",
             change_id,
@@ -1047,6 +1048,7 @@ async def test_reconcile_recovers_lost_prorated_delta_invoice(
             account["grant_epoch"],
             account["entitlement_period_end"],
             account["subscription_status"],
+            atoms(700),
         )
         await conn.execute(
             """insert into billing_incidents(kind,dedupe_key,account_id,detail)
@@ -1076,9 +1078,9 @@ async def test_reconcile_recovers_lost_prorated_delta_invoice(
             """select resolved_at is not null from billing_incidents
                  where kind='plan_change_recovery_required'"""
         )
-    assert account is not None and tuple(account) == ("pro", 1000)
+    assert account is not None and tuple(account) == ("pro", PRO_CREDITS)
     assert allocation is not None and tuple(allocation) == (
         "in_reconcile_delta_source",
-        700,
+        atoms(700),
     )
     assert incident_resolved is True

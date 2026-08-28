@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
+from stripe_entitlements.catalog import PlanCatalog
 from stripe_entitlements.checkout import CheckoutCoordinator
 from stripe_entitlements.credits import CreditService, CreditsUnavailableError
 from stripe_entitlements.processor import EventProcessor
@@ -18,6 +19,13 @@ from tests.builders import (
     prorated_upgrade_invoice,
     refunded_charge,
     subscription_event,
+)
+from tests.credit_helpers import (
+    PRO_CREDITS,
+    STARTER_CREDITS,
+    ULTRA_CREDITS,
+    atoms,
+    catalog_with_credits,
 )
 
 
@@ -51,8 +59,16 @@ async def _insert_change(
                 account_id,
                 account["grant_epoch"],
             )
-            source_credits = {"starter": 300, "pro": 1000, "ultra": 4000}[str(account["plan_key"])]
-            target_credits = {"starter": 300, "pro": 1000, "ultra": 4000}[target_plan]
+            source_credits = {
+                "starter": STARTER_CREDITS,
+                "pro": PRO_CREDITS,
+                "ultra": ULTRA_CREDITS,
+            }[str(account["plan_key"])]
+            target_credits = {
+                "starter": STARTER_CREDITS,
+                "pro": PRO_CREDITS,
+                "ultra": ULTRA_CREDITS,
+            }[target_plan]
             credit_delta = target_credits - source_credits
         await conn.execute(
             """insert into billing_plan_changes(
@@ -157,7 +173,7 @@ async def test_immediate_invoice_real_shape_activates_only_with_intent_and_repla
             "select settlement_invoice_id from billing_plan_changes"
         )
     assert account is not None
-    assert (account["plan_key"], account["credits_balance"]) == ("pro", 1000)
+    assert (account["plan_key"], account["credits_balance"]) == ("pro", PRO_CREDITS)
     assert change_status == "completed"
     assert settlement_invoice_id == "in_upgrade"
 
@@ -188,7 +204,7 @@ async def test_unconfirmed_preview_cannot_authorize_external_paid_update(
             """select count(*) from billing_incidents
                  where kind='paid_plan_change_without_intent'"""
         )
-    assert account is not None and tuple(account) == ("starter", 300)
+    assert account is not None and tuple(account) == ("starter", STARTER_CREDITS)
     assert incident == 1
 
 
@@ -221,7 +237,7 @@ async def test_plan_change_invoice_with_old_invoice_proration_fails_closed(
         incidents = await conn.fetchval(
             "select count(*) from billing_incidents where kind='unsafe_cross_invoice_proration'"
         )
-    assert account is not None and tuple(account) == ("starter", 300)
+    assert account is not None and tuple(account) == ("starter", STARTER_CREDITS)
     assert incidents == 1
 
 
@@ -264,7 +280,7 @@ async def test_prorated_delta_upgrade_preserves_period_and_used_balance_in_both_
     assert account is not None and allocation is not None
     assert (account["plan_key"], account["credits_balance"], account["grant_epoch"]) == (
         "pro",
-        950,
+        atoms(950),
         1,
     )
     assert account["entitlement_period_end"] == datetime.fromtimestamp(1_802_592_000, tz=UTC)
@@ -273,7 +289,74 @@ async def test_prorated_delta_upgrade_preserves_period_and_used_balance_in_both_
         allocation["entitlement_delta"],
         allocation["amount_paid"],
         allocation["status"],
-    ) == ("in_initial_paid", 700, 1500, "active")
+    ) == ("in_initial_paid", atoms(700), 1500, "active")
+
+
+async def test_fractional_prorated_delta_and_partial_refund_remain_exact(
+    pool: asyncpg.Pool,
+    catalog: PlanCatalog,
+    make_account,
+) -> None:
+    fractional_catalog = catalog_with_credits(
+        catalog,
+        starter="300.000001",
+        pro="1000.000003",
+        ultra="4000.000005",
+    )
+    processor = EventProcessor(
+        pool,
+        fractional_catalog,
+        "example-entitlements",
+        expected_api_version="2026-06-24.dahlia",
+    )
+    account_id = await make_account()
+    await _initial_paid(processor, account_id)
+    charged = await CreditService(pool).charge(account_id, "0.125", "fractional-delta-use")
+    assert charged.balance.atoms == atoms("299.875001")
+    change_id = await _insert_change(
+        pool,
+        account_id,
+        policy="prorated_delta",
+        proration_date=1_801_000_000,
+    )
+    expected_delta = atoms("700.000002")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "update billing_plan_changes set expected_credit_delta=$2 where id=$1::uuid",
+            change_id,
+            expected_delta,
+        )
+
+    assert (
+        await processor.process(
+            prorated_upgrade_invoice(account_id, invoice_id="in_fractional_delta")
+        )
+    ).outcome == "handled"
+    assert (
+        await processor.process(
+            refunded_charge(
+                invoice_id="in_fractional_delta",
+                amount=1500,
+                amount_refunded=750,
+                event_id="evt_fractional_delta_half_refund",
+            )
+        )
+    ).outcome == "handled"
+
+    async with pool.acquire() as conn:
+        account = await conn.fetchrow(
+            "select plan_key,credits_balance from billing_accounts where id=$1::uuid",
+            account_id,
+        )
+        allocation = await conn.fetchrow(
+            "select entitlement_delta,refunded_units from billing_funding_allocations "
+            "where stripe_invoice_id='in_fractional_delta'"
+        )
+    assert account is not None and tuple(account) == ("pro", atoms("649.875002"))
+    assert allocation is not None and tuple(allocation) == (
+        expected_delta,
+        atoms("350.000001"),
+    )
 
 
 async def test_prorated_delta_different_events_same_invoice_are_concurrent_safe(
@@ -307,7 +390,7 @@ async def test_prorated_delta_different_events_same_invoice_are_concurrent_safe(
             await conn.fetchval(
                 "select credits_balance from billing_accounts where id=$1::uuid", account_id
             )
-            == 1000
+            == PRO_CREDITS
         )
 
 
@@ -377,9 +460,9 @@ async def test_prorated_delta_cross_account_first_invoice_claim_is_atomic(
     assert state_owner == allocation_owner
     owner_id = str(state_owner)
     by_id = {str(row["id"]): (row["plan_key"], row["credits_balance"]) for row in accounts}
-    assert by_id[owner_id] == ("pro", 1000)
+    assert by_id[owner_id] == ("pro", PRO_CREDITS)
     loser_id = second_id if owner_id == first_id else first_id
-    assert by_id[loser_id] == ("starter", 300)
+    assert by_id[loser_id] == ("starter", STARTER_CREDITS)
     assert grants == 1
 
 
@@ -479,7 +562,7 @@ async def test_prorated_delta_unknown_or_ambiguous_invoice_shapes_fail_closed(
             "select count(*) from billing_incidents where kind=$1",
             expected_kind,
         )
-    assert account is not None and tuple(account) == ("starter", 300)
+    assert account is not None and tuple(account) == ("starter", STARTER_CREDITS)
     assert incident == 1
 
 
@@ -528,7 +611,7 @@ async def test_prorated_delta_refund_before_and_after_paid_converges(
             account["plan_key"],
             account["credits_balance"],
             account["entitlement_revoked"],
-        ) == ("starter", 300, False)
+        ) == ("starter", STARTER_CREDITS, False)
         assert allocation["status"] == "closed"
         assert tuple(change) == ("failed", "settlement_funding_closed") or tuple(change) == (
             "failed",
@@ -539,9 +622,9 @@ async def test_prorated_delta_refund_before_and_after_paid_converges(
             account["plan_key"],
             account["credits_balance"],
             account["entitlement_revoked"],
-        ) == ("pro", 650, False)
+        ) == ("pro", atoms(650), False)
         assert allocation["status"] == "partially_refunded"
-        assert allocation["refunded_units"] == 350
+        assert allocation["refunded_units"] == atoms(350)
 
 
 async def test_full_period_closed_before_paid_business_replay_keeps_source_entitlement(
@@ -593,7 +676,7 @@ async def test_full_period_closed_before_paid_business_replay_keeps_source_entit
                 where stripe_invoice_id='in_full_period_closed_before_paid'
                   and reason='subscription_grant_blocked'"""
         )
-    assert account is not None and tuple(account) == ("starter", 300, 1, False)
+    assert account is not None and tuple(account) == ("starter", STARTER_CREDITS, 1, False)
     assert state is not None and state["closure_applied"] is True
     assert blocked == 1
 
@@ -684,7 +767,7 @@ async def test_closed_delta_business_replay_cannot_move_debt_to_new_epoch(
             account_id,
         )
     assert account is not None and tuple(account) == ("starter", 0, 2)
-    assert [tuple(row) for row in debts] == [(1, 700, 0)]
+    assert [tuple(row) for row in debts] == [(1, atoms(700), 0)]
 
 
 async def test_source_refund_remains_attributed_after_leaf_delta_reversion(
@@ -728,7 +811,7 @@ async def test_source_refund_remains_attributed_after_leaf_delta_reversion(
         account["credits_balance"],
         account["grant_epoch"],
         account["entitlement_revoked"],
-    ) == ("starter", 150, 2, False)
+    ) == ("starter", atoms(150), 2, False)
 
 
 async def test_full_source_refund_after_leaf_reversion_closes_active_lineage(
@@ -803,7 +886,7 @@ async def test_refund_of_source_invoice_after_delta_remains_attributed(
     assert account is not None
     assert (account["plan_key"], account["credits_balance"], account["entitlement_revoked"]) == (
         "pro",
-        850,
+        atoms(850),
         False,
     )
 
@@ -843,8 +926,8 @@ async def test_delta_grant_collects_outstanding_source_clawback_debt(
                  where account_id=$1::uuid and stripe_invoice_id='in_initial_paid'""",
             account_id,
         )
-    assert account is not None and tuple(account) == ("pro", 550)
-    assert debt is not None and tuple(debt) == (150, 150)
+    assert account is not None and tuple(account) == ("pro", atoms(550))
+    assert debt is not None and tuple(debt) == (atoms(150), atoms(150))
 
 
 @pytest.mark.parametrize("dispute_first", [False, True])
@@ -877,10 +960,10 @@ async def test_prorated_delta_dispute_before_and_after_paid_reverts_to_source(
     assert account is not None and allocation is not None
     assert (account["plan_key"], account["credits_balance"], account["entitlement_revoked"]) == (
         "starter",
-        300,
+        STARTER_CREDITS,
         False,
     )
-    assert tuple(allocation) == ("disputed", 700)
+    assert tuple(allocation) == ("disputed", atoms(700))
 
 
 async def test_prorated_delta_transaction_rolls_back_and_same_event_retries(
@@ -932,7 +1015,7 @@ async def test_prorated_delta_transaction_rolls_back_and_same_event_retries(
             await conn.fetchval(
                 "select credits_balance from billing_accounts where id=$1::uuid", account_id
             )
-            == 300
+            == STARTER_CREDITS
         )
 
     retried = await processor.process(payload)
@@ -942,7 +1025,7 @@ async def test_prorated_delta_transaction_rolls_back_and_same_event_retries(
             "select plan_key,credits_balance from billing_accounts where id=$1::uuid",
             account_id,
         )
-    assert account is not None and tuple(account) == ("pro", 650)
+    assert account is not None and tuple(account) == ("pro", atoms(650))
 
 
 async def test_full_source_refund_after_delta_revokes_the_dependent_lineage(
@@ -976,7 +1059,7 @@ async def test_full_source_refund_after_delta_revokes_the_dependent_lineage(
         )
     assert account is not None
     assert account["plan_key"] == "pro"
-    assert account["credits_balance"] == 700
+    assert account["credits_balance"] == atoms(700)
     assert account["entitlement_revoked"] is True
     assert account["grant_epoch"] == 2
     assert incident == 1
@@ -1030,7 +1113,7 @@ async def test_refunding_an_intermediate_delta_with_downstream_upgrade_revokes(
             "select count(*) from billing_incidents where kind='funding_lineage_closed'"
         )
     assert account is not None
-    assert (account["plan_key"], account["credits_balance"]) == ("ultra", 3300)
+    assert (account["plan_key"], account["credits_balance"]) == ("ultra", atoms(3300))
     assert account["entitlement_revoked"] is True
     assert account["grant_epoch"] == 2
     assert lineage == 1
@@ -1082,7 +1165,7 @@ async def test_old_delta_refund_after_renewal_cannot_rewrite_new_epoch(
         account["credits_balance"],
         account["grant_epoch"],
         account["entitlement_revoked"],
-    ) == ("pro", 1000, 2, False)
+    ) == ("pro", PRO_CREDITS, 2, False)
 
 
 async def test_delta_payment_failure_keeps_the_source_entitlement(
@@ -1110,7 +1193,7 @@ async def test_delta_payment_failure_keeps_the_source_entitlement(
     assert account is not None
     assert (account["plan_key"], account["credits_balance"], account["grant_epoch"]) == (
         "starter",
-        300,
+        STARTER_CREDITS,
         1,
     )
     assert account["entitlement_revoked"] is False
@@ -1160,7 +1243,7 @@ async def test_optional_upgrade_payment_failure_keeps_old_paid_entitlement(
     assert result.outcome == "ignored"
     assert account is not None
     assert (account["plan_key"], account["subscription_status"]) == ("starter", "active")
-    assert account["credits_balance"] == 300
+    assert account["credits_balance"] == STARTER_CREDITS
     assert status == "requires_action"
 
 
@@ -1202,7 +1285,7 @@ async def test_paid_settlement_resolves_its_payment_failure_incident(
                  where kind='plan_change_payment_failed'
                    and invoice_id='in_recovered_upgrade'"""
         )
-    assert account is not None and tuple(account) == ("pro", 1000)
+    assert account is not None and tuple(account) == ("pro", PRO_CREDITS)
     assert incident is not None and incident["resolved_at"] is not None
 
 
@@ -1262,7 +1345,7 @@ async def test_late_failure_for_completed_paid_settlement_is_replayed(
                  and kind in ('plan_change_payment_failed',
                               'unbound_plan_change_payment_failed')"""
         )
-    assert account is not None and tuple(account) == ("pro", "active", 1000)
+    assert account is not None and tuple(account) == ("pro", "active", PRO_CREDITS)
     assert transition_status == "completed"
     assert unresolved == 0
 
@@ -1308,7 +1391,7 @@ async def test_paid_and_failure_for_same_settlement_concurrently_converge(
                  and kind in ('plan_change_payment_failed',
                               'unbound_plan_change_payment_failed')"""
         )
-    assert account is not None and tuple(account) == ("pro", "active", 1000)
+    assert account is not None and tuple(account) == ("pro", "active", PRO_CREDITS)
     assert transition_status == "completed"
     assert unresolved == 0
 
@@ -1352,7 +1435,7 @@ async def test_delayed_old_payment_failure_cannot_mutate_new_plan_change(
         incidents = await conn.fetchval(
             "select count(*) from billing_incidents where kind='unbound_plan_change_payment_failed'"
         )
-    assert account is not None and tuple(account) == ("active", "starter", 300)
+    assert account is not None and tuple(account) == ("active", "starter", STARTER_CREDITS)
     assert new_status == "applying"
     assert incidents == 1
 
@@ -1406,7 +1489,7 @@ async def test_checkout_completed_and_paid_create_converge_in_either_order(
     assert account is not None
     assert (account["stripe_subscription_id"], account["credits_balance"]) == (
         "sub_first",
-        300,
+        STARTER_CREDITS,
     )
 
 
@@ -1444,7 +1527,7 @@ async def test_paid_create_before_session_attach_requires_exact_claim_token(
     assert account is not None
     assert (account["stripe_subscription_id"], account["credits_balance"]) == (
         "sub_matching",
-        300,
+        STARTER_CREDITS,
     )
 
 

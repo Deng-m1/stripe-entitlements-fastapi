@@ -217,3 +217,28 @@ A future change may accept a discount-bearing Invoice only when all of these gat
    including Session-parameter omission regression.
 
 Until every gate is met, the fail-closed behavior above is the invariant.
+
+## 17. Product credits use one exact fixed-point protocol
+
+Every authoritative product-credit quantity is stored and calculated as an integer
+number of atoms. One displayed credit is exactly `1,000,000` atoms and the scale is a
+compiled protocol constant, not a per-process environment setting. Stripe currency
+minor units remain a separate integer dimension and are never scaled as product
+credits.
+
+Catalog and HTTP boundaries accept canonical decimal strings with at most six fractional
+digits. Python `float`, PostgreSQL floating-point values, JSON fractional numbers,
+scientific notation, silent rounding and values outside the PostgreSQL `bigint` range
+are rejected. JavaScript receives both canonical decimal strings and atom strings; a JS
+`number` is never the source of truth for a credit balance.
+
+Idempotency binds the normalized atom value. Equivalent spellings such as `0.1` and
+`0.100000` represent the same amount; values that differ by one atom are different
+requests. Account locking still prevents concurrent overspend, and every committed
+ledger row satisfies exact integer addition without permitting a negative balance.
+
+Refund and dispute ratios continue to use integer multiplication followed by an explicit
+ceiling in atom space. This preserves cumulative, delivery-order-independent clawback
+behavior while limiting rounding to at most one atom. Product-operation refunds remain
+bound to their recorded grant epoch. Any addition that would overflow `bigint` fails and
+rolls back the complete business effect.

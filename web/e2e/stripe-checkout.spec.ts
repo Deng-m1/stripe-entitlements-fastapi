@@ -15,6 +15,7 @@ import {
   optionalE2EBearerToken,
   withE2EBackendAuthorization,
 } from "../lib/e2e-backend-auth";
+import { parseExactCreditAmount } from "../lib/credit-amount";
 
 const DECLINED_TEST_CARD = "4000000000000002";
 const SCA_TEST_CARD = "4000002500003155";
@@ -30,8 +31,11 @@ interface AccountProjection {
   plan_interval: string | null;
   subscription_status: string;
   credits: {
-    balance: number;
-    grant_amount: number;
+    balance: string;
+    balance_atoms: string;
+    grant_amount: string;
+    grant_amount_atoms: string;
+    scale: 1_000_000;
   };
   entitlements_enforceable: boolean;
 }
@@ -433,7 +437,18 @@ async function loadAccountProjection(
       "Account projection response does not use the attested E2E backend origin.",
     );
   }
-  return (await response.json()) as AccountProjection;
+  const projection = (await response.json()) as AccountProjection;
+  parseExactCreditAmount(
+    projection.credits.balance,
+    projection.credits.balance_atoms,
+    projection.credits.scale,
+  );
+  parseExactCreditAmount(
+    projection.credits.grant_amount,
+    projection.credits.grant_amount_atoms,
+    projection.credits.scale,
+  );
+  return projection;
 }
 
 async function waitForPaidProjection(
@@ -441,8 +456,8 @@ async function waitForPaidProjection(
   baseURL: string,
   backendURL: string,
   expectedPlan = "starter",
-  expectedBalance = 300,
-  expectedGrant = 300,
+  expectedBalance = "300",
+  expectedGrant = "300",
 ): Promise<AccountProjection> {
   let latest: AccountProjection | undefined;
   await expect
@@ -852,7 +867,7 @@ test.describe("real Stripe hosted Checkout", () => {
     const initial = await loadAccountProjection(accountPage, baseURL, backendURL);
     expect(initial.account_id).toBe(await expectedAccountId());
     expect(initial.plan_key).toBe("free");
-    expect(initial.credits.balance).toBe(0);
+    expect(initial.credits.balance).toBe("0");
     expect(initial.entitlements_enforceable).toBe(false);
     await mark(accountPage, "Free account · zero credits", 1.25, "free-account");
 
@@ -898,7 +913,7 @@ test.describe("real Stripe hosted Checkout", () => {
         backendURL,
       );
       expect(afterDecline.plan_key).toBe("free");
-      expect(afterDecline.credits.balance).toBe(0);
+      expect(afterDecline.credits.balance).toBe("0");
       expect(afterDecline.entitlements_enforceable).toBe(false);
       await mark(page, "Declined payment · access unchanged", 1.5);
     });
@@ -1004,7 +1019,14 @@ test.describe("real Stripe hosted Checkout", () => {
     });
 
     await test.step("upgrade access still waits for its paid webhook projection", async () => {
-      await waitForPaidProjection(page, baseURL, backendURL, "pro", 1000, 1000);
+      await waitForPaidProjection(
+        page,
+        baseURL,
+        backendURL,
+        "pro",
+        "1000",
+        "1000",
+      );
       await accountPage.goto(accountPage.url());
       await expect(
         accountPage.getByRole("heading", { name: "Webhook-backed account state is ready" }),

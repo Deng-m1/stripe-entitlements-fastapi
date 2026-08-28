@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from stripe_entitlements.bounds import CATALOG_PRICE_MAJOR_UNIT_MAX, POSTGRES_BIGINT_MAX
+from stripe_entitlements.bounds import (
+    CATALOG_PRICE_MAJOR_UNIT_MAX,
+    JSON_SAFE_INTEGER_MAX,
+    POSTGRES_BIGINT_MAX,
+)
 from stripe_entitlements.catalog import PlanCatalog
 
 _BASE_CATALOG = """
@@ -58,9 +62,10 @@ def test_catalog_rejects_coercion_and_unsupported_billing_shapes(
 @pytest.mark.parametrize(
     ("field", "message"),
     [
-        ("credits", "integer between"),
-        ("price", "minor units"),
-        ("limit", "non-negative limits"),
+        ("credits", "positive exact credit amount"),
+        ("price", "JSON-safe"),
+        ("limit", "JSON-safe limits"),
+        ("rank", "JSON-safe"),
     ],
 )
 def test_catalog_values_must_fit_persisted_integer_boundaries(
@@ -72,10 +77,12 @@ def test_catalog_values_must_fit_persisted_integer_boundaries(
         plans["starter"] = replace(starter, monthly_credits=POSTGRES_BIGINT_MAX + 1)
     elif field == "price":
         plans["starter"] = replace(starter, month_usd=CATALOG_PRICE_MAJOR_UNIT_MAX + 1)
-    else:
+    elif field == "limit":
         limits = dict(starter.limits)
-        limits["max_file_mb"] = POSTGRES_BIGINT_MAX + 1
+        limits["max_file_mb"] = JSON_SAFE_INTEGER_MAX + 1
         plans["starter"] = replace(starter, limits=limits)
+    else:
+        plans["starter"] = replace(starter, rank=JSON_SAFE_INTEGER_MAX + 1)
     with pytest.raises(ValueError, match=message):
         PlanCatalog(plans)
 
@@ -83,6 +90,24 @@ def test_catalog_values_must_fit_persisted_integer_boundaries(
 def test_catalog_reports_missing_required_field(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="missing required field 'monthly_credits'"):
         _load(tmp_path, _BASE_CATALOG.replace("monthly_credits = 300\n", ""))
+
+
+def test_catalog_accepts_integer_or_quoted_decimal_credits(tmp_path: Path) -> None:
+    integer = _load(tmp_path, _BASE_CATALOG)
+    fractional = _load(
+        tmp_path,
+        _BASE_CATALOG.replace("monthly_credits = 300", 'monthly_credits = "300.125"'),
+    )
+    assert integer.require("starter").monthly_credits.atoms == 300_000_000
+    assert fractional.require("starter").monthly_credits.atoms == 300_125_000
+
+
+def test_catalog_rejects_toml_float_credits(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="must not be a float"):
+        _load(
+            tmp_path,
+            _BASE_CATALOG.replace("monthly_credits = 300", "monthly_credits = 300.125"),
+        )
 
 
 @pytest.mark.parametrize("prefix", ["", " bad ", "bad_prefix", "UPPER", "x" * 33])

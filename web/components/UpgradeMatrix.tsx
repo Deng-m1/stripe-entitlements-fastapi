@@ -1,4 +1,9 @@
 import { referencePlans } from "@/lib/reference-catalog";
+import {
+  creditAmountFromEntitlement,
+  formatCreditDecimal,
+  subtractCreditDecimals,
+} from "@/lib/credit-amount";
 import type { BillingInterval } from "@/lib/types";
 
 /**
@@ -14,7 +19,7 @@ interface MatrixState {
   planKey: string;
   interval: BillingInterval;
   rank: number;
-  monthlyCredits: number;
+  monthlyCredits: string;
   planAbbr: string;
   intervalAbbr: string;
   label: string;
@@ -35,12 +40,15 @@ function buildStates(): MatrixState[] {
     ranked.map((plan) => {
       const credits = plan.entitlements.find(
         (item) => item.key === "monthly_credits",
-      )?.value;
+      );
+      if (!credits) {
+        throw new Error(`Plan ${plan.key} has no monthly credit entitlement.`);
+      }
       return {
         planKey: plan.key,
         interval,
         rank: plan.display_order,
-        monthlyCredits: typeof credits === "number" ? credits : 0,
+        monthlyCredits: creditAmountFromEntitlement(credits).decimal,
         planAbbr: plan.name.slice(0, 3),
         intervalAbbr: interval === "month" ? "mo" : "yr",
         label: `${plan.name} ${interval === "month" ? "Monthly" : "Yearly"}`,
@@ -69,8 +77,12 @@ export function UpgradeMatrix() {
   const highlightTo = states.at(1);
   const creditDelta =
     highlightFrom && highlightTo
-      ? highlightTo.monthlyCredits - highlightFrom.monthlyCredits
-      : 0;
+      ? subtractCreditDecimals(
+          highlightTo.monthlyCredits,
+          highlightFrom.monthlyCredits,
+        )
+      : "0";
+  const formattedCreditDelta = formatCreditDecimal(creditDelta);
 
   return (
     <div className="upgrade-matrix-layout">
@@ -134,7 +146,7 @@ export function UpgradeMatrix() {
                       {highlighted ? (
                         <span className="matrix-tooltip">
                           prorated_delta · paid two-line Invoice · +
-                          {creditDelta}
+                          {formattedCreditDelta}
                           {" credits · period preserved"}
                         </span>
                       ) : null}
@@ -152,7 +164,7 @@ export function UpgradeMatrix() {
             Starter → Pro · monthly (highlighted cell)
           </span>
           prorated_delta settles it immediately: a paid two-line Invoice, +
-          {creditDelta} credits, and the current period preserved.
+          {formattedCreditDelta} credits, and the current period preserved.
         </p>
         <ul className="matrix-legend">
           <li>

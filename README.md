@@ -21,6 +21,7 @@ delayed, concurrent, and out-of-order Events.
 - [Two plan-change templates](#safe-stripe-plan-transitions-full-price-or-prorated-difference)
 - [Correctness and distributed deployment](#correctness-model)
 - [Quick start](#quick-start)
+- [Adopt in an existing application](#adopt-in-an-existing-application)
 - [Demo recording](#demo-recording-and-promotional-video)
 - [Test evidence](#verification-and-evidence-boundary)
 - [SQL and production cutover](#sql-migrations-and-production-cutover)
@@ -69,7 +70,9 @@ It does **not** implement multi-currency, seats or quantities, trials, coupons,
 tax calculation, metered billing, arbitrary mixed invoice items, revenue
 recognition, accounting, or a hosted identity provider. The host application
 must supply verified authentication and product enforcement. See
-[Architecture](docs/ARCHITECTURE.md) and [Invariants](docs/INVARIANTS.md).
+[Architecture](docs/ARCHITECTURE.md), [Invariants](docs/INVARIANTS.md),
+[exact fractional credits](docs/CREDIT_PRECISION.md), and the
+[adoption guide](docs/ADOPTION.md).
 
 ## Plan catalog
 
@@ -234,18 +237,57 @@ there is intentionally no in-place upgrade across the pre-release baseline reset
 
 ```bash
 cp .env.example .env
+chmod 600 .env
 # Choose full_period_reset or prorated_delta in .env.
 docker compose up -d postgres
 uv sync --frozen
-uv run stripe-entitlements migrate
-uv run uvicorn stripe_entitlements.app:create_app --factory --port 8000
+uv run --env-file .env stripe-entitlements migrate
+uv run --env-file .env stripe-entitlements doctor
 ```
+
+`doctor` is read-only and does not call Stripe by default. It checks the local package,
+catalog, configuration, PostgreSQL schema and migration checksums without printing
+secrets or DSNs. Use `doctor --json` for automation. The explicit
+`doctor --stripe-network` mode adds read-only Stripe Account and Portal retrieval, but it
+still does not claim webhook endpoint or signed-payload evidence.
+
+Before bootstrap, replace `STRIPE_SECRET_KEY`, the local demo values, product line,
+lookup prefix, catalog path and transition policy in `.env`. Keep that file ignored and
+private; never commit credentials. The backend secret, later Stripe CLI login and
+browser publishable key must all belong to the same Stripe test account.
 
 Bootstrap or verify the dedicated test catalog and safe Portal configuration:
 
 ```bash
-STRIPE_SECRET_KEY=sk_test_... uv run python scripts/bootstrap_stripe.py
-STRIPE_SECRET_KEY=sk_test_... uv run python scripts/bootstrap_stripe.py --verify-only
+uv run --env-file .env python scripts/bootstrap_stripe.py
+uv run --env-file .env python scripts/bootstrap_stripe.py --verify-only
+```
+
+Copy the actual Portal configuration ID reported by bootstrap into the ignored `.env`;
+do not leave a format-valid placeholder. `--verify-only` finds a safe configuration but
+does not prove that `STRIPE_PORTAL_CONFIGURATION_ID` points to that exact ID.
+
+Start signed forwarding in a separate terminal:
+
+```bash
+stripe login
+stripe listen \
+  --events checkout.session.completed,checkout.session.expired,invoice.paid,invoice.payment_failed,customer.subscription.updated,customer.subscription.deleted,charge.refunded,charge.dispute.created \
+  --forward-to http://127.0.0.1:8000/webhooks/stripe
+```
+
+Copy the temporary signing secret into the ignored `.env` before starting the API.
+`STRIPE_WEBHOOK_API_VERSION` must come from the listener or endpoint's actual signed
+payload; it must not be copied from `STRIPE_API_VERSION`. Follow
+[the local discovery procedure](docs/ADOPTION.md#discover-a-local-stripe-cli-payload-version)
+when that contract is not yet known: start once with a candidate only for the diagnostic
+delivery, then update `.env` and restart before beginning Checkout.
+
+Start or restart the API after the final webhook contract is known:
+
+```bash
+uv run --env-file .env \
+  uvicorn stripe_entitlements.app:create_app --factory --port 8000
 ```
 
 For the reference frontend:
@@ -254,27 +296,46 @@ For the reference frontend:
 cd web
 npm ci
 cp .env.example .env.local
+chmod 600 .env.local
 npm run dev
 ```
 
-Development can run with explicit mock data. HTTP mode requires the backend and a
-matching auth adapter. The UI does not treat Checkout return, confirm success, or
-SCA completion as entitlement proof; it polls `/api/account` until webhook state
-matches the target.
+The copied frontend configuration defaults to explicit mock data; it does not connect
+to the backend. HTTP mode requires the settings in the
+[adoption guide](docs/ADOPTION.md#connect-or-replace-the-nextjs-frontend) and a matching
+auth adapter. The UI does not treat Checkout return, confirm success, or SCA completion
+as entitlement proof; it polls `/api/account` until webhook state matches the target.
+With the default URL allowlists, open the frontend as `http://localhost:3000`, not the
+different `http://127.0.0.1:3000` Origin.
 
-Forward selected events in a separate terminal:
-
-```bash
-stripe login
-stripe listen --events \\
-checkout.session.completed,checkout.session.expired,invoice.paid,invoice.payment_failed,customer.subscription.updated,customer.subscription.deleted,charge.refunded,charge.dispute.created \\
---forward-to http://127.0.0.1:8000/webhooks/stripe
-```
-
-Copy the temporary signing secret into the ignored local `.env`. A canned
+A canned
 `stripe trigger invoice.paid` has no matching repository account, so a durable
 unknown-account incident is expected; it is a transport/signature smoke, not an
 entitlement lifecycle test.
+
+## Adopt in an existing application
+
+Choose the billable owner before writing an authentication adapter. Personal billing
+usually maps an immutable host user ID to `external_ref`; team billing maps the verified
+organization or tenant ID instead. Email and browser-supplied account IDs are never
+ownership authority.
+
+The repository supplies the auth protocol, account resolver, billing HTTP APIs and
+atomic credit primitives. The host still owns JWT/session verification, tenant
+membership and billing-admin authorization, product-limit enforcement, and the durable
+workflow that coordinates a Job with a credit charge or refund. `CreditService` and a
+host Job insert are not one transaction, so production job admission needs an
+idempotent outbox/saga rather than a best-effort sequence.
+
+Product credits support six exact fractional digits without binary floating point. A
+Python integer passed to `CreditService` retains its historical meaning of whole credits;
+fractional requests use a decimal string or `Decimal`. HTTP responses expose canonical
+decimal strings together with atom strings and `scale=1000000`, so JavaScript never uses
+a lossy `number` as ledger truth.
+
+See [Adopting the reference in an existing application](docs/ADOPTION.md) for deployment
+choices, user/tenant mappings, production auth code, server-side entitlement checks,
+credit integration, frontend auth, schedulers and host contract tests.
 
 ## Demo recording and promotional video
 
@@ -497,7 +558,8 @@ Use the [release checklist](.github/RELEASE_CHECKLIST.md) and
 - `scripts/run_browser_e2e.sh`: isolated real browser and signed-webhook gate;
 - `tests/`: pure, PostgreSQL race/API and opt-in real test-mode suites;
 - `web/`: Next.js reference UI and API adapter;
-- `docs/`: invariant, architecture, testing, operations, SEO and release references;
+- `docs/`: adoption, invariant, architecture, testing, operations, SEO and release
+  references;
 - `.github/`: CI, contribution templates and publishing metadata.
 
 ## Frequently asked questions
@@ -536,6 +598,14 @@ listed as non-goals rather than advertised without implementation and race tests
 Discounted Invoices fail closed, and Checkout omits `allow_promotion_codes`
 unconditionally. [Promotion codes and coupons](docs/PROMOTION_CODES.md) records the
 gates that must ship before this answer changes.
+
+### Can a product charge fractional credits?
+
+Yes. One credit is exactly one million integer atoms, so values down to `0.000001` are
+supported. Catalog fractions are quoted decimal strings, HTTP credit amounts are decimal
+strings plus atom strings, and PostgreSQL stores only integer atoms. Python, PostgreSQL,
+TOML and JavaScript floating-point values are deliberately rejected at authoritative
+boundaries. See [Exact fractional product credits](docs/CREDIT_PRECISION.md).
 
 ### Can multiple API and worker instances share it?
 

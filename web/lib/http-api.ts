@@ -11,6 +11,10 @@ import type {
   RedirectResponse,
 } from "@/lib/types";
 import type { AuthAdapter } from "@/lib/auth";
+import {
+  CREDIT_SCALE,
+  parseExactCreditAmount,
+} from "@/lib/credit-amount";
 import { createIdempotencyKey } from "@/lib/idempotency";
 
 export class BillingApiError extends Error {
@@ -66,6 +70,98 @@ function responseErrorMessage(body: unknown, status: number): string {
     }
   }
   return `Request failed (${status})`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function invalidCreditContract(): never {
+  throw new BillingApiError(
+    "Billing API returned an invalid exact-credit contract.",
+    502,
+  );
+}
+
+function validateCreditEntitlements(
+  value: unknown,
+  requireMonthlyCredits: boolean,
+): void {
+  if (!Array.isArray(value)) invalidCreditContract();
+  const monthlyCredits = value.filter(
+    (item) => isRecord(item) && item.key === "monthly_credits",
+  );
+  if (monthlyCredits.length > 1 || (requireMonthlyCredits && monthlyCredits.length !== 1)) {
+    invalidCreditContract();
+  }
+  if (monthlyCredits.length === 1) {
+    const entitlement = monthlyCredits[0];
+    parseExactCreditAmount(
+      entitlement.value,
+      entitlement.value_atoms,
+      entitlement.scale,
+    );
+  }
+}
+
+function decodeAccountResponse(body: unknown): AccountResponse {
+  try {
+    if (!isRecord(body) || !isRecord(body.credits)) invalidCreditContract();
+    parseExactCreditAmount(
+      body.credits.balance,
+      body.credits.balance_atoms,
+      body.credits.scale,
+    );
+    parseExactCreditAmount(
+      body.credits.grant_amount,
+      body.credits.grant_amount_atoms,
+      body.credits.scale,
+    );
+    validateCreditEntitlements(body.entitlements, false);
+    return body as unknown as AccountResponse;
+  } catch (error) {
+    if (error instanceof BillingApiError) throw error;
+    return invalidCreditContract();
+  }
+}
+
+function decodeCatalogResponse(body: unknown): CatalogResponse {
+  try {
+    if (!isRecord(body) || !Array.isArray(body.plans)) invalidCreditContract();
+    for (const plan of body.plans) {
+      if (!isRecord(plan)) invalidCreditContract();
+      validateCreditEntitlements(plan.entitlements, true);
+    }
+    return body as unknown as CatalogResponse;
+  } catch (error) {
+    if (error instanceof BillingApiError) throw error;
+    return invalidCreditContract();
+  }
+}
+
+function decodeChangePreview(body: unknown): ChangePreview {
+  try {
+    if (!isRecord(body) || body.credit_scale !== CREDIT_SCALE) {
+      invalidCreditContract();
+    }
+    const decimal = body.entitlement_credit_delta;
+    const atoms = body.entitlement_credit_delta_atoms;
+    if (decimal === null || atoms === null) {
+      if (decimal !== null || atoms !== null) invalidCreditContract();
+    } else {
+      parseExactCreditAmount(decimal, atoms, body.credit_scale);
+    }
+    return body as unknown as ChangePreview;
+  } catch (error) {
+    if (error instanceof BillingApiError) throw error;
+    return invalidCreditContract();
+  }
+}
+
+function decodeChangeConfirm(body: unknown): ChangeConfirmResponse {
+  if (!isRecord(body)) invalidCreditContract();
+  if (body.account !== undefined) decodeAccountResponse(body.account);
+  return body as unknown as ChangeConfirmResponse;
 }
 
 function isLoopbackHostname(hostname: string): boolean {
@@ -127,7 +223,11 @@ export function createHttpBillingApi({
     );
   }
 
-  async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  async function request<T>(
+    path: string,
+    init?: RequestInit,
+    decode?: (body: unknown) => T,
+  ): Promise<T> {
     if (!normalizedBase) {
       throw new BillingApiError(
         "Billing API is not configured. Set NEXT_PUBLIC_BILLING_API_BASE_URL.",
@@ -182,12 +282,14 @@ export function createHttpBillingApi({
     if (body === null) {
       throw new BillingApiError("Billing API returned an empty response.", response.status);
     }
-    return body as T;
+    return decode ? decode(body) : (body as T);
   }
 
   return {
-    getCatalog: () => request<CatalogResponse>("/api/catalog"),
-    getAccount: () => request<AccountResponse>("/api/account"),
+    getCatalog: () =>
+      request<CatalogResponse>("/api/catalog", undefined, decodeCatalogResponse),
+    getAccount: () =>
+      request<AccountResponse>("/api/account", undefined, decodeAccountResponse),
     createCheckout: (
       input: CheckoutRequest,
       options?: IdempotentRequestOptions,
@@ -214,17 +316,25 @@ export function createHttpBillingApi({
       input: ChangePreviewRequest,
       options?: IdempotentRequestOptions,
     ) =>
-      request<ChangePreview>("/api/billing/change/preview", {
-        method: "POST",
-        body: JSON.stringify(input),
-        headers: {
-          "Idempotency-Key": idempotencyKey(options?.idempotencyKey),
+      request<ChangePreview>(
+        "/api/billing/change/preview",
+        {
+          method: "POST",
+          body: JSON.stringify(input),
+          headers: {
+            "Idempotency-Key": idempotencyKey(options?.idempotencyKey),
+          },
         },
-      }),
+        decodeChangePreview,
+      ),
     confirmPlanChange: (input: ChangeConfirmRequest) =>
-      request<ChangeConfirmResponse>("/api/billing/change/confirm", {
-        method: "POST",
-        body: JSON.stringify(input),
-      }),
+      request<ChangeConfirmResponse>(
+        "/api/billing/change/confirm",
+        {
+          method: "POST",
+          body: JSON.stringify(input),
+        },
+        decodeChangeConfirm,
+      ),
   };
 }

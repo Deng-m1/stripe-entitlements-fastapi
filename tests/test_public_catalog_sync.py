@@ -24,7 +24,7 @@ def test_public_reference_catalog_matches_enforced_plan_catalog() -> None:
             "description": plan["description"],
             "currency": str(plan["currency"]).upper(),
             "rank": plan["rank"],
-            "monthly_credits": plan["monthly_credits"],
+            "monthly_credits": str(plan["monthly_credits"]),
             "month_usd": plan["month_usd"],
             "year_usd": plan["year_usd"],
             "features": plan["features"],

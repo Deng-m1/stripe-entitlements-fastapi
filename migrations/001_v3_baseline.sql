@@ -34,6 +34,9 @@ create table billing_accounts (
   check (annual_grants_allowed between 0 and 12)
 );
 
+comment on column billing_accounts.credits_balance is
+  'Product-credit atoms. One displayed credit is exactly 1000000 atoms.';
+
 create index billing_accounts_annual_due
   on billing_accounts(annual_anchor)
   where plan_interval = 'year' and subscription_status = 'active';
@@ -73,6 +76,9 @@ create table stripe_invoice_state (
   check (grants_issued between 0 and 12)
 );
 
+comment on column stripe_invoice_state.grant_units_per_slot is
+  'Product-credit atoms per funded subscription slot; never Stripe currency units.';
+
 create function prevent_invoice_account_rebind()
 returns trigger language plpgsql as $$
 begin
@@ -102,6 +108,13 @@ create table credit_ledger (
   check (grant_slot is null or grant_slot between 1 and 12)
 );
 
+comment on column credit_ledger.delta is
+  'Signed product-credit atoms applied by this ledger entry.';
+comment on column credit_ledger.balance_after is
+  'Product-credit atoms remaining after this ledger entry.';
+comment on column credit_ledger.entitlement_units is
+  'Product-credit atoms attributed to the funding source.';
+
 create unique index credit_ledger_invoice_slot_unique
   on credit_ledger(stripe_invoice_id, grant_slot)
   where stripe_invoice_id is not null and grant_slot is not null;
@@ -117,6 +130,9 @@ create table credit_debits (
   created_at timestamptz not null default now(),
   refunded_at timestamptz
 );
+
+comment on column credit_debits.amount is
+  'Product-credit atoms charged under the idempotency key.';
 
 create index credit_debits_account_created
   on credit_debits(account_id, created_at desc);
@@ -207,6 +223,9 @@ create table billing_plan_changes (
   unique(account_id, idempotency_key)
 );
 
+comment on column billing_plan_changes.expected_credit_delta is
+  'Authorized product-credit atoms; unrelated to Stripe cash credits.';
+
 create unique index billing_plan_changes_one_pending
   on billing_plan_changes(account_id)
   where status in (
@@ -258,6 +277,13 @@ create table billing_funding_allocations (
   check (period_end > period_start)
 );
 
+comment on column billing_funding_allocations.entitlement_delta is
+  'Product-credit atoms granted by this upgrade funding allocation.';
+comment on column billing_funding_allocations.refunded_units is
+  'Cumulative product-credit atoms withdrawn from the entitlement delta.';
+comment on column billing_funding_allocations.source_credit_amount is
+  'Stripe currency minor units credited for the source proration; not product credits.';
+
 create index billing_funding_allocations_account_epoch
   on billing_funding_allocations(account_id, grant_epoch, id desc);
 
@@ -276,6 +302,11 @@ create table billing_clawback_debts (
   primary key(account_id, grant_epoch, stripe_invoice_id),
   check (collected_units <= target_units)
 );
+
+comment on column billing_clawback_debts.target_units is
+  'Product-credit atoms that must be withdrawn for this funding source.';
+comment on column billing_clawback_debts.collected_units is
+  'Product-credit atoms already withdrawn toward target_units.';
 
 create index billing_clawback_debts_outstanding
   on billing_clawback_debts(account_id, grant_epoch, created_at)

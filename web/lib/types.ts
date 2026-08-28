@@ -6,6 +6,10 @@ export type SettlementMode =
   | "current_period_prorated_delta"
   | "period_end";
 
+export type CreditDecimalString = string;
+export type CreditAtomsString = string;
+export type CreditScale = 1_000_000;
+
 export interface Price {
   currency: string;
   unit_amount: number;
@@ -16,6 +20,8 @@ export interface Entitlement {
   key: string;
   label: string;
   value: number | string | boolean;
+  value_atoms?: CreditAtomsString;
+  scale?: CreditScale;
   unit?: string;
   description?: string;
 }
@@ -35,8 +41,11 @@ export interface CatalogResponse {
 }
 
 export interface Credits {
-  balance: number;
-  grant_amount: number;
+  balance: CreditDecimalString;
+  balance_atoms: CreditAtomsString;
+  grant_amount: CreditDecimalString;
+  grant_amount_atoms: CreditAtomsString;
+  scale: CreditScale;
   next_grant_at: string | null;
 }
 
@@ -111,7 +120,9 @@ export interface ChangePreview {
   currency: string;
   amount_due_now: number;
   credit_applied: number;
-  entitlement_credit_delta: number | null;
+  entitlement_credit_delta: CreditDecimalString | null;
+  entitlement_credit_delta_atoms: CreditAtomsString | null;
+  credit_scale: CreditScale;
   next_invoice_amount: number;
 }
 

@@ -26,6 +26,7 @@ from .checkout import (
     CheckoutCreationRejected,
 )
 from .config import Settings, get_settings
+from .credit_amount import CREDIT_SCALE, credit_decimal
 from .database import Database
 from .plan_changes import (
     PlanChangeBusyError,
@@ -273,7 +274,9 @@ def create_app(
             {
                 "key": "monthly_credits",
                 "label": "Credits per monthly grant",
-                "value": plan.monthly_credits,
+                "value": str(plan.monthly_credits),
+                "value_atoms": str(plan.monthly_credits.atoms),
+                "scale": CREDIT_SCALE,
                 "unit": "credits",
             }
         ]
@@ -313,6 +316,8 @@ def create_app(
                 "payment_url": pending["recovery_url"],
                 "transition_policy": pending["transition_policy"],
             }
+        balance_atoms = int(account["credits_balance"])
+        grant_atoms = plan.monthly_credits.atoms if plan else 0
         return {
             "account_id": str(account["id"]),
             "transition_policy": settings.billing_transition_policy,
@@ -328,8 +333,11 @@ def create_app(
                 account["current_period_end"].isoformat() if account["current_period_end"] else None
             ),
             "credits": {
-                "balance": int(account["credits_balance"]),
-                "grant_amount": plan.monthly_credits if plan else 0,
+                "balance": credit_decimal(balance_atoms),
+                "balance_atoms": str(balance_atoms),
+                "grant_amount": credit_decimal(grant_atoms),
+                "grant_amount_atoms": str(grant_atoms),
+                "scale": CREDIT_SCALE,
                 "next_grant_at": (
                     account["credit_expires_at"].isoformat()
                     if account["credit_expires_at"]
@@ -585,11 +593,20 @@ def create_app(
                 result.estimated_credit_applied or 0 if result.decision.timing == "immediate" else 0
             ),
             "entitlement_credit_delta": (
-                result.entitlement_credit_delta
+                credit_decimal(result.entitlement_credit_delta)
                 if result.decision.timing == "immediate"
                 and result.transition_policy == "prorated_delta"
+                and result.entitlement_credit_delta is not None
                 else None
             ),
+            "entitlement_credit_delta_atoms": (
+                str(result.entitlement_credit_delta)
+                if result.decision.timing == "immediate"
+                and result.transition_policy == "prorated_delta"
+                and result.entitlement_credit_delta is not None
+                else None
+            ),
+            "credit_scale": CREDIT_SCALE,
             "next_invoice_amount": (
                 target.month_usd if result.decision.target_interval == "month" else target.year_usd
             )

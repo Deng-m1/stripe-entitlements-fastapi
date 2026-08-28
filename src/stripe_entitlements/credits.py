@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Literal
 
 import asyncpg
 
-from .bounds import POSTGRES_BIGINT_MAX
 from .clawbacks import collect_clawback_debts
+from .credit_amount import CreditAmount, checked_add_atoms
 
 
 class InsufficientCreditsError(RuntimeError):
@@ -31,7 +32,21 @@ def _validate_idempotency_key(value: str) -> str:
 @dataclass(frozen=True, slots=True)
 class CreditResult:
     outcome: Literal["charged", "refunded", "replayed", "epoch_expired"]
-    balance: int
+    balance: CreditAmount
+
+    @property
+    def balance_atoms(self) -> int:
+        return self.balance.atoms
+
+
+CreditInput = CreditAmount | Decimal | int | str
+
+
+def _amount(value: CreditInput) -> CreditAmount:
+    amount = value if isinstance(value, CreditAmount) else CreditAmount.parse(value)
+    if amount.atoms == 0:
+        raise ValueError("amount must be greater than zero")
+    return amount
 
 
 class CreditService:
@@ -40,9 +55,11 @@ class CreditService:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self.pool = pool
 
-    async def charge(self, account_id: str, amount: int, idempotency_key: str) -> CreditResult:
-        if amount <= 0 or amount > POSTGRES_BIGINT_MAX:
-            raise ValueError("amount must be between 1 and the PostgreSQL bigint maximum")
+    async def charge(
+        self, account_id: str, amount: CreditInput, idempotency_key: str
+    ) -> CreditResult:
+        normalized = _amount(amount)
+        amount_atoms = normalized.atoms
         idempotency_key = _validate_idempotency_key(idempotency_key)
         async with self.pool.acquire() as conn, conn.transaction():
             account = await conn.fetchrow(
@@ -56,7 +73,7 @@ class CreditService:
                      on conflict(idempotency_key) do nothing returning idempotency_key""",
                 idempotency_key,
                 account["id"],
-                amount,
+                amount_atoms,
                 account["grant_epoch"],
             )
             if claimed is None:
@@ -65,9 +82,14 @@ class CreditService:
                 )
                 if existing is None:
                     raise RuntimeError("credit debit identity disappeared during conflict handling")
-                if str(existing["account_id"]) != account_id or int(existing["amount"]) != amount:
+                if (
+                    str(existing["account_id"]) != account_id
+                    or int(existing["amount"]) != amount_atoms
+                ):
                     raise ValueError("idempotency key was already used with different parameters")
-                return CreditResult("replayed", int(account["credits_balance"]))
+                return CreditResult(
+                    "replayed", CreditAmount.from_atoms(int(account["credits_balance"]))
+                )
             if account["subscription_status"] != "active":
                 raise CreditsUnavailableError("subscription is not active")
             if account["entitlement_revoked"]:
@@ -76,9 +98,9 @@ class CreditService:
                 "select $1::timestamptz > now()", account["credit_expires_at"]
             ):
                 raise CreditsUnavailableError("the paid credit window has expired")
-            if int(account["credits_balance"]) < amount:
+            if int(account["credits_balance"]) < amount_atoms:
                 raise InsufficientCreditsError("insufficient credits")
-            balance = int(account["credits_balance"]) - amount
+            balance = int(account["credits_balance"]) - amount_atoms
             await conn.execute(
                 "update billing_accounts set credits_balance=$2,updated_at=now() where id=$1",
                 account["id"],
@@ -89,12 +111,12 @@ class CreditService:
                      (account_id,delta,balance_after,reason,grant_epoch,stripe_event_id)
                    values($1,$2,$3,'usage_charge',$4,$5)""",
                 account["id"],
-                -amount,
+                -amount_atoms,
                 balance,
                 account["grant_epoch"],
                 f"usage:{idempotency_key}",
             )
-            return CreditResult("charged", balance)
+            return CreditResult("charged", CreditAmount.from_atoms(balance))
 
     async def refund(self, idempotency_key: str) -> CreditResult:
         idempotency_key = _validate_idempotency_key(idempotency_key)
@@ -113,10 +135,18 @@ class CreditService:
             )
             assert debit is not None
             if debit["refunded_at"] is not None:
-                return CreditResult("replayed", int(account["credits_balance"]))
+                return CreditResult(
+                    "replayed", CreditAmount.from_atoms(int(account["credits_balance"]))
+                )
             if int(debit["grant_epoch"]) != int(account["grant_epoch"]):
-                return CreditResult("epoch_expired", int(account["credits_balance"]))
-            balance = int(account["credits_balance"]) + int(debit["amount"])
+                return CreditResult(
+                    "epoch_expired", CreditAmount.from_atoms(int(account["credits_balance"]))
+                )
+            balance = checked_add_atoms(
+                int(account["credits_balance"]),
+                int(debit["amount"]),
+                field="refunded credit balance",
+            )
             await conn.execute(
                 "update billing_accounts set credits_balance=$2,updated_at=now() where id=$1",
                 account["id"],
@@ -149,4 +179,4 @@ class CreditService:
                 )
                 or 0
             )
-            return CreditResult("refunded", final_balance)
+            return CreditResult("refunded", CreditAmount.from_atoms(final_balance))

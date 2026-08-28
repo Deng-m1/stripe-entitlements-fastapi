@@ -6,6 +6,10 @@ import BillingSuccessPage from "@/app/billing/success/page";
 import { AccountScreen } from "@/components/AccountScreen";
 import { ErrorState, LoadingState } from "@/components/AsyncState";
 import { DemoNotice } from "@/components/DemoNotice";
+import {
+  creditAmountFromAtoms,
+  creditAmountFromDecimal,
+} from "@/lib/credit-amount";
 import { demoAccount, demoCatalog } from "@/lib/mock-api";
 import type { AccountResponse, BillingApi } from "@/lib/types";
 
@@ -68,13 +72,21 @@ describe("account screen states", () => {
   });
 
   it("renders explicit empty states for an account without a subscription", async () => {
+    const zeroCredits = creditAmountFromDecimal("0");
     const account: AccountResponse = {
       ...demoAccount(),
       plan_key: "free",
       plan_interval: null,
       subscription_status: "none",
       current_period_end: null,
-      credits: { balance: 0, grant_amount: 0, next_grant_at: null },
+      credits: {
+        balance: zeroCredits.decimal,
+        balance_atoms: zeroCredits.atoms,
+        grant_amount: zeroCredits.decimal,
+        grant_amount_atoms: zeroCredits.atoms,
+        scale: zeroCredits.scale,
+        next_grant_at: null,
+      },
       entitlements: [],
     };
 
@@ -88,6 +100,27 @@ describe("account screen states", () => {
     expect(
       screen.getAllByText("Not scheduled").length,
     ).toBeGreaterThanOrEqual(2);
+  });
+
+  it("renders fractional and large credit values without Number coercion", async () => {
+    const balance = creditAmountFromAtoms("9007199254740993");
+    const grant = creditAmountFromDecimal("0.000001");
+    const account: AccountResponse = {
+      ...demoAccount(),
+      credits: {
+        balance: balance.decimal,
+        balance_atoms: balance.atoms,
+        grant_amount: grant.decimal,
+        grant_amount_atoms: grant.atoms,
+        scale: balance.scale,
+        next_grant_at: null,
+      },
+    };
+
+    render(<AccountScreen api={accountApi(account)} redirect={vi.fn()} />);
+
+    expect(await screen.findByText("9,007,199,254.740993")).toBeInTheDocument();
+    expect(screen.getByText("0.000001")).toBeInTheDocument();
   });
 
   it("refreshes the projection in place without discarding the current view", async () => {

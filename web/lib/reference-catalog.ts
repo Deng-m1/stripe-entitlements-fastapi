@@ -3,6 +3,7 @@ import type {
   CatalogResponse,
   Entitlement,
 } from "@/lib/types";
+import { creditAmountFromDecimal } from "@/lib/credit-amount";
 import referenceCatalogSource from "@/reference-catalog.json";
 
 const featureLabels: Record<string, string> = {
@@ -21,15 +22,18 @@ const limitLabels: Record<string, { label: string; unit?: string }> = {
 };
 
 function planEntitlements(
-  monthlyCredits: number,
+  monthlyCredits: string,
   features: string[],
   limits: Record<string, number>,
 ): Entitlement[] {
+  const creditAmount = creditAmountFromDecimal(monthlyCredits);
   return [
     {
       key: "monthly_credits",
       label: "Credits per monthly grant",
-      value: monthlyCredits,
+      value: creditAmount.decimal,
+      value_atoms: creditAmount.atoms,
+      scale: creditAmount.scale,
       unit: "credits",
     },
     ...features.map((key) => ({
@@ -52,7 +56,7 @@ interface ReferencePlanSource {
   description: string;
   currency: string;
   rank: number;
-  monthly_credits: number;
+  monthly_credits: string;
   month_usd: number;
   year_usd: number;
   features: string[];

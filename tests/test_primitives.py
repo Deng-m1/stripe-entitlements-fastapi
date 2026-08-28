@@ -11,7 +11,7 @@ from stripe_entitlements.transitions import decide_transition
 def test_catalog_round_trip(catalog: PlanCatalog) -> None:
     assert catalog.lookup_key("pro", "year") == "ent_pro_year"
     plan, interval = catalog.parse_lookup_key("ent_pro_year") or (None, None)
-    assert plan is not None and plan.monthly_credits == 1000
+    assert plan is not None and plan.monthly_credits.atoms == 1_000_000_000
     assert interval == "year"
     assert catalog.parse_lookup_key("other_pro_year") is None
     assert [plan.rank for plan in catalog.ordered()] == [10, 20, 30]

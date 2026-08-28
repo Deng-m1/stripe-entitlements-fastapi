@@ -27,8 +27,14 @@ dependencies = [
   "uvicorn[standard]>=0.34.0,<1",
 ]
 
+[project.optional-dependencies]
+auth = [
+  "PyJWT[crypto]>=2.10.1,<3",
+]
+
 [dependency-groups]
 dev = [
+  "PyJWT[crypto]>=2.10.1,<3",
   "httpx>=0.28.0,<1",
   "mypy>=1.15.0,<3",
   "pytest>=8.3.0,<10",
@@ -54,6 +60,17 @@ packages = ["src/stripe_entitlements"]
 [tool.hatch.build.targets.wheel.force-include]
 "migrations" = "stripe_entitlements/migrations"
 "plans.toml" = "stripe_entitlements/plans.toml"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src/stripe_entitlements",
+  "/migrations",
+  "/plans.toml",
+  "/pyproject.toml",
+  "/README.md",
+  "/LICENSE",
+  "/NOTICE",
+]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers --tb=short"

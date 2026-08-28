@@ -27,7 +27,7 @@ CORRECTNESS_TABLES = (
     "billing_clawback_debts",
     "billing_incidents",
 )
-V3_SCHEMA_CATALOG_SHA256 = "9785581cf7639bef7d510b88ffd3cabfb437e6526cce0ab6dca4be7a4bbe193e"
+V3_SCHEMA_CATALOG_SHA256 = "2a8c55462acdec62bae4abcfc09b0558daca380d9ce131024469034f4fa8abdc"
 
 
 async def _create_database(prefix: str) -> tuple[str, str]:
