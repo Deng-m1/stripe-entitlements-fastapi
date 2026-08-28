@@ -45,8 +45,17 @@ Stacks (tokens in `globals.css`):
 ```
 
 Feature settings: body text `font-feature-settings: "ss01" off;` (default);
-all numeric UI (tables, prices, ledger figures) MUST set
-`font-variant-numeric: tabular-nums`.
+comparison and ledger numerics (tables, credit figures, transcript amounts)
+MUST set `font-variant-numeric: tabular-nums`.
+
+**Price lockup (ONE grammar sitewide — closes review round 4 P2 №4):** a
+headline price leads in the display face on proportional lining figures
+(`font-variant-numeric: normal` — a tabular decimal point takes a full
+digit advance and renders "$19 . 00"), display-tight tracking, with the
+interval or qualifier riding the baseline in mono-caps. The `/pricing`
+plan cards and the landing catalog tiles share this lockup; mono
+`tabular-nums` price figures are reserved for comparison tables and
+ledger surfaces.
 
 ### 2.2 Heading hierarchy (sitewide, all routes)
 
@@ -204,10 +213,16 @@ routes are visibly one site.
   render (WEBP/CSS) derived from the same `--mesh-stops` ramp — visibly the
   hero's world without paying the canvas cost. Canvas reuse here is
   permitted but optional.
-- Plan cards use `--shadow-card` + gradient shadow base on the highlighted
-  plan only; price figures in mono `tabular-nums`; interval toggle and CTAs
-  in iris.
-- Comparison table: `--surface-sunken` stripes, hairlines inside only.
+- Plan cards are depth-framed per §4.3 (no 1px outline; `--shadow-card`
+  resting, float-and-lift on hover — the landing catalog-tile grammar) with
+  the gradient shadow base on the highlighted plan only; price figures per
+  the §2.1 price lockup; interval toggle and CTAs in iris.
+- Comparison table: `--surface-sunken` stripes, mono-caps group label rows
+  splitting price from entitlements, hairlines inside only — the outer
+  frame is depth (§4.3), not an outline.
+- The route closes on ONE full-width gradient band over `--band-deep`
+  (§3.5, the proof-band grammar) carrying the production CTA — an
+  iris-filled primary and an outline-invert secondary.
 
 ### 5.3 `/account`
 

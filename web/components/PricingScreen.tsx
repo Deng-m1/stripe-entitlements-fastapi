@@ -394,7 +394,9 @@ export function PricingScreen({
                 type="button"
               >
                 {!account
-                  ? "Loading account…"
+                  ? error
+                    ? "Account unavailable"
+                    : "Loading account…"
                   : current
                   ? "Current plan"
                   : cancellationPending
@@ -419,7 +421,12 @@ export function PricingScreen({
           Coupon or promotion code is created or simulated.
         </p>
         <p className="table-scroll-hint">Scroll sideways to compare every plan.</p>
-        <div className="comparison-table-wrap">
+        <div
+          aria-label="Scrollable plan comparison"
+          className="comparison-table-wrap"
+          role="region"
+          tabIndex={0}
+        >
           <table className="comparison-table">
             <caption>Plan price and entitlement comparison</caption>
             <thead>
@@ -437,6 +444,11 @@ export function PricingScreen({
               </tr>
             </thead>
             <tbody>
+              <tr className="compare-group">
+                <th colSpan={sortedPlans.length + 1} scope="colgroup">
+                  <span>Price</span>
+                </th>
+              </tr>
               <tr>
                 <th scope="row">Monthly price</th>
                 {sortedPlans.map((plan) => (
@@ -475,6 +487,11 @@ export function PricingScreen({
                   );
                 })}
               </tr>
+              <tr className="compare-group">
+                <th colSpan={sortedPlans.length + 1} scope="colgroup">
+                  <span>Entitlements</span>
+                </th>
+              </tr>
               {compareRows.map((row) => (
                 <tr key={row.key}>
                   <th scope="row">{row.label}</th>
@@ -502,25 +519,30 @@ export function PricingScreen({
         </p>
       </section>
 
+      {/* Closing CTA: the landing band grammar (DESIGN_SYSTEM.md §3.5) —
+          one full-bleed gradient band over --band-deep, so the route ends
+          in the same world the landing's proof band does. */}
       <section aria-labelledby="pricing-cta-heading" className="pricing-cta">
-        <div>
-          <p className="eyebrow">Webhook truth included</p>
-          <h2 id="pricing-cta-heading">
-            Take the same catalog into production.
-          </h2>
-          <p>
-            Every plan above is enforced by the FastAPI reference backend:
-            signed webhooks, a PostgreSQL event inbox, and idempotent
-            entitlement grants.
-          </p>
-        </div>
-        <div className="pricing-cta-actions">
-          <a className="button primary" href="/account">
-            Open the demo account
-          </a>
-          <a className="button secondary" href={REPOSITORY_URL}>
-            View the source
-          </a>
+        <div className="shell pricing-cta-inner">
+          <div>
+            <p className="eyebrow">Webhook truth included</p>
+            <h2 id="pricing-cta-heading">
+              Take the same catalog into production.
+            </h2>
+            <p>
+              Every plan above is enforced by the FastAPI reference backend:
+              signed webhooks, a PostgreSQL event inbox, and idempotent
+              entitlement grants.
+            </p>
+          </div>
+          <div className="pricing-cta-actions">
+            <a className="button primary" href="/account">
+              Open the demo account
+            </a>
+            <a className="button outline-invert" href={REPOSITORY_URL}>
+              View the source
+            </a>
+          </div>
         </div>
       </section>
 
