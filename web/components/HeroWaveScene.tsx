@@ -197,13 +197,15 @@ function WaveSheet({
     viewport.height / DEFAULT_WAVE_GEOMETRY.height,
   );
   const wide = viewport.aspect > 1.15;
-  // A stacked hero gets a short, wide layer, so the sheet has to be pushed
-  // further past it than on desktop — at desktop overscale its rectangular
-  // corner lands inside the band and reads as a ruled diagonal.
-  const scale = contain * (wide ? 1.34 : 2.05);
+  // Overscale pushes the sheet's rectangular border out of the layer on every
+  // side that a crest can cross: any border that stays inside the crop draws a
+  // ruled line wherever it cuts a saturated band, no matter how wide the uv
+  // fade is. The fold count rose with the overscale so the visible window
+  // still holds two to three crest bands.
+  const scale = contain * (wide ? 1.66 : 2.05);
   // The shader dissolves the sheet's left half, so a narrow layer has to slide
   // the dense right half back into frame or the band all but disappears.
-  const offsetX = wide ? 0.24 : -0.2 * DEFAULT_WAVE_GEOMETRY.width * scale;
+  const offsetX = wide ? 0.34 : -0.2 * DEFAULT_WAVE_GEOMETRY.width * scale;
 
   return (
     <mesh

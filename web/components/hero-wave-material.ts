@@ -163,7 +163,7 @@ void main() {
   // Over a light paper canvas a darkened trough reads as an olive smudge
   // rather than as shadow, so shading stays close to unity and the shadow is
   // spent on transparency instead (see the alpha term below).
-  vec3 shaded = base * (0.78 + 0.26 * keyWrap + 0.16 * lambert);
+  vec3 shaded = base * (0.8 + 0.26 * keyWrap + 0.18 * lambert);
   shaded += base * 0.1 * fillWrap;
   shaded += srgbToLinear(uSheenColor) * specular * uSpecularStrength;
   // Rim light peaks exactly on silhouettes. Over a dark canvas that reads as
@@ -171,23 +171,27 @@ void main() {
   // the turning crest without drawing it.
   shaded += srgbToLinear(uRimColor) * rim * uRimStrength;
 
-  // Dissolve toward the headline side and the sheet's long edges so the wave
-  // meets the paper canvas without a seam. Every fade has to be wide enough to
-  // hide a straight line: the sheet is a rectangle, and any edge that reaches
-  // visible alpha reads as a ruled crop across the hero rather than as a fold.
+  // The fold field owns the silhouette (Stripe's ribbon look): troughs clear
+  // to bare canvas, so the visible shape is a set of curved crest bands and
+  // the sheet's straight rectangle border almost always dies inside an
+  // already-transparent trough. Round 2 replaced the previous "wide fades
+  // everywhere" recipe, which read as a page-filling fog with one ruled
+  // diagonal where the border crossed a saturated crest.
   float alpha = uOpacity;
-  alpha *= smoothstep(0.0, 0.30, vUv.x) * smoothstep(0.0, 0.26, 1.0 - vUv.x);
-  alpha *= smoothstep(0.0, 0.28, vUv.y) * smoothstep(0.0, 0.30, 1.0 - vUv.y);
-  // Troughs sink back into the paper and crests carry the colour, which is
-  // what separates a folded sheet from a blurred wash. The window is wide on
-  // purpose: against a light canvas a short one turns the outermost crest into
-  // a drawn silhouette instead of letting it melt into the page.
+  alpha *= smoothstep(0.0, 0.14, vUv.x) * smoothstep(0.0, 0.1, 1.0 - vUv.x);
+  alpha *= smoothstep(0.0, 0.12, vUv.y) * smoothstep(0.0, 0.12, 1.0 - vUv.y);
+  // Crests carry the colour; the window starts just below the flat midline so
+  // the flattened border regions (camber pulls fold toward 0 there) melt out
+  // instead of hanging as a half-transparent haze.
+  // The transition band stays short on purpose: saturated ramp colours at
+  // 10–40% alpha over warm paper grey out into a dirty mauve, so a long fade
+  // reads as smudges on the page rather than as a translucent ribbon edge.
   alpha *= mix(
     1.0,
-    smoothstep(-1.15, 1.1, vFold * 1.15 + vLift * 0.5),
+    smoothstep(0.14, 0.52, vFold * 1.3 + vLift * 0.45),
     uTroughFade
   );
-  alpha *= 0.84 + 0.16 * keyWrap;
+  alpha *= 0.92 + 0.08 * keyWrap;
 
   vec3 output_ = linearToSrgb(shaded);
   // Ordered-free dither: 8-bit output banding is very visible across a ramp
@@ -211,13 +215,13 @@ export const HeroWaveMaterial = shaderMaterial(
     uFillLight: new Vector3(0.68, -0.36, 0.5),
     uSheenColor: new Color("#fff3d6"),
     uRimColor: new Color("#ffd0f0"),
-    uSpecularStrength: 0.36,
-    uShininess: 58,
+    uSpecularStrength: 0.52,
+    uShininess: 92,
     uRimStrength: 0.12,
     uOpacity: 1,
-    uRampOrigin: 0.34,
-    uRampScale: 2.15,
-    uTroughFade: 0.4,
+    uRampOrigin: 0.3,
+    uRampScale: 1.75,
+    uTroughFade: 0.97,
   },
   VERTEX_SHADER,
   FRAGMENT_SHADER,

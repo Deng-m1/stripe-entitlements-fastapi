@@ -62,7 +62,7 @@ export const DEFAULT_WAVE_GEOMETRY: WaveGeometryOptions = {
   height: 2.35,
   segmentsX: 256,
   segmentsY: 176,
-  foldCount: 2.4,
+  foldCount: 3.1,
   foldDepth: 0.5,
   foldSkew: 0.55,
   foldCurvature: 0.62,
