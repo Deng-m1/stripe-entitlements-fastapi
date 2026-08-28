@@ -929,3 +929,81 @@ have caught the unterminated rule at commit time.
   are natural first items for the next polish stream.
 - Round 11's parity notes stand: multi-sheet ribbon layering and a finer
   grain pass are the remaining gaps to stripe.com's hero.
+
+---
+
+## Round 13 — /pricing round two: bento depth, CTA band, one price grammar — 2026-08-28
+
+- Stream: pricing deep-iteration (fable 5); ran in parallel with the
+  product-bento and hero-geometry streams on the shared branch head —
+  `b32d620` (the bento grid landing) is the parent of this round's commits
+- Landed as `5f9bb29` (screens + styles + `DESIGN_SYSTEM.md` amendments)
+  and `82cd722` (tests + rigs); evidence run from an isolated worktree at
+  `82cd722` with production `next build` + `next start` (`http` mode,
+  honest unconfigured-API states) on one port and `next dev` + mock on
+  another for the hydrated CTA states — the Round 12 protocol
+- Screenshots: `/tmp/pricing-v3/` — `prod/` and `mock/` , each holding
+  `pricing-desktop-{monthly,yearly}-full`, `pricing-desktop-{viewport,compare,cta}`,
+  `pricing-mobile-full`, `pricing-mobile-compare-panned`,
+  `landing-desktop-viewport`, and `landing-catalog-tiles` (`.png`)
+
+### Landed this round
+
+1. **Round 12 P2 №4 closed — one price grammar, stated normatively.** The
+   landing catalog tiles drop the wide-mono `$19.00` and adopt the
+   /pricing lockup: the figure leads in the display face on proportional
+   lining figures with the interval riding the baseline in mono-caps
+   (`landing-catalog-tiles.png` against any plan-card capture).
+   `DESIGN_SYSTEM.md` §2.1 now defines the price lockup as the single
+   sitewide grammar and reserves mono `tabular-nums` for comparison tables
+   and ledgers; the legacy un-scoped `.price-block` base styles — the
+   second grammar's CSS root — are deleted outright.
+2. **Round 12 P2 №5 closed — the plan CTAs settle instead of loading
+   forever.** When the account fetch fails, the buttons now read
+   `Account unavailable` (still disabled; the inline banner keeps the
+   retry) rather than an eternal `Loading account…`. The production
+   `http`-mode captures show the settled state; a unit test pins it.
+3. **Plan cards join the landing bento depth grammar (§4.3).** The 1px
+   outline is retired inside the pricing scope — the card plane is carried
+   by `--shadow-card` with the catalog tiles' float-and-lift hover
+   (`--shadow-float`, −4px) — while the featured tier keeps its gradient
+   border, layered float, and blurred mesh underlay. The border-box stays
+   1px so the featured gradient-border trick keeps its geometry.
+4. **The comparison table scans in two passes.** Mono-caps `Price` /
+   `Entitlements` group label rows split the scan; stripes count data rows
+   only (`:nth-child(even of :not(.compare-group))`); the wrap drops its
+   outer 1px outline for the depth frame and becomes a labelled focusable
+   scroll region like the landing's. On phones the group label's inner
+   span sticks to the frozen column edge so the section names survive the
+   pan (`pricing-mobile-compare-panned.png`).
+5. **The route closes on the landing's band grammar.** The quiet
+   hairline CTA is now ONE full-bleed gradient band over `--band-deep`
+   (the proof-band voice): white H2, band eyebrow, iris primary plus
+   `outline-invert` secondary (`pricing-desktop-cta.png`). The shared
+   page padding collapses to zero so the band meets the footer, mirroring
+   the settlement routes. `DESIGN_SYSTEM.md` §5.2 records the band and the
+   depth-framed cards/table as route requirements.
+
+### Verified green
+
+- `scripts/pricing-assert.mjs` 14/14 PASS against the worktree production
+  build — the Round 10 ten (display token parity, ribbon, featured float
+  and halo, gradient phrase, flag, sticky row headers, opaque paint,
+  stripe contrast on data rows, 0px overflow) plus four new: plain cards
+  depth-framed with transparent border paint, catalog tiles sharing the
+  pricing lockup family with `normal` figures on both routes, exactly two
+  comparison group rows, and the closing CTA full-bleed over a non-flat
+  `--band-deep` gradient base.
+- Unit suite 152/152 in the evidence worktree (158/158 on the shared
+  dirty checkout with the parallel streams' in-flight tests), ESLint and
+  `tsc --noEmit` clean, production build clean, 0px mobile overflow in
+  both capture modes.
+
+### Open items
+
+- The interval toggle's active fill is still ink, not the §5.2 iris —
+  carried from Round 10 unchanged; flag for the next token pass.
+- The pricing hero ribbon was reshaped by the parallel bento stream
+  (`b32d620`) between this round's baseline and evidence run; its
+  desktop eyebrow-over-glow contrast deserves a look from that stream —
+  out of this round's scope, noted here so it is not lost.
