@@ -12,6 +12,12 @@ const pages = [
   { route: "/", slug: "landing" },
   { route: "/pricing", slug: "pricing" },
   { route: "/account", slug: "account" },
+  // The settlement moment: SuccessScreen polls the account API until the
+  // projection matches the expected plan, so mock mode settles immediately.
+  {
+    route: "/billing/success?expected_plan=starter&expected_interval=month",
+    slug: "success",
+  },
 ];
 
 const browser = await chromium.launch();
