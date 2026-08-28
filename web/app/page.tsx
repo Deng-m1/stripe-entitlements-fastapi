@@ -5,6 +5,7 @@ import { HeroTerminal } from "@/components/HeroTerminal";
 import { HeroWaveCanvas } from "@/components/HeroWaveCanvas";
 import { LedgerFlow } from "@/components/LedgerFlow";
 import { PipelineNodeGraph } from "@/components/PipelineNodeGraph";
+import { ProductBento } from "@/components/ProductBento";
 import { ScrollReveal } from "@/components/ScrollReveal";
 import { SettlementChart } from "@/components/SettlementChart";
 import { UpgradeMatrix } from "@/components/UpgradeMatrix";
@@ -261,6 +262,28 @@ export default function HomePage() {
         </div>
       </section>
 
+      {/* Product bento — the Stripe zh-us product-card grid (scorecard §3):
+          four real reference-UI surfaces composed in depth per brief §3.3. */}
+      <section
+        aria-labelledby="bento-heading"
+        className="paper-band bento-section"
+      >
+        <div className="shell" data-reveal="group">
+          <div className="section-heading reveal-item" style={stagger(0)}>
+            <p className="eyebrow">01 · The product surface</p>
+            <h2 id="bento-heading">
+              Real screens, projected from settled events.
+            </h2>
+            <p>
+              The same PostgreSQL projection drives every surface: the webhook
+              inbox, the account screen, the upgrade preview, and the test
+              gates that prove them.
+            </p>
+          </div>
+          <ProductBento />
+        </div>
+      </section>
+
       {/* Sources → ledger — M3 centerpiece + M1 annotated chart. */}
       <section
         aria-labelledby="ledger-heading"
@@ -269,7 +292,7 @@ export default function HomePage() {
       >
         <div className="shell ledger-grid">
           <div className="ledger-intro">
-            <p className="eyebrow">01 · How it works</p>
+            <p className="eyebrow">02 · How it works</p>
             <h2 id="ledger-heading">
               Out-of-order events in. An ordered ledger out.
             </h2>
@@ -317,7 +340,7 @@ export default function HomePage() {
       <section aria-labelledby="invariants-heading" className="pipeline-band">
         <div className="shell" data-reveal="group">
           <div className="section-heading reveal-item" style={stagger(0)}>
-            <p className="eyebrow">02 · Guarantees, not features</p>
+            <p className="eyebrow">03 · Guarantees, not features</p>
             <h2 id="invariants-heading">
               A Stripe billing reference built on invariants.
             </h2>
@@ -351,11 +374,13 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* Upgrade matrix — M1 thin-bordered paper-card discipline. */}
+      {/* Upgrade matrix — M1 thin-bordered paper-card discipline. The
+          heading leads and the depth-composed artifact follows one beat
+          behind, matching the group-stagger grammar of sections 02–06. */}
       <section aria-labelledby="matrix-heading" className="paper-band">
-        <div className="shell" data-reveal>
-          <div className="section-heading">
-            <p className="eyebrow">03 · The upgrade matrix</p>
+        <div className="shell" data-reveal="group">
+          <div className="section-heading reveal-item" style={stagger(0)}>
+            <p className="eyebrow">04 · The upgrade matrix</p>
             <h2 id="matrix-heading">All 36 plan transitions, defined.</h2>
             <p>
               Three plans, two intervals, no undefined cell. Every source state
@@ -365,7 +390,7 @@ export default function HomePage() {
           </div>
           {/* Depth-composed matrix card (brief §5.5): mesh glow base behind,
               faded sibling card, tilted front artifact. */}
-          <div className="matrix-stage">
+          <div className="matrix-stage reveal-item" style={stagger(1)}>
             <div
               aria-hidden="true"
               className="stage-glow matrix-stage-glow parallax-layer"
@@ -386,7 +411,7 @@ export default function HomePage() {
       <section aria-labelledby="gates-heading" className="proof-band">
         <div className="shell" data-reveal="group">
           <div className="proof-heading reveal-item" style={stagger(0)}>
-            <p className="eyebrow">04 · Proof, not promises</p>
+            <p className="eyebrow">05 · Proof, not promises</p>
             <h2 id="gates-heading">Proven against real Stripe test mode.</h2>
             <p>
               The payment lifecycle has automated gates against real Stripe
@@ -470,7 +495,7 @@ export default function HomePage() {
       <section aria-labelledby="catalog-heading" className="paper-band">
         <div className="shell" data-reveal="group">
           <div className="section-heading reveal-item" style={stagger(0)}>
-            <p className="eyebrow">05 · Bundled reference catalog</p>
+            <p className="eyebrow">06 · Bundled reference catalog</p>
             <h2 id="catalog-heading">Three tiers, monthly and annual billing.</h2>
             <p>
               Prices are explicit billing data. Stable plan rank controls
@@ -578,7 +603,7 @@ export default function HomePage() {
       <section aria-labelledby="faq-heading" className="paper-band">
         <div className="shell" data-reveal="group">
           <div className="section-heading reveal-item" style={stagger(0)}>
-            <p className="eyebrow">06 · Frequently asked questions</p>
+            <p className="eyebrow">07 · Frequently asked questions</p>
             <h2 id="faq-heading">Stripe billing template FAQ</h2>
           </div>
           <div className="faq-list">

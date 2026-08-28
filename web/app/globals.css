@@ -988,7 +988,7 @@ h2 {
 @keyframes reveal-rise {
   from {
     opacity: 0;
-    transform: translateY(24px);
+    transform: translateY(24px) scale(0.985);
   }
 }
 
@@ -1098,6 +1098,137 @@ h2 {
   }
 }
 
+/* ===== Motion v3: entrance cascades + hover micro-interactions =====
+   CSS only, layered on the existing ScrollReveal/ScrollMotion drivers —
+   no animation library. Every transform-bearing rule here sits behind
+   prefers-reduced-motion: no-preference, and the global reduce block
+   near the end of this file additionally zeroes the legacy hover lifts,
+   so a reduce visitor gets a fully parked page with color/shadow-only
+   feedback. */
+
+@media (prefers-reduced-motion: no-preference) {
+  /* Hero event pills pop in after the copy cascade (hero-rise ends at
+     ~0.45s + 0.6s). The animation rides the pill itself, so each li's
+     static scatter transform is untouched, and the backwards fill hands
+     the pill back to the stylesheet — hover below keeps working. */
+  .hero-pills .event-pill {
+    animation: pill-rise 0.5s var(--ease-out-soft) backwards;
+  }
+
+  .hero-pills li:nth-child(1) .event-pill {
+    animation-delay: 0.5s;
+  }
+
+  .hero-pills li:nth-child(2) .event-pill {
+    animation-delay: 0.58s;
+  }
+
+  .hero-pills li:nth-child(3) .event-pill {
+    animation-delay: 0.66s;
+  }
+
+  .hero-pills li:nth-child(4) .event-pill {
+    animation-delay: 0.74s;
+  }
+
+  /* Pricing plan cards cascade on load. The pricing screen is a client
+     component outside ScrollReveal's per-page reveal scope, so the
+     stagger is pure CSS; interval toggles re-render in place (stable
+     keys) and never replay it. */
+  .pricing-page .plan-card {
+    animation: reveal-rise 0.6s var(--ease-out-soft) backwards;
+  }
+
+  .pricing-page .plan-card:nth-child(1) {
+    animation-delay: 0.08s;
+  }
+
+  .pricing-page .plan-card:nth-child(2) {
+    animation-delay: 0.18s;
+  }
+
+  .pricing-page .plan-card:nth-child(3) {
+    animation-delay: 0.28s;
+  }
+
+  /* Hover micro-interactions, 200–300ms (scorecard §9 hover grammar).
+     Transitions live inside this gate too: under reduce there is no
+     tween and no transform, only the color/shadow states outside. */
+  .event-pill {
+    transition:
+      box-shadow 0.25s ease,
+      transform 0.25s var(--ease-out-soft);
+  }
+
+  .event-pill:hover {
+    box-shadow: 0 6px 16px rgba(11, 30, 61, 0.14);
+    transform: translateY(-2px);
+  }
+
+  .pipeline-band .capability-grid li {
+    transition:
+      background-color 0.25s ease,
+      transform 0.25s var(--ease-out-soft);
+  }
+
+  .pipeline-band .capability-grid li:hover {
+    background: rgba(240, 238, 255, 0.08);
+    transform: translateX(4px);
+  }
+
+  .gate-list li {
+    transition: transform 0.25s var(--ease-out-soft);
+  }
+
+  .gate-list li:hover {
+    transform: translateX(4px);
+  }
+
+  .gate-check {
+    transition:
+      background-color 0.25s ease,
+      border-color 0.25s ease;
+  }
+
+  .gate-list li:hover .gate-check {
+    background: rgba(243, 246, 243, 0.14);
+    border-color: #f3f6f3;
+  }
+
+  /* Buttons: the primary already lifts; give the outline voices the same
+     1px rise and every button a press-down acknowledgment. */
+  .button.secondary:hover:not(:disabled),
+  .button.ink:hover:not(:disabled),
+  .button.outline-invert:hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
+
+  .button:active:not(:disabled) {
+    transform: translateY(0) scale(0.98);
+    transition-duration: 0.1s;
+  }
+
+  /* Featured pricing tier: a taller lift than its neighbours with the
+     mesh-glow underlay (::before) swelling underneath. */
+  .pricing-page .pricing-featured:hover {
+    box-shadow:
+      0 22px 48px rgba(11, 30, 61, 0.16),
+      0 8px 20px rgba(91, 76, 245, 0.18);
+    transform: translateY(-6px);
+  }
+
+  .pricing-page .pricing-featured:hover::before {
+    opacity: 0.3;
+  }
+}
+
+@keyframes pill-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.96);
+  }
+}
+
 .section-heading {
   margin-bottom: var(--space-12);
   max-width: 800px;
@@ -1129,6 +1260,733 @@ h2 {
 
 .section-heading .button {
   margin-top: var(--space-3);
+}
+
+/* ===== Product bento (brief §3.3, scorecard §3 P0) =====
+   The Stripe product-card grid: an asymmetric 7/5 bento of white cards,
+   each cropping a real reference-UI artifact composed in depth — tilted
+   front artifact, faded sibling behind, blurred mesh glow base — over a
+   per-card mesh-ramp wash. The atmosphere and the grid carry two distinct
+   [data-depth] parallax rates (§3.2); card entrances ride the section's
+   data-reveal="group" stagger. */
+
+.bento-frame {
+  position: relative;
+}
+
+.bento-atmosphere {
+  background:
+    radial-gradient(
+      38% 44% at 16% 18%,
+      rgba(122, 90, 248, 0.18),
+      transparent 100%
+    ),
+    radial-gradient(
+      36% 42% at 84% 82%,
+      rgba(255, 138, 60, 0.16),
+      transparent 100%
+    );
+  filter: blur(30px);
+  inset: -4% -5%;
+  pointer-events: none;
+  position: absolute;
+  z-index: 0;
+}
+
+.bento-grid {
+  display: grid;
+  gap: var(--space-6);
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  position: relative;
+  z-index: 1;
+}
+
+.bento-card {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: var(--space-8) var(--space-8) 0;
+  position: relative;
+  transition:
+    box-shadow 0.25s var(--ease-out-soft),
+    transform 0.25s var(--ease-out-soft);
+}
+
+.bento-card:hover {
+  box-shadow: var(--shadow-float);
+  transform: translateY(-4px);
+}
+
+/* Per-card mesh wash behind the artifact (Stripe's gradient card floors). */
+.bento-card::before {
+  background: linear-gradient(
+    180deg,
+    transparent 34%,
+    var(--bento-wash, rgba(122, 90, 248, 0.12)) 100%
+  );
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 0;
+}
+
+.bento-card-inbox {
+  --bento-wash: rgba(122, 90, 248, 0.13);
+  grid-column: span 7;
+}
+
+.bento-card-phone {
+  --bento-wash: rgba(255, 92, 143, 0.12);
+  grid-column: span 5;
+}
+
+.bento-card-preview {
+  --bento-wash: rgba(255, 138, 60, 0.12);
+  grid-column: span 5;
+}
+
+.bento-card-gates {
+  --bento-wash: rgba(255, 212, 77, 0.16);
+  grid-column: span 7;
+}
+
+.bento-card-head {
+  position: relative;
+  z-index: 1;
+}
+
+.bento-card-head h3 {
+  font-size: 1.375rem;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  line-height: 1.25;
+  margin: 0 0 var(--space-2);
+}
+
+.bento-card-head p {
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1.6;
+  margin: 0;
+  max-width: 46ch;
+}
+
+/* The stage anchors the artifact to the card's bottom edge so the crop and
+   the tilt read as one composition; ghost + glow sit behind it (§4.3). */
+.bento-stage {
+  align-items: flex-end;
+  display: flex;
+  flex: 1;
+  margin-top: var(--space-8);
+  position: relative;
+  z-index: 1;
+}
+
+.bento-glow {
+  border-radius: 50%;
+  filter: blur(30px);
+  inset: 14% -4% -12%;
+  opacity: 0.35;
+  pointer-events: none;
+  position: absolute;
+  z-index: 0;
+}
+
+.bento-card-inbox .bento-glow {
+  background: radial-gradient(
+    closest-side,
+    var(--mesh-violet) 0%,
+    var(--mesh-pink) 62%,
+    transparent 100%
+  );
+}
+
+.bento-card-phone .bento-glow {
+  background: radial-gradient(
+    closest-side,
+    var(--mesh-pink) 0%,
+    var(--mesh-orange) 62%,
+    transparent 100%
+  );
+}
+
+.bento-card-preview .bento-glow {
+  background: radial-gradient(
+    closest-side,
+    var(--mesh-orange) 0%,
+    var(--mesh-lemon) 65%,
+    transparent 100%
+  );
+}
+
+.bento-card-gates .bento-glow {
+  background: radial-gradient(
+    closest-side,
+    var(--mesh-violet) 0%,
+    var(--mesh-orange) 68%,
+    transparent 100%
+  );
+}
+
+/* Faded sibling (§4.3 stacking) — desktop only, like the ledger/matrix. */
+.bento-ghost {
+  background: var(--surface);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  box-shadow: var(--shadow-card);
+  display: none;
+  inset: 0;
+  opacity: 0.55;
+  pointer-events: none;
+  position: absolute;
+  z-index: 0;
+}
+
+.bento-artifact {
+  background: var(--surface);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  box-shadow: var(--shadow-float);
+  margin: 0;
+  position: relative;
+  width: 100%;
+  z-index: 1;
+}
+
+@media (min-width: 851px) {
+  .bento-ghost {
+    display: block;
+  }
+
+  /* Each front artifact spends the 2–4° tilt budget; its ghost repeats the
+     same pose offset behind (§3.3). translateY keeps the cropped bottom
+     edge below the card despite the rotation. */
+  .bento-card-inbox .bento-artifact {
+    transform: perspective(1500px) rotateX(2deg) rotateY(-3deg) translateY(4px);
+  }
+
+  .bento-card-inbox .bento-ghost {
+    transform: perspective(1500px) rotateX(2deg) rotateY(-3deg)
+      translate(22px, 24px) scale(0.96);
+  }
+
+  .bento-card-phone .bento-artifact {
+    transform: perspective(1200px) rotateX(2deg) rotateY(3.5deg);
+  }
+
+  .bento-card-phone .bento-ghost {
+    border-radius: 40px 40px 0 0;
+    inset: 0 14% -6%;
+    transform: perspective(1200px) rotateX(2deg) rotateY(3.5deg)
+      translate(-20px, 22px) scale(0.96);
+  }
+
+  .bento-card-preview .bento-artifact {
+    transform: perspective(1300px) rotateX(2.5deg) rotateY(3deg)
+      translateY(4px);
+  }
+
+  .bento-card-preview .bento-ghost {
+    transform: perspective(1300px) rotateX(2.5deg) rotateY(3deg)
+      translate(-18px, 22px) scale(0.96);
+  }
+
+  .bento-card-gates .bento-artifact {
+    transform: perspective(1500px) rotateX(2deg) rotateY(-2.5deg)
+      translateY(4px);
+  }
+
+  .bento-card-gates .bento-ghost {
+    transform: perspective(1500px) rotateX(2deg) rotateY(-2.5deg)
+      translate(20px, 22px) scale(0.96);
+  }
+}
+
+/* Shared mini-chrome: mono title bar with traffic dots and status chips. */
+.bento-ui-bar {
+  align-items: center;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--muted);
+  display: flex;
+  font-family: var(--font-mono-stack);
+  font-size: 0.68rem;
+  gap: 12px;
+  letter-spacing: 0.08em;
+  padding: 12px 16px;
+}
+
+.bento-ui-dots {
+  background: var(--hairline-strong);
+  border-radius: 50%;
+  box-shadow:
+    12px 0 0 var(--hairline-strong),
+    24px 0 0 var(--hairline-strong);
+  flex: none;
+  height: 7px;
+  margin-right: 20px;
+  width: 7px;
+}
+
+.bento-ui-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bento-ui-live {
+  align-items: center;
+  color: var(--iris-strong);
+  display: inline-flex;
+  gap: 6px;
+  margin-left: auto;
+  text-transform: uppercase;
+}
+
+.bento-live-dot {
+  background: var(--iris);
+  border-radius: 50%;
+  height: 6px;
+  width: 6px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .bento-live-dot {
+    animation: bento-pulse 2.4s ease-in-out infinite;
+  }
+}
+
+@keyframes bento-pulse {
+  50% {
+    box-shadow: 0 0 0 4px rgba(91, 76, 245, 0.18);
+  }
+}
+
+.bento-chip {
+  border-radius: 999px;
+  flex: none;
+  font-family: var(--font-mono-stack);
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  padding: 3px 9px;
+  text-transform: uppercase;
+}
+
+.bento-chip.chip-claimed {
+  background: var(--iris-soft);
+  color: var(--iris-strong);
+}
+
+.bento-chip.chip-noop {
+  background: var(--surface-sunken);
+  border: 1px dashed var(--hairline-strong);
+  color: var(--muted);
+}
+
+.bento-chip.chip-policy {
+  background: var(--pill-cream);
+  color: var(--pill-cream-ink);
+  margin-left: auto;
+}
+
+/* Card 1 — webhook inbox rows. */
+.bento-inbox-rows {
+  list-style: none;
+  margin: 0;
+  padding: 6px 0;
+}
+
+.bento-inbox-rows li {
+  align-items: center;
+  display: grid;
+  font-size: 0.78rem;
+  gap: 12px;
+  grid-template-columns: 58px minmax(0, 1.3fr) minmax(0, 1fr) auto;
+  padding: 9px 16px;
+}
+
+.bento-inbox-rows li.is-noop {
+  background: var(--surface-sunken);
+  color: var(--muted);
+}
+
+.bento-inbox-time {
+  color: var(--muted);
+  font-family: var(--font-mono-stack);
+  font-size: 0.66rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.bento-inbox-event {
+  font-family: var(--font-mono-stack);
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bento-inbox-effect {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bento-inbox-foot {
+  border-top: 1px solid var(--hairline);
+  color: var(--muted);
+  font-family: var(--font-mono-stack);
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+  margin: 0;
+  padding: 12px 16px 18px;
+}
+
+/* Card 2 — the phone mock. Ink bezel, white screen, mono figures. */
+.bento-phone {
+  background: var(--ink);
+  border-radius: 40px 40px 0 0;
+  box-shadow: var(--shadow-float);
+  margin-inline: auto;
+  padding: 10px 10px 0;
+  width: min(292px, 88%);
+}
+
+.bento-phone-screen {
+  background: var(--surface);
+  border-radius: 32px 32px 0 0;
+  padding: 14px 18px 20px;
+}
+
+.bento-phone-status {
+  color: var(--muted);
+  display: flex;
+  font-family: var(--font-mono-stack);
+  font-size: 0.62rem;
+  font-variant-numeric: tabular-nums;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.bento-phone-signal {
+  background: var(--hairline-strong);
+  border-radius: 1px;
+  height: 7px;
+  position: relative;
+  width: 16px;
+}
+
+.bento-phone-signal::after {
+  background: var(--ink);
+  border-radius: 1px 0 0 1px;
+  content: "";
+  inset: 0 30% 0 0;
+  position: absolute;
+}
+
+.bento-phone-kicker {
+  color: var(--muted);
+  font-family: var(--font-mono-stack);
+  font-size: 0.62rem;
+  letter-spacing: 0.14em;
+  margin: 0 0 10px;
+  text-transform: uppercase;
+}
+
+.bento-phone-plan {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.bento-phone-plan-name {
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+.bento-phone-figure {
+  font-family: var(--font-mono-stack);
+  font-size: 1.9rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  margin: 0 0 10px;
+}
+
+.bento-phone-figure span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.bento-phone-meter {
+  background: var(--surface-sunken);
+  border-radius: 999px;
+  height: 6px;
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+
+.bento-phone-meter span {
+  background: linear-gradient(90deg, var(--mesh-violet), var(--mesh-pink));
+  border-radius: 999px;
+  display: block;
+  height: 100%;
+}
+
+.bento-phone-rows {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+}
+
+.bento-phone-rows li {
+  border-top: 1px solid var(--hairline);
+  display: flex;
+  font-size: 0.74rem;
+  justify-content: space-between;
+  padding: 8px 0;
+}
+
+.bento-phone-rows span {
+  color: var(--muted);
+  font-family: var(--font-mono-stack);
+  font-size: 0.68rem;
+}
+
+.bento-phone-rows strong {
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+.bento-phone-foot {
+  color: var(--muted);
+  font-family: var(--font-mono-stack);
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  margin: 0;
+}
+
+/* Card 3 — the change-preview dialog. */
+.bento-preview-route {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 14px 16px 4px;
+}
+
+.bento-route-pill {
+  background: var(--surface-sunken);
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 650;
+  padding: 4px 12px;
+}
+
+.bento-route-pill.is-target {
+  background: var(--iris-soft);
+  border-color: rgba(91, 76, 245, 0.35);
+}
+
+.bento-route-arrow {
+  color: var(--muted);
+}
+
+.bento-preview-lines {
+  margin: 6px 0 0;
+}
+
+.bento-preview-lines > div {
+  display: flex;
+  font-size: 0.82rem;
+  justify-content: space-between;
+  padding: 9px 16px;
+}
+
+.bento-preview-lines dt {
+  color: var(--muted);
+}
+
+.bento-preview-lines dd {
+  font-family: var(--font-mono-stack);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+}
+
+.bento-preview-lines .bento-preview-total {
+  border-top: 1px solid var(--hairline);
+  font-weight: 650;
+  margin-top: 4px;
+}
+
+.bento-preview-total dt {
+  color: var(--text);
+}
+
+.bento-preview-delta {
+  color: var(--muted);
+  font-family: var(--font-mono-stack);
+  font-size: 0.64rem;
+  letter-spacing: 0.06em;
+  margin: 0;
+  padding: 0 16px 12px;
+}
+
+.bento-preview-cta {
+  background: var(--iris);
+  border-radius: 999px;
+  color: #ffffff;
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin: 0 16px 20px;
+  padding: 10px;
+  text-align: center;
+}
+
+/* Card 4 — the gate run panel with the wall-time sparkline. */
+.bento-gates-body {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  padding: 14px 16px 18px;
+}
+
+.bento-gates-list {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.bento-gates-list li {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.bento-gate-tick {
+  background: var(--iris-soft);
+  border-radius: 50%;
+  flex: none;
+  height: 14px;
+  position: relative;
+  width: 14px;
+}
+
+.bento-gate-tick::after {
+  border: solid var(--iris-strong);
+  border-width: 0 0 1.5px 1.5px;
+  content: "";
+  height: 3px;
+  left: 3.5px;
+  position: absolute;
+  top: 4px;
+  transform: rotate(-45deg);
+  width: 6px;
+}
+
+.bento-gates-list code {
+  font-family: var(--font-mono-stack);
+  font-size: 0.7rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bento-gate-runtime {
+  color: var(--muted);
+  font-family: var(--font-mono-stack);
+  font-size: 0.64rem;
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+}
+
+.bento-gates-chart {
+  align-self: end;
+  position: relative;
+}
+
+.bento-gates-chart svg {
+  display: block;
+  height: 96px;
+  width: 100%;
+}
+
+/* Settlement orange stays a data-visualization stroke only (§3.3). */
+.bento-chart-area {
+  fill: rgba(227, 90, 31, 0.12);
+}
+
+.bento-chart-line {
+  fill: none;
+  stroke: var(--data-orange);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.bento-chart-ref {
+  opacity: 0.65;
+  stroke: var(--muted);
+  stroke-dasharray: 5 5;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.bento-chart-label {
+  color: var(--muted);
+  display: block;
+  font-family: var(--font-mono-stack);
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  margin-top: 8px;
+}
+
+/* Bento responsive: single column below 850px; the 7/5 split holds above. */
+@media (max-width: 850px) {
+  .bento-grid {
+    gap: var(--space-4);
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bento-card-inbox,
+  .bento-card-phone,
+  .bento-card-preview,
+  .bento-card-gates {
+    grid-column: auto;
+  }
+
+  .bento-card {
+    padding: var(--space-6) var(--space-6) 0;
+  }
+
+  .bento-stage {
+    margin-top: var(--space-6);
+  }
+
+  .bento-gates-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .bento-inbox-rows li {
+    grid-template-columns: minmax(0, 1.35fr) auto;
+  }
+
+  .bento-inbox-time,
+  .bento-inbox-effect {
+    display: none;
+  }
 }
 
 /* ===== Sources → ledger (M3) + annotated chart (M1) ===== */
@@ -1849,8 +2707,14 @@ h2 {
   color: rgba(246, 245, 255, 0.72);
 }
 
+/* The negative-margin/padding pair carves out a transparent hover-wash
+   surface without moving the text column (hover rule in the motion v3
+   block below the scroll-progress section). */
 .capability-grid li {
+  border-radius: 12px;
+  margin-inline: -14px;
   padding-block: 10px;
+  padding-inline: 14px;
 }
 
 .capability-grid h3 {
@@ -1897,22 +2761,31 @@ h2 {
   margin: 0 0 var(--space-3);
 }
 
+/* The sitewide price lockup (DESIGN_SYSTEM.md §2.1): the figure leads in
+   the display face on proportional lining figures — same grammar as the
+   /pricing plan cards, closing review round 4's two-grammar note (P2 №4) —
+   with the interval riding the baseline in mono-caps. */
 .catalog-price {
+  align-items: baseline;
   color: var(--text);
-  font-family: var(--font-mono-stack);
-  font-size: 1.65rem;
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  margin: 0 0 12px;
+  display: flex;
+  font-family: var(--font-display-stack);
+  font-size: 2.1rem;
+  font-variant-numeric: normal;
+  font-weight: 640;
+  gap: 8px;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  margin: 0 0 14px;
 }
 
 .catalog-price span {
   color: var(--muted);
-  font-family: var(--font-body-stack);
-  font-size: 0.85rem;
+  font-family: var(--font-mono-stack);
+  font-size: 0.7rem;
   font-weight: 500;
-  margin-left: 5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
 .catalog-credits,
@@ -2494,15 +3367,21 @@ h2 {
   width: 1px;
 }
 
+/* Depth-framed like the catalog tiles (§4.3): the outer 1px outline is
+   retired; hairlines survive only inside the composite as row rules. */
 .comparison-table-wrap {
   background: var(--surface);
-  border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card);
   max-width: 100%;
   min-width: 0;
   overflow-x: auto;
   width: 100%;
+}
+
+.comparison-table-wrap:focus-visible {
+  outline: 2px solid var(--iris);
+  outline-offset: 2px;
 }
 
 .comparison-table {
@@ -2642,6 +3521,12 @@ h2 {
   color: var(--paper);
 }
 
+/* Color-only hover feedback, so it stays on under reduced motion. */
+.interval-toggle button:hover:not(.active):not(:disabled) {
+  background: rgba(11, 30, 61, 0.06);
+  color: var(--text);
+}
+
 .plan-grid {
   display: grid;
   gap: 18px;
@@ -2668,6 +3553,7 @@ h2 {
   padding: 28px;
   transition:
     border-color 0.3s ease,
+    box-shadow 0.3s ease,
     transform 0.3s var(--ease-out-soft);
 }
 
@@ -2681,32 +3567,8 @@ h2 {
   margin-bottom: 8px;
 }
 
-.price-block {
-  min-height: 103px;
-}
-
-.price-block strong {
-  display: inline-block;
-  font-family: var(--font-display-stack);
-  font-size: 2.35rem;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.03em;
-}
-
-.price-block > span {
-  color: var(--muted);
-}
-
-.price-block small {
-  color: var(--muted);
-  display: block;
-  margin-top: 5px;
-}
-
-.price-block .saving {
-  color: var(--success);
-  font-weight: 750;
-}
+/* Price lockups live in the .pricing-page scope (§2.1): one grammar, no
+   second base variant to drift from. */
 
 .entitlement-list {
   color: var(--muted);
@@ -3578,6 +4440,18 @@ body:has(.settlement-band) .page {
   .spinner {
     animation: none;
   }
+
+  /* Motion v3: the pre-existing hover lifts declared outside the
+     no-preference gate would still snap positions with zeroed
+     transitions; park them so reduce keeps every element static and
+     feedback stays color/shadow-only. */
+  .button:hover:not(:disabled),
+  .button:active:not(:disabled),
+  .button:hover .button-arrow,
+  .catalog-tile:hover,
+  .plan-card:hover {
+    transform: none !important;
+  }
 }
 
 @media (max-width: 1020px) {
@@ -3905,8 +4779,10 @@ body:has(.landing-page) .page {
 
 /* ===== /pricing product page (DESIGN_SYSTEM.md 5.2) ===== */
 
+/* Both page ends are full-bleed bands (ribbon hero up top, the closing
+   CTA band at the bottom), so the shared page padding collapses entirely. */
 body:has(.pricing-route) .page {
-  padding-block: 0 84px;
+  padding-block: 0;
 }
 
 .pricing-hero {
@@ -4059,9 +4935,24 @@ body:has(.pricing-route) .page {
   margin-top: 34px;
 }
 
+/* Bento depth framing (§4.3, the landing catalog-tile grammar): the card
+   plane is carried by the layered shadow, not a 1px outline, and hover
+   answers with the same float-and-lift the catalog tiles use. The border
+   box stays 1px wide so the featured card's gradient border-box trick
+   keeps its geometry. */
 .pricing-page .plan-card {
+  border-color: transparent;
   padding: 30px;
   position: relative;
+  transition:
+    box-shadow 0.3s ease,
+    transform 0.3s var(--ease-out-soft);
+}
+
+.pricing-page .plan-card:hover {
+  border-color: transparent;
+  box-shadow: var(--shadow-float);
+  transform: translateY(-4px);
 }
 
 /* Desktop silhouette: the featured tier stands a step taller than its
@@ -4101,6 +4992,7 @@ body:has(.pricing-route) .page {
   inset: 18px -10px -6px;
   opacity: 0.17;
   position: absolute;
+  transition: opacity 0.35s ease;
   z-index: -1;
 }
 
@@ -4217,9 +5109,41 @@ body:has(.pricing-route) .page {
   font-weight: 550;
 }
 
-/* Sunken stripes on the row axis; the featured tint rides the column. */
-.pricing-page .comparison-table tbody tr:nth-child(even) {
+/* Sunken stripes on the row axis (group label rows sit outside the
+   count); the featured tint rides the column. */
+.pricing-page
+  .comparison-table
+  tbody
+  tr:nth-child(even of :not(.compare-group)) {
   background: var(--surface-soft);
+}
+
+/* Mono-caps group labels split the scan into price and entitlement
+   passes — the same eyebrow voice the landing sections open with. */
+.pricing-page .comparison-table .compare-group th {
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-family: var(--font-mono-stack);
+  font-size: 0.64rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  padding: 10px 18px;
+  text-transform: uppercase;
+}
+
+.pricing-page .comparison-table tbody tr.compare-group:first-child th {
+  border-top: 0;
+}
+
+/* Keep the label legible while the table pans on phones: the inner span
+   sticks to the frozen column edge instead of scrolling off with the
+   colspan cell. */
+.pricing-page .comparison-table .compare-group span {
+  display: inline-block;
+  left: 18px;
+  position: sticky;
 }
 
 .pricing-page .comparison-table .compare-featured {
@@ -4259,24 +5183,53 @@ body:has(.pricing-route) .page {
   max-width: 760px;
 }
 
-/* Closing CTA: quiet hairline-opened band, one accent fill on the page. */
+/* Closing CTA: ONE full-width gradient band over --band-deep (§3.5) —
+   the landing proof-band grammar — so the route ends in the same world
+   the landing does instead of a quiet hairline. */
 .pricing-cta {
+  background:
+    radial-gradient(
+      110% 150% at 88% -20%,
+      rgba(122, 90, 248, 0.42),
+      transparent 60%
+    ),
+    radial-gradient(
+      100% 130% at 5% 112%,
+      rgba(255, 92, 143, 0.26),
+      transparent 56%
+    ),
+    var(--band-deep);
+  color: #f3f6f3;
+  margin-left: calc(50% - 50vw);
+  margin-top: 84px;
+  min-width: 0;
+  padding-block: var(--space-24);
+  width: 100vw;
+}
+
+.pricing-cta-inner {
   align-items: center;
-  border-top: 1px solid var(--hairline);
   display: grid;
   gap: 28px 64px;
   grid-template-columns: minmax(0, 1fr) auto;
-  margin-top: 84px;
-  padding-top: 56px;
+}
+
+.pricing-cta .eyebrow {
+  color: rgba(243, 246, 243, 0.62);
+}
+
+.pricing-cta .eyebrow::before {
+  background: linear-gradient(90deg, var(--mesh-pink), var(--mesh-lemon));
 }
 
 .pricing-cta h2 {
+  color: #ffffff;
   font-size: clamp(1.55rem, 2.6vw, 2.1rem);
   margin-bottom: 10px;
 }
 
-.pricing-cta > div > p:last-child {
-  color: var(--muted);
+.pricing-cta-inner > div > p:not(.eyebrow) {
+  color: rgba(243, 246, 243, 0.72);
   line-height: 1.65;
   margin: 0;
   max-width: 52ch;
@@ -4328,11 +5281,19 @@ body:has(.pricing-route) .page {
     background: var(--surface);
   }
 
-  .pricing-page .comparison-table tbody tr:nth-child(even) th[scope="row"] {
+  .pricing-page
+    .comparison-table
+    tbody
+    tr:nth-child(even of :not(.compare-group))
+    th[scope="row"] {
     background: var(--surface-soft);
   }
 
   .pricing-cta {
+    padding-block: var(--space-16);
+  }
+
+  .pricing-cta-inner {
     grid-template-columns: minmax(0, 1fr);
   }
 }
