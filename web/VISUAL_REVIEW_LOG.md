@@ -180,3 +180,131 @@ P2-10 terminal legibility at 390 px.
 - Frame cost is unmeasured on real GPUs. `PerformanceMonitor` drops DPR on
   decline, but no budget has been asserted against hardware.
 - P1-5 (hero headline rag at 1440 px) is still open and now unblocked.
+
+---
+
+## Round 4 — visual review round 2, production build — 2026-08-28
+
+- Reviewer: fable 5 (visual review lead, round 2)
+- Baseline reviewed: commit `69e0941` (branch `cursor/landing-settlement-field`,
+  Round 3 hero merged), isolated worktree
+- Preview: `next build` + `next start` (production). The config boundary
+  correctly refuses `NEXT_PUBLIC_BILLING_API_MODE=mock` in a production build,
+  so the production preview runs in `http` mode: `/` and the hero are fully
+  representative, while `/pricing`, `/account`, and `/billing/success` render
+  their unconfigured-API states. Hydrated billing states were re-verified on a
+  second worktree under `next dev` + mock on another port.
+- Screenshots: `/tmp/visual-review/round3/` — `prod/` (baseline, production,
+  now including `/billing/success`), `mock/` (hydrated dev screens),
+  `hero-v2`…`hero-v5` (iteration trail), `hero-final/` + `prod-v6/` (after
+  this round's fixes), `reference/` (live `stripe.com/zh-us` captures at 1440
+  and 390, taken this round for side-by-side reading)
+
+### Issues
+
+#### P0
+
+1. **The WebGL hero read as a page-filling fog, not a ribbon.** Live render
+   confirmed (every rig viewport reports `drawn=true`), but the composition
+   failed against the zh-us reference: crest/trough alpha modulation was 40%
+   deep over a very wide window, so the sheet painted the whole hero — the
+   headline column, the CTA row, and the band under the event pills all sat on
+   a pastel wash, and saturated ramp colours at 10–40% alpha over warm paper
+   grey out into a dirty mauve. Stripe's band is the opposite: crisp curved
+   silhouettes, bare canvas between crests, colour only on the crests.
+   Evidence: `round3/prod/landing-desktop-first-viewport.png` vs
+   `round3/reference/stripe-zh-us-1440.png`.
+   **Fixed this round — in the shader, not the report:** fold-driven alpha is
+   now the silhouette owner (`uTroughFade` 0.4 → 0.97 with a short
+   `smoothstep(0.14, 0.52)` window on the fold field), crest alpha raised,
+   specular sharpened (0.36/58 → 0.52/92), ramp window retuned
+   (origin/scale 0.34/2.15 → 0.3/1.75), fold count 2.4 → 3.1 so the visible
+   window keeps two–three bands after the overscale below.
+2. **The sheet's rectangle border drew a ruled diagonal at 1440 px.** The
+   Round 3 wide-uv-fade recipe hid the border only while the whole sheet was
+   foggy; any crisp crest crossing the border terminates in a straight line.
+   Overscale now pushes every border a crest can cross out of the layer
+   (wide-viewport scale 1.34 → 1.66), and the uv fades shrink to a safety
+   net. Verified: no ruled edge at 1440/1024/390 in `hero-final/`.
+3. **`/pricing` mobile panned 42 px again — regression class of Round 1 P0-2,
+   new culprit.** The unconfigured-API `.inline-error` banner (long
+   unbreakable `NEXT_PUBLIC_BILLING_API_BASE_URL.` token + non-wrapping flex
+   row) propagated min-content past the 390 px viewport; `/billing/success`
+   overflowed 3 px the same way. Round 1's rig never saw it because mock mode
+   shows no banner — the production preview is what exposed it.
+   **Fixed:** `flex-wrap: wrap` + `overflow-wrap: anywhere` on
+   `.inline-error`. All four routes now report 0 px at 390 px (probe:
+   `scripts/overflow-probe.mjs`).
+
+#### P1
+
+4. **Headline lockup shattered into five lines on laptop widths.** Below
+   ~1080 px the §2.2 display clamp outruns the narrowed headline column and
+   strands “Your” on its own line (`round3/hero/laptop-1024-hero.png`). The
+   1440 px four-line lockup (successor of Round 1 P1-5 “chaos.” rag; the
+   two-block `.h1-line` split landed with the hero stream) is deliberate and
+   reads well — only the laptop range was broken.
+   **Fixed:** a 851–1080 px hold-back on `.hero-copy h1`
+   (`clamp(2.5rem, 1.1rem + 3.1vw, 3.5rem)`), documented as a §2.2 amendment
+   in `DESIGN_SYSTEM.md`.
+5. **Poster/live drift.** The baked posters still showed the Round 3 fog
+   composition; after the shader rework the reduced-motion path and the live
+   render disagreed about what the hero even is. **Fixed:** posters rebaked
+   from the final shader (`scripts/build-hero-wave-poster.mjs`); the
+   reduced-motion capture in `hero-final/` is compositionally interchangeable
+   with the live frame.
+6. **The stacked (≤850 px) hero was a muddy backdrop behind the whole copy
+   block.** The mobile mask never reached full transparency (a Round 3 guard
+   against the corner-smudge failure that fold-driven alpha has since
+   retired), so a half-alpha crest sat behind the headline and support copy as
+   a grey-lavender stain and body contrast suffered. **Fixed:** the stacked
+   band now hugs the top-right corner (height 64% → 52%, mask reaches full
+   transparency on the left), matching Stripe's stacked composition.
+
+#### P2
+
+7. **Hero WebGL gate raced its own poster fade.** The handover assertion read
+   `opacity` once, mid-900ms-transition, and failed on a fast machine.
+   **Fixed:** retrying `toHaveCSS("opacity", "0")`; all four gates green
+   against the production build.
+8. **Demo banner cost at 390 px (Round 1 P2-7) and `/account` credits-card
+   void (P2-8): open here, owned elsewhere.** Both surfaces
+   (`DemoNotice.tsx`, `AccountScreen.tsx`, sitewide tokens) are mid-rewrite in
+   the parallel white-canvas/iris restyle stream that was uncommitted in the
+   shared checkout during this round; patching them here would only
+   manufacture conflicts. Handed over with evidence:
+   `round3/mock/landing-mobile-first-viewport.png` (banner ≈ 4 lines),
+   `round3/mock/account-desktop-full.png` (void between balance and facts).
+9. **Terminal body type at 390 px (Round 1 P2-10):** re-checked on the
+   production build; 0.68rem mono is legible on a 2× phone frame
+   (`round3/prod/landing-mobile-full.png`). Closing unless the restyle stream
+   changes the terminal.
+
+### Verified green this round
+
+- Hero: `drawn=true` at 1440/1024/390, all four `hero-webgl.spec.ts` gates
+  pass against `next start`; left column and CTA row sit on bare canvas at
+  1440; band silhouettes follow fold curves at every viewport; phase drift
+  across a 9-second gap keeps one colour identity
+  (`hero-final/desktop-1440-late-hero.png`).
+- 0 px horizontal overflow at 390 px on `/`, `/pricing`, `/account`, and
+  `/billing/success` in production `http` mode (worst historical mode for
+  overflow, since every banner renders).
+- Unit suite 139/139, ESLint and `tsc --noEmit` clean on the reviewed tree.
+- `/billing/success` desktop composition (centered card, status chips,
+  actions) holds in both the polling-timeout state (production, no API) and
+  the settled mock state.
+
+### Open items carried forward
+
+- P2-8 credits-card balance void and P2-7 banner height — explicitly handed
+  to the in-flight sitewide restyle stream (with the note that the restyle
+  should re-run `scripts/visual-review-pages.mjs` + `overflow-probe.mjs`,
+  since this round proved the production `http` states catch regressions the
+  mock rig cannot).
+- Real-GPU frame budget for the hero remains unasserted (inherited from
+  Round 3).
+- The reviewed tree predates the parallel restyle; once that stream lands,
+  the hero ribbon must be re-read against the new white canvas — the trough
+  dissolve currently melts into warm paper `#faf6ef`, and pure white will
+  slightly raise the band's apparent contrast.
