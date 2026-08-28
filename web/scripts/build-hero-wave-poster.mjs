@@ -18,8 +18,19 @@ await mkdir(outDir, { recursive: true });
 
 const CAPTURE_CSS = `
   html, body { background: none !important; }
-  .site-header, .demo-notice, .paper-hero > .shell { visibility: hidden !important; }
+  /* Isolate the layer. A locator screenshot captures everything that paints
+     inside the element's box, and this layer's negative insets reach well past
+     the hero — without this, the following section's copy and cards end up
+     baked into the poster. Hide the document, then re-show the wave's own
+     subtree; visibility inherits, so the override is enough. */
+  body * { visibility: hidden !important; }
+  .hero-wave, .hero-wave * { visibility: visible !important; }
+  /* The runtime poster sits inside .hero-wave, so leaving it on would nest the
+     previous capture inside the new one. */
   .hero-wave-fallback { display: none !important; }
+  /* The layer is intentionally larger than the hero crops it to. Capture it
+     whole: at runtime the same clip and mask apply to poster and canvas
+     alike, so baking either one in would apply it twice. */
   .paper-hero { overflow: visible !important; }
   .hero-wave { mask-image: none !important; }
 `;
