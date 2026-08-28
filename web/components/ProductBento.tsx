@@ -43,6 +43,12 @@ const INBOX_ROWS = [
     effect: "credits revoked",
     status: "claimed" as const,
   },
+  {
+    time: "16:02:17",
+    event: "invoice.payment_failed",
+    effect: "no grant",
+    status: "claimed" as const,
+  },
 ];
 
 const PHONE_ENTITLEMENTS = [
@@ -60,22 +66,23 @@ const GATE_RUNS = [
   { gate: "UI projection", runtime: "22s" },
 ];
 
-/* Suite wall-time sparkline: relative shape only, one labeled point. */
+/* Suite wall-time sparkline: relative shape only. SVG y grows downward, so
+   a descending trend (improving wall time) ends at the larger y values. */
 const CHART_POINTS = [
-  [0, 46],
-  [24, 41],
-  [48, 44],
-  [72, 36],
-  [96, 39],
-  [120, 30],
-  [144, 34],
-  [168, 26],
-  [192, 31],
-  [216, 24],
-  [240, 27],
-  [264, 22],
-  [288, 25],
-  [312, 20],
+  [0, 18],
+  [24, 24],
+  [48, 20],
+  [72, 29],
+  [96, 25],
+  [120, 34],
+  [144, 30],
+  [168, 39],
+  [192, 34],
+  [216, 42],
+  [240, 38],
+  [264, 46],
+  [288, 43],
+  [312, 49],
 ] as const;
 
 const chartLine = CHART_POINTS.map(([x, y], index) =>
@@ -140,7 +147,8 @@ export function ProductBento() {
                 ))}
               </ul>
               <p className="bento-inbox-foot">
-                signature verified on the raw body · 4 deliveries · 3 effects
+                signature verified on the raw body · 5 deliveries · 4 applied
+                · 1 absorbed
               </p>
             </figure>
           </div>
@@ -302,8 +310,8 @@ export function ProductBento() {
                       className="bento-chart-ref"
                       x1="0"
                       x2="312"
-                      y1="22"
-                      y2="22"
+                      y1="54"
+                      y2="54"
                     />
                   </svg>
                   <span className="bento-chart-label">
