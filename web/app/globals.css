@@ -1108,26 +1108,28 @@ h2 {
 
 @media (prefers-reduced-motion: no-preference) {
   /* Hero event pills pop in after the copy cascade (hero-rise ends at
-     ~0.45s + 0.6s). The animation rides the pill itself, so each li's
-     static scatter transform is untouched, and the backwards fill hands
-     the pill back to the stylesheet — hover below keeps working. */
+     ~0.45s + 0.6s). The li IS the pill and owns a static scatter
+     transform, so the from-only keyframe interpolates back to that
+     scatter pose and the backwards fill hands the element back to the
+     stylesheet when done. The nth-child delay rules outrank the
+     shorthand's zeroed delay by specificity. */
   .hero-pills .event-pill {
     animation: pill-rise 0.5s var(--ease-out-soft) backwards;
   }
 
-  .hero-pills li:nth-child(1) .event-pill {
+  .hero-pills li:nth-child(1) {
     animation-delay: 0.5s;
   }
 
-  .hero-pills li:nth-child(2) .event-pill {
+  .hero-pills li:nth-child(2) {
     animation-delay: 0.58s;
   }
 
-  .hero-pills li:nth-child(3) .event-pill {
+  .hero-pills li:nth-child(3) {
     animation-delay: 0.66s;
   }
 
-  .hero-pills li:nth-child(4) .event-pill {
+  .hero-pills li:nth-child(4) {
     animation-delay: 0.74s;
   }
 
@@ -1154,15 +1156,18 @@ h2 {
   /* Hover micro-interactions, 200–300ms (scorecard §9 hover grammar).
      Transitions live inside this gate too: under reduce there is no
      tween and no transform, only the color/shadow states outside. */
+  /* The hover nudge rides the independent `translate` channel so it
+     composes with each pill's scatter transform instead of replacing it
+     (a transform here would snap li 3 from +10px to -2px). */
   .event-pill {
     transition:
       box-shadow 0.25s ease,
-      transform 0.25s var(--ease-out-soft);
+      translate 0.25s var(--ease-out-soft);
   }
 
   .event-pill:hover {
     box-shadow: 0 6px 16px rgba(11, 30, 61, 0.14);
-    transform: translateY(-2px);
+    translate: 0 -2px;
   }
 
   .pipeline-band .capability-grid li {
@@ -1209,15 +1214,18 @@ h2 {
   }
 
   /* Featured pricing tier: a taller lift than its neighbours with the
-     mesh-glow underlay (::before) swelling underneath. */
-  .pricing-page .pricing-featured:hover {
+     mesh-glow underlay (::before) swelling underneath. The extra
+     .plan-card class outranks the sitewide
+     `.pricing-page .plan-card:hover` -4px lift, which would otherwise win
+     on source order. */
+  .pricing-page .plan-card.pricing-featured:hover {
     box-shadow:
       0 22px 48px rgba(11, 30, 61, 0.16),
       0 8px 20px rgba(91, 76, 245, 0.18);
     transform: translateY(-6px);
   }
 
-  .pricing-page .pricing-featured:hover::before {
+  .pricing-page .plan-card.pricing-featured:hover::before {
     opacity: 0.3;
   }
 }
