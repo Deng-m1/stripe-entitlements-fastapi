@@ -55,10 +55,10 @@ for (const [name, path] of pages) {
     hasTouch: true,
   });
   await settle(mobile, path);
+  // body.scrollWidth excludes the Next.js dev-tools iframe that the dev
+  // server appends under <body>; that overlay never ships to production.
   const overflow = await mobile.evaluate(
-    () =>
-      document.documentElement.scrollWidth -
-      document.documentElement.clientWidth,
+    () => document.body.scrollWidth - document.documentElement.clientWidth,
   );
   console.log(`${name} mobile horizontal overflow px: ${overflow}`);
   await mobile.screenshot({ path: `${outDir}/${name}-mobile-full.png`, fullPage: true });
