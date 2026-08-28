@@ -129,4 +129,28 @@ describe("real browser runner frontend boundary", () => {
       runner.indexOf("e2e_run_completed=1", runner.indexOf("verify-database")),
     );
   });
+
+  it("seeds a private recovery identity before any browser payment can start", () => {
+    const seed = markedBlock("E2E_CLEANUP_MANIFEST_SEED");
+    const playwright = markedBlock("E2E_PLAYWRIGHT_ENV");
+
+    expect(seed).toContain('"${e2e_backend_url}/api/account"');
+    expect(seed).toContain('Authorization: Bearer $e2e_demo_token');
+    expect(seed).toContain("write-cleanup-manifest");
+    expect(seed).toContain('manifest.get("account_id") != account_id');
+    expect(seed).toContain("stat.S_IMODE(manifest_path.stat().st_mode) != 0o600");
+    expect(runner.indexOf(seed)).toBeLessThan(runner.indexOf(playwright));
+  });
+
+  it("never overwrites a seeded recovery identity when the database is unavailable", () => {
+    const cleanup = runner.slice(
+      runner.indexOf("e2e_cleanup()"),
+      runner.indexOf("trap 'e2e_cleanup $?'"),
+    );
+
+    expect(cleanup).toContain(
+      '[[ ! -e "$e2e_cleanup_manifest" && ! -L "$e2e_cleanup_manifest" ]]',
+    );
+    expect(cleanup).toContain("preserving the previously seeded cleanup manifest");
+  });
 });

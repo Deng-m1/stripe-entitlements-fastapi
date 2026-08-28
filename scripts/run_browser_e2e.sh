@@ -53,6 +53,7 @@ e2e_pg_container="stripe-entitlements-browser-e2e-pg-$$"
 e2e_tmp_dir="$(mktemp -d /tmp/stripe-entitlements-browser-e2e.XXXXXX)"
 e2e_endpoint_state="$e2e_tmp_dir/webhook.json"
 e2e_cleanup_manifest="$e2e_tmp_dir/cleanup-manifest.json"
+e2e_account_state="$e2e_tmp_dir/account.json"
 e2e_endpoint_id=""
 e2e_webhook_url=""
 e2e_webhook_create_started=0
@@ -178,12 +179,16 @@ e2e_cleanup() {
         --url "$e2e_webhook_url" \
         --output "$e2e_cleanup_manifest" >/dev/null 2>&1; then
       echo "browser E2E cleanup manifest creation failed" >&2
-      printf '{"endpoint_id":"%s","endpoint_description":"%s",' \
-        "$e2e_endpoint_id" "$e2e_description" >"$e2e_cleanup_manifest"
-      printf '"endpoint_url":"%s","external_ref":"%s",' \
-        "$e2e_webhook_url" "$e2e_external_ref" >>"$e2e_cleanup_manifest"
-      printf '"database_state_available":false}\n' >>"$e2e_cleanup_manifest"
-      chmod 600 "$e2e_cleanup_manifest"
+      if [[ ! -e "$e2e_cleanup_manifest" && ! -L "$e2e_cleanup_manifest" ]]; then
+        printf '{"endpoint_id":"%s","endpoint_description":"%s",' \
+          "$e2e_endpoint_id" "$e2e_description" >"$e2e_cleanup_manifest"
+        printf '"endpoint_url":"%s","external_ref":"%s",' \
+          "$e2e_webhook_url" "$e2e_external_ref" >>"$e2e_cleanup_manifest"
+        printf '"database_state_available":false}\n' >>"$e2e_cleanup_manifest"
+        chmod 600 "$e2e_cleanup_manifest"
+      else
+        echo "preserving the previously seeded cleanup manifest" >&2
+      fi
       e2e_cleanup_failed=1
     fi
   fi
@@ -481,6 +486,39 @@ elif ! kill -0 "$e2e_listener_pid" 2>/dev/null; then
   echo "Stripe CLI listener exited before browser execution" >&2
   exit 1
 fi
+
+# E2E_CLEANUP_MANIFEST_SEED_BEGIN
+curl --cacert "$e2e_loopback_cert" -fsS \
+  -H "Authorization: Bearer $e2e_demo_token" \
+  "${e2e_backend_url}/api/account" >"$e2e_account_state"
+STRIPE_API_VERSION="$e2e_request_version" \
+  uv run python scripts/e2e_stripe.py write-cleanup-manifest \
+  --database-url "$e2e_database_url" \
+  --external-ref "$e2e_external_ref" \
+  --endpoint-id "$e2e_endpoint_id" \
+  --description "$e2e_description" \
+  --url "$e2e_webhook_url" \
+  --output "$e2e_cleanup_manifest"
+E2E_ACCOUNT_STATE="$e2e_account_state" \
+E2E_CLEANUP_MANIFEST="$e2e_cleanup_manifest" \
+  uv run python -c '
+import json
+import os
+import stat
+from pathlib import Path
+
+account = json.loads(Path(os.environ["E2E_ACCOUNT_STATE"]).read_text(encoding="utf-8"))
+manifest_path = Path(os.environ["E2E_CLEANUP_MANIFEST"])
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+account_id = account.get("account_id")
+if not isinstance(account_id, str) or not account_id:
+    raise RuntimeError("authenticated account response has no account_id")
+if manifest.get("account_id") != account_id:
+    raise RuntimeError("cleanup manifest is not bound to the authenticated account")
+if stat.S_IMODE(manifest_path.stat().st_mode) != 0o600:
+    raise RuntimeError("cleanup manifest mode is not exactly 0600")
+'
+# E2E_CLEANUP_MANIFEST_SEED_END
 
 # E2E_FRONTEND_BUILD_ENV_BEGIN
 if ! (

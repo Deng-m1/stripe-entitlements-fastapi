@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## Unreleased (0.3.0)
+
+- Replace the pre-release `001`-through-`006` upgrade lineage with one final-state
+  `001_v3_baseline.sql` for fresh installations. The baseline directly declares all
+  runtime tables, constraints, indexes, defaults, and the immutable Invoice-owner
+  trigger; it removes historical backfills, the FK rebuild, and the deprecated
+  `payload_sha256` compatibility column.
+- Treat the baseline reset as intentionally incompatible with v0.2.x databases. New and
+  old migration bundles reject each other's history without partial schema changes;
+  development, demo, and staging databases created from v0.2.x must be recreated.
+- Harden the real-browser release gate with an atomic private recovery manifest,
+  account-owned fallback discovery, post-delete verification, strict Stripe error
+  classification, zero-unrelated-Event isolation, and resilient visible-error matching
+  across Stripe Checkout's duplicated DOM nodes.
 
 - Make first Invoice ownership atomic across paid, prorated-delta, refund, and dispute
   paths so a conflicting account cannot merge facts before its ownership check.
@@ -9,8 +22,8 @@
 - Harden reconciliation around ignored synthetic duplicates, per-attempt cancellation
   identity, paid CAS-loss retries, and strictly causal incident cleanup, including
   long-running incident writers and exact failed-attempt resolution;
-  add migration `006_invoice_ownership_and_incident_causality.sql` for explicit Invoice
-  audit retention, wall-clock observations, and the unresolved-incident lookup.
+  include explicit Invoice audit retention, wall-clock observations, and the unresolved-
+  incident lookup in the 0.3 baseline.
 
 ## 0.2.2 - 2026-08-18
 

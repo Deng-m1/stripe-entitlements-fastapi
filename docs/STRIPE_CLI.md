@@ -26,7 +26,7 @@ Do not reuse one label for two Stripe contracts:
 - Webhook payloads contain Event `api_version` from the endpoint/account snapshot.
   `STRIPE_WEBHOOK_API_VERSION` must equal that actual value.
 
-The 2026-08-18 `0.2.2` Stripe CLI forwarding runs observed signed Clover payloads and
+The 2026-08-28 0.3 candidate Stripe CLI forwarding runs observed signed Clover payloads and
 a Clover Event API view. The separate 2026-08-02 endpoint runs used isolated endpoints
 pinned to Dahlia and observed signed Dahlia payloads while the Event API view remained
 Clover. Neither value changes the outbound request version, and CLI forwarding does not
@@ -193,9 +193,10 @@ The current nine-case real suite contains assertions for both a full-price/no-pr
 monthly upgrade and a prorated-delta monthly upgrade through paid Event projection. The
 delta case performs a real full refund and checks cross-Invoice allocation/reversion;
 other cases cover an annual-origin two-phase Schedule and repeatable authentication-
-required/customer-charge-failure pending updates. All nine cases passed on the `0.2.2`
-release candidate on 2026-08-18, including strict cleanup and zero run-owned active
-inventory.
+required/customer-charge-failure pending updates. All nine cases passed on the 0.3
+baseline candidate on 2026-08-28, including strict cleanup and zero run-owned active
+inventory. Both browser policies also passed that day through signed Stripe CLI
+forwarding on the production Next.js build.
 The earlier seven-case network run is historical evidence only. The remaining 2026-07-31
 manual evidence set contains:
 

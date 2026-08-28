@@ -7,10 +7,11 @@
 - [ ] Separate automated PostgreSQL, automated real Stripe, manual test-mode and
       production evidence.
 - [ ] Bind every pass claim to the exact commit. The review candidate based on
-      `main@75070ef` provisionally passed 743 PostgreSQL tests and 153 frontend tests; it
+      `main@4df7f73` provisionally passed 787 PostgreSQL tests and 155 frontend tests; it
       is not evidence for that base commit. Replace this label after the final commit and
-      full rerun. Retained `0.2.2` network evidence is 9 real Stripe cases and 2 browser
-      policies; label older 239/7/60/2 and 270/9/62/2 results as historical.
+      full rerun. The 0.3 candidate passed 9 real Stripe cases and 2 CLI-transport browser
+      policies; label older 239/7/60/2 and 270/9/62/2 results as historical, and do not
+      relabel the failed pre-state Quick Tunnel attempt as endpoint evidence.
 - [ ] Cite Test Clock renewal/annual-slot evidence only when the full annual lifecycle
       test actually ran; a collected or skipped test is not evidence.
 - [ ] Record outbound request API version and webhook Event snapshot API version
@@ -95,12 +96,12 @@
 ## Database and deployment
 
 - [ ] Back up all ten correctness tables together.
-- [ ] Apply all six migrations through
-      `006_invoice_ownership_and_incident_causality.sql` before new code.
-- [ ] Treat migration `006` as a maintenance-window operation: it rebuilds the
-      Invoice-owner foreign key and creates a non-concurrent index. Stop billing writers,
-      rehearse on a production-scale restored copy, set and exercise `lock_timeout`, and
-      monitor `pg_stat_activity`/`pg_locks`; do not claim zero downtime.
+- [ ] For 0.3, initialize a fresh database with `001_v3_baseline.sql`; do not attempt an
+      in-place upgrade from a v0.2.x migration history.
+- [ ] Recreate every v0.2.x development, demo, and staging database before using 0.3;
+      verify both old-to-new and new-to-old lineage mixing fails without partial DDL.
+- [ ] After the 0.3 baseline is released, freeze its filename and checksum and append
+      `002_...sql` or later for every schema change.
 - [ ] Verify every bundled migration checksum; tolerate later migration rows only when
       the runtime/schema change remains backward-compatible during rolling deployment.
 - [ ] Verify restore/PITR and run reconciliation in staging.
@@ -135,7 +136,7 @@
 - [ ] Confirm visible landing, plan, savings and FAQ copy matches JSON-LD and the
       enforced catalog; do not advertise unsupported coupons, trials, tax or currency.
 - [ ] Confirm CI `Backend`, `Container`, and `Web` jobs pass from a clean clone. Backend
-      must install the Wheel independently and apply all six migrations to fresh
+      must install the Wheel independently and apply the complete baseline to fresh
       PostgreSQL; Container must do the same from the built image, then return
       `ok=true`/`database=true` from host `curl` while UID/GID 10001 and read-only.
 - [ ] Review dependency/security alerts and license changes.

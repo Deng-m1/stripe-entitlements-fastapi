@@ -5,6 +5,8 @@ import argparse
 import asyncio
 import json
 import os
+import stat
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,17 @@ SUPPORTED_EVENTS = (
     "charge.dispute.created",
 )
 E2E_PRODUCT_LINE = "example-entitlements"
+_MANIFEST_STRING_FIELDS = (
+    "endpoint_id",
+    "endpoint_description",
+    "endpoint_url",
+    "external_ref",
+    "account_id",
+    "checkout_session_id",
+    "stripe_customer_id",
+    "stripe_subscription_id",
+)
+_MANIFEST_FIELDS = frozenset((*_MANIFEST_STRING_FIELDS, "database_state_available"))
 
 
 def _test_key() -> str:
@@ -56,6 +69,148 @@ def _all_list_items(operation: Any, /, *args: Any, **kwargs: Any) -> list[Any]:
     page = operation(*args, **kwargs)
     iterator = getattr(page, "auto_paging_iter", None)
     return list(iterator()) if callable(iterator) else list(page.data)
+
+
+def _is_missing_resource(exc: stripe.InvalidRequestError) -> bool:
+    return exc.code == "resource_missing" or exc.http_status == 404
+
+
+def _retrieve_optional(operation: Any, identifier: str) -> Any | None:
+    try:
+        return operation(identifier, **_options())
+    except stripe.InvalidRequestError as exc:
+        if _is_missing_resource(exc):
+            return None
+        raise
+
+
+def _assert_checkout_session_closed(session_id: str, account_id: str) -> None:
+    session = _retrieve_optional(stripe.checkout.Session.retrieve, session_id)
+    if session is None:
+        return
+    raw = _dict(session)
+    metadata = raw.get("metadata") or {}
+    if (
+        bool(raw.get("livemode"))
+        or str(raw.get("client_reference_id")) != account_id
+        or str(metadata.get("account_id")) != account_id
+    ):
+        raise RuntimeError("cleanup verification found an unowned Checkout Session")
+    if raw.get("status") == "open":
+        raise RuntimeError("run-owned Checkout Session remained open after cleanup")
+
+
+def _assert_subscription_canceled(
+    subscription_id: str,
+    account_id: str,
+    customer_id: str | None,
+) -> None:
+    subscription = _retrieve_optional(stripe.Subscription.retrieve, subscription_id)
+    if subscription is None:
+        return
+    raw = _dict(subscription)
+    metadata = raw.get("metadata") or {}
+    actual_customer_id = _object_id(raw.get("customer"))
+    if (
+        bool(raw.get("livemode"))
+        or str(metadata.get("account_id")) != account_id
+        or metadata.get("product_line") != E2E_PRODUCT_LINE
+        or actual_customer_id is None
+        or (customer_id is not None and actual_customer_id != customer_id)
+    ):
+        raise RuntimeError("cleanup verification found an unowned Subscription")
+    if raw.get("status") != "canceled":
+        raise RuntimeError("run-owned Subscription remained active after cleanup")
+
+
+def _assert_customer_deleted(customer_id: str) -> None:
+    customer = _retrieve_optional(stripe.Customer.retrieve, customer_id)
+    if customer is None:
+        return
+    raw = _dict(customer)
+    if bool(raw.get("livemode")):
+        raise RuntimeError("cleanup verification reached a live Customer")
+    if not bool(raw.get("deleted")):
+        raise RuntimeError("run-owned Customer remained present after cleanup")
+
+
+def _require_isolated_event_inbox(total_events: int, run_events: int) -> int:
+    unrelated_events = total_events - run_events
+    if unrelated_events != 0:
+        raise RuntimeError(
+            "browser E2E webhook inbox contains "
+            f"{unrelated_events} Event(s) outside this isolated run"
+        )
+    return unrelated_events
+
+
+def _load_cleanup_manifest(output: Path) -> dict[str, Any]:
+    try:
+        state = output.lstat()
+    except FileNotFoundError:
+        return {}
+    if not stat.S_ISREG(state.st_mode):
+        raise RuntimeError("cleanup manifest must be a regular file")
+    if stat.S_IMODE(state.st_mode) & 0o077:
+        raise RuntimeError("cleanup manifest must not be readable by group or other users")
+    try:
+        raw = json.loads(output.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("cleanup manifest is not valid UTF-8 JSON") from exc
+    if not isinstance(raw, dict):
+        raise RuntimeError("cleanup manifest must contain a JSON object")
+    unknown_fields = sorted(set(raw) - _MANIFEST_FIELDS)
+    if unknown_fields:
+        raise RuntimeError(
+            "cleanup manifest contains unsupported field(s): " + ", ".join(unknown_fields)
+        )
+    for field in _MANIFEST_STRING_FIELDS:
+        value = raw.get(field)
+        if value is not None and not isinstance(value, str):
+            raise RuntimeError(f"cleanup manifest field {field!r} must be a string or null")
+    database_state_available = raw.get("database_state_available")
+    if database_state_available is not None and not isinstance(database_state_available, bool):
+        raise RuntimeError("cleanup manifest database_state_available must be a boolean")
+    return raw
+
+
+def _write_private_json_atomic(output: Path, payload: dict[str, Any]) -> None:
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        dir=output.parent,
+        prefix=f".{output.name}.",
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(file_descriptor, 0o600)
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
+            file_descriptor = -1
+            json.dump(payload, handle, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, output)
+        directory_descriptor = os.open(output.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        if file_descriptor >= 0:
+            os.close(file_descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _merge_manifest_identities(manifest: dict[str, Any], values: dict[str, Any]) -> None:
+    for field, raw_value in values.items():
+        if raw_value is None or raw_value == "":
+            continue
+        value = str(raw_value)
+        existing = manifest.get(field)
+        if existing not in (None, "", value):
+            raise RuntimeError(f"cleanup manifest identity changed for {field}")
+        manifest[field] = value
 
 
 def create_webhook(args: argparse.Namespace) -> None:
@@ -110,8 +265,10 @@ def delete_webhook(args: argparse.Namespace) -> None:
     try:
         endpoint = stripe.WebhookEndpoint.retrieve(args.endpoint_id, **_options())
         raw = _dict(endpoint)
-    except stripe.InvalidRequestError:
-        return
+    except stripe.InvalidRequestError as exc:
+        if _is_missing_resource(exc):
+            return
+        raise
     if bool(raw.get("livemode")):
         raise RuntimeError("refusing to delete a live webhook endpoint")
     if raw.get("description") != args.description:
@@ -119,6 +276,8 @@ def delete_webhook(args: argparse.Namespace) -> None:
     deleted = _dict(endpoint.delete(**_options()))
     if not bool(deleted.get("deleted")):
         raise RuntimeError("run-owned Webhook Endpoint did not delete")
+    if _retrieve_optional(stripe.WebhookEndpoint.retrieve, args.endpoint_id) is not None:
+        raise RuntimeError("run-owned Webhook Endpoint remained present after deletion")
 
 
 def delete_webhook_by_description(args: argparse.Namespace) -> None:
@@ -141,8 +300,20 @@ def delete_webhook_by_description(args: argparse.Namespace) -> None:
 
 
 async def write_cleanup_manifest(args: argparse.Namespace) -> None:
-    manifest: dict[str, Any] = {
-        "endpoint_id": args.endpoint_id or None,
+    output = Path(args.output)
+    manifest = await asyncio.to_thread(_load_cleanup_manifest, output)
+    expected_identity = {
+        "endpoint_description": args.description,
+        "endpoint_url": args.url,
+        "external_ref": args.external_ref,
+    }
+    for field, expected in expected_identity.items():
+        existing = manifest.get(field)
+        if existing not in (None, "", expected):
+            raise RuntimeError(f"refusing to replace a cleanup manifest for another {field}")
+
+    defaults: dict[str, Any] = {
+        "endpoint_id": None,
         "endpoint_description": args.description,
         "endpoint_url": args.url,
         "external_ref": args.external_ref,
@@ -152,6 +323,11 @@ async def write_cleanup_manifest(args: argparse.Namespace) -> None:
         "stripe_subscription_id": None,
         "database_state_available": False,
     }
+    defaults.update(manifest)
+    manifest = defaults
+    manifest.update(expected_identity)
+    _merge_manifest_identities(manifest, {"endpoint_id": args.endpoint_id})
+    manifest["database_state_available"] = False
     try:
         conn = await asyncpg.connect(args.database_url, timeout=3)
         try:
@@ -165,25 +341,18 @@ async def write_cleanup_manifest(args: argparse.Namespace) -> None:
             )
             manifest["database_state_available"] = True
             if row is not None:
-                manifest.update(
-                    {
-                        "account_id": str(row["id"]),
-                        "checkout_session_id": row["session_id"],
-                        "stripe_customer_id": row["stripe_customer_id"],
-                        "stripe_subscription_id": row["stripe_subscription_id"],
-                    }
-                )
+                database_identity = {
+                    "account_id": str(row["id"]),
+                    "checkout_session_id": row["session_id"],
+                    "stripe_customer_id": row["stripe_customer_id"],
+                    "stripe_subscription_id": row["stripe_subscription_id"],
+                }
+                _merge_manifest_identities(manifest, database_identity)
         finally:
             await conn.close()
     except (OSError, asyncpg.PostgresError):
         pass
-
-    def _write() -> None:
-        output = Path(args.output)
-        output.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
-        output.chmod(0o600)
-
-    await asyncio.to_thread(_write)
+    await asyncio.to_thread(_write_private_json_atomic, output, manifest)
 
 
 async def verify_database(args: argparse.Namespace) -> None:
@@ -399,11 +568,12 @@ async def verify_database(args: argparse.Namespace) -> None:
                 )
             stripe_event_api_versions.add(str(remote_raw.get("api_version") or "unset"))
         total_events = int(await conn.fetchval("select count(*) from stripe_webhook_events") or 0)
+        unrelated_events = _require_isolated_event_inbox(total_events, len(events))
         print(
             "verified signed webhook projection: "
             f"plan={args.expected_plan}/month credits={args.expected_credits} "
             f"policy={args.transition_policy} account_events={len(events)} "
-            f"unrelated_events={total_events - len(events)} essential_events=3 "
+            f"unrelated_events={unrelated_events} essential_events=3 "
             f"signed_delivery_transport={args.delivery_transport} "
             f"signed_payload_api_version={args.event_api_version} "
             "stripe_event_api_view_versions="
@@ -645,8 +815,14 @@ async def cleanup_account(args: argparse.Namespace) -> None:
                 expired = _dict(await asyncio.to_thread(session.expire, **_options()))
                 if expired.get("status") != "expired":
                     raise RuntimeError("run-owned Checkout Session did not expire")
-        except stripe.InvalidRequestError:
-            pass
+        except stripe.InvalidRequestError as exc:
+            if not _is_missing_resource(exc):
+                raise
+        await asyncio.to_thread(
+            _assert_checkout_session_closed,
+            str(session_id),
+            str(row["id"]),
+        )
     if subscription_id:
         try:
             subscription = await asyncio.to_thread(
@@ -669,8 +845,15 @@ async def cleanup_account(args: argparse.Namespace) -> None:
             canceled = _dict(await asyncio.to_thread(subscription.cancel, **_options()))
             if canceled.get("status") != "canceled":
                 raise RuntimeError("run-owned Subscription did not cancel")
-        except stripe.InvalidRequestError:
-            pass
+        except stripe.InvalidRequestError as exc:
+            if not _is_missing_resource(exc):
+                raise
+        await asyncio.to_thread(
+            _assert_subscription_canceled,
+            str(subscription_id),
+            str(row["id"]),
+            str(customer_id) if customer_id else owned_customer_id,
+        )
     customer_to_delete = str(customer_id) if customer_id else owned_customer_id
     if customer_to_delete:
         if owned_customer_id != customer_to_delete:
@@ -685,20 +868,15 @@ async def cleanup_account(args: argparse.Namespace) -> None:
             deleted = _dict(await asyncio.to_thread(customer.delete, **_options()))
             if not bool(deleted.get("deleted")):
                 raise RuntimeError("run-owned Customer did not delete")
-        except stripe.InvalidRequestError:
-            pass
+        except stripe.InvalidRequestError as exc:
+            if not _is_missing_resource(exc):
+                raise
+        await asyncio.to_thread(_assert_customer_deleted, customer_to_delete)
 
 
 def recover_cleanup_manifest(args: argparse.Namespace) -> None:
     manifest_path = Path(args.manifest).resolve()
-    state = manifest_path.stat()
-    if state.st_mode & 0o077:
-        raise RuntimeError("cleanup manifest must not be readable by group or other users")
-    manifest_raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if not isinstance(manifest_raw, dict):
-        raise RuntimeError("cleanup manifest must contain a JSON object")
-
-    manifest: dict[str, Any] = manifest_raw
+    manifest = _load_cleanup_manifest(manifest_path)
     account_id = str(manifest.get("account_id") or "")
     session_id = str(manifest.get("checkout_session_id") or "")
     customer_id = str(manifest.get("stripe_customer_id") or "")
@@ -716,9 +894,10 @@ def recover_cleanup_manifest(args: argparse.Namespace) -> None:
         if session_id:
             try:
                 matching_sessions.append(stripe.checkout.Session.retrieve(session_id, **_options()))
-            except stripe.InvalidRequestError:
-                pass
-        else:
+            except stripe.InvalidRequestError as exc:
+                if not _is_missing_resource(exc):
+                    raise
+        if not matching_sessions:
             sessions = _all_list_items(
                 stripe.checkout.Session.list,
                 limit=100,
@@ -749,16 +928,24 @@ def recover_cleanup_manifest(args: argparse.Namespace) -> None:
             if not owned:
                 raise RuntimeError("refusing to recover a Checkout Session outside this run")
             owned_customer_id = session_customer_id
+            if not customer_id and session_customer_id:
+                customer_id = session_customer_id
+            session_subscription_id = _object_id(raw.get("subscription"))
+            if not subscription_id and session_subscription_id:
+                subscription_id = session_subscription_id
             if raw.get("status") == "open":
                 expired = _dict(session.expire(**_options()))
                 if expired.get("status") != "expired":
                     raise RuntimeError("recovered Checkout Session did not expire")
+            _assert_checkout_session_closed(str(raw["id"]), account_id)
 
     if subscription_id:
         try:
             subscription = stripe.Subscription.retrieve(subscription_id, **_options())
             subscription_raw = _dict(subscription)
-        except stripe.InvalidRequestError:
+        except stripe.InvalidRequestError as exc:
+            if not _is_missing_resource(exc):
+                raise
             subscription = None
             subscription_raw = {}
         if subscription is not None:
@@ -776,10 +963,17 @@ def recover_cleanup_manifest(args: argparse.Namespace) -> None:
             if not owned:
                 raise RuntimeError("refusing to recover a Subscription outside this run")
             owned_customer_id = subscription_customer_id
+            if not customer_id:
+                customer_id = subscription_customer_id
             if subscription_raw.get("status") != "canceled":
                 canceled = _dict(subscription.cancel(**_options()))
                 if canceled.get("status") != "canceled":
                     raise RuntimeError("recovered Subscription did not cancel")
+            _assert_subscription_canceled(
+                subscription_id,
+                account_id,
+                customer_id or owned_customer_id,
+            )
 
     if customer_id:
         if owned_customer_id is not None and owned_customer_id != customer_id:
@@ -788,7 +982,9 @@ def recover_cleanup_manifest(args: argparse.Namespace) -> None:
             try:
                 customer_probe = stripe.Customer.retrieve(customer_id, **_options())
                 customer_probe_raw = _dict(customer_probe)
-            except stripe.InvalidRequestError:
+            except stripe.InvalidRequestError as exc:
+                if not _is_missing_resource(exc):
+                    raise
                 customer_probe = None
                 customer_probe_raw = {"deleted": True}
             if customer_probe is not None and not bool(customer_probe_raw.get("deleted")):
@@ -800,7 +996,9 @@ def recover_cleanup_manifest(args: argparse.Namespace) -> None:
             try:
                 customer = stripe.Customer.retrieve(customer_id, **_options())
                 customer_raw = _dict(customer)
-            except stripe.InvalidRequestError:
+            except stripe.InvalidRequestError as exc:
+                if not _is_missing_resource(exc):
+                    raise
                 customer = None
                 customer_raw = {"deleted": True}
             if customer is not None and not bool(customer_raw.get("deleted")):
@@ -809,6 +1007,7 @@ def recover_cleanup_manifest(args: argparse.Namespace) -> None:
                 deleted = _dict(customer.delete(**_options()))
                 if not bool(deleted.get("deleted")):
                     raise RuntimeError("recovered Customer did not delete")
+            _assert_customer_deleted(customer_id)
 
     if endpoint_id:
         delete_webhook(

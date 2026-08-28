@@ -1,6 +1,6 @@
 [project]
 name = "stripe-entitlements-fastapi"
-version = "0.2.2"
+version = "0.3.0"
 description = "Stripe billing and entitlements templates with race-safe full-price and prorated upgrades"
 readme = "README.md"
 requires-python = ">=3.12"

@@ -14,6 +14,8 @@ from .resources import default_migration_directory
 
 MigrationFile = tuple[str, str, str]
 _MIGRATION_NAME = re.compile(r"^(\d{3})_[a-z0-9][a-z0-9_]*\.sql$")
+_V3_BASELINE_MIGRATION = "001_v3_baseline.sql"
+_PRE_V3_BASELINE_MIGRATION = "001_schema.sql"
 
 
 def _migration_paths(root: Path) -> list[Path]:
@@ -118,6 +120,12 @@ class Database:
             )
             applied = {str(row["filename"]): str(row["sha256"]) for row in applied_rows}
             bundled = {filename: checksum for filename, _, checksum in migrations}
+            if _V3_BASELINE_MIGRATION in bundled and _PRE_V3_BASELINE_MIGRATION in applied:
+                raise RuntimeError(
+                    "database uses the unsupported pre-0.3 migration lineage "
+                    f"({_PRE_V3_BASELINE_MIGRATION}); "
+                    "create a fresh database for the 0.3 baseline"
+                )
             # A database may legitimately be ahead during rolling upgrades or a
             # rollback. Verify every migration this binary knows about, but do not
             # reject later history owned by a newer binary.
@@ -174,6 +182,8 @@ class Database:
             rows = await conn.fetch("select filename from schema_migrations")
         applied = {str(row["filename"]) for row in rows}
         expected_filenames = {path.name for path in expected_paths}
+        if _V3_BASELINE_MIGRATION in expected_filenames and _PRE_V3_BASELINE_MIGRATION in applied:
+            return False
         # The migration command enforces immutable checksums. Readiness only verifies
         # that this binary's schema versions are present; it stays cheap and allows a
         # database to be ahead during a rolling deployment.

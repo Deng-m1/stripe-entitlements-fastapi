@@ -55,21 +55,14 @@ def test_default_resources_ignore_untrusted_current_working_directory(
     assert catalog != shadow_catalog.resolve()
     assert migrations != shadow_migrations.resolve()
     assert catalog.name == "plans.toml"
-    assert (migrations / "001_schema.sql").is_file()
+    assert (migrations / "001_v3_baseline.sql").is_file()
 
 
 def test_default_repository_resources_are_complete() -> None:
     catalog = Path(default_plan_catalog_path())
     migrations = default_migration_directory()
     assert catalog.is_file()
-    assert [path.name for path in sorted(migrations.glob("*.sql"))] == [
-        "001_schema.sql",
-        "002_plan_transitions.sql",
-        "003_transition_policies.sql",
-        "004_event_audit_hardening.sql",
-        "005_simplify_event_audit.sql",
-        "006_invoice_ownership_and_incident_causality.sql",
-    ]
+    assert [path.name for path in sorted(migrations.glob("*.sql"))] == ["001_v3_baseline.sql"]
 
 
 async def test_candidate_batch_continues_after_one_failure_and_redacts_message(

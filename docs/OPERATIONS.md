@@ -1,46 +1,29 @@
 # Operations
 
-## Migrations
+## Schema initialization and migrations
 
-Apply sorted migrations before deploying matching API/worker code:
+Initialize a fresh PostgreSQL database before deploying matching API/worker code:
 
 ```bash
 uv run stripe-entitlements migrate
 ```
 
-- `001_schema.sql` creates the original account, inbox, invoice, ledger, Checkout and
-  incident model.
-- `002_plan_transitions.sql` adds entitlement windows/revocation, replayable Checkout
-  requests, `billing_plan_changes` and immutable invoice/account attribution.
-- `003_transition_policies.sql` adds persisted policy/preview/remote-call snapshots,
-  unique settlement Invoice binding, `billing_funding_allocations`, outstanding
-  `billing_clawback_debts`, terminal-closure business idempotency, and reconciliation
-  rotation state.
-- `004_event_audit_hardening.sql` introduces redacted Event audit snapshots and scrubs
-  legacy full payloads.
-- `005_simplify_event_audit.sql` stops new payload hashing, clears old digest values, and
-  removes hash-based constraints. A nullable compatibility column remains for one rolling-
-  upgrade window; the active inbox contract uses only the redacted snapshot, Event identity,
-  and processing result.
-- `006_invoice_ownership_and_incident_causality.sql` makes the existing retained-audit
-  behavior explicit: an account with Invoice history cannot be deleted independently,
-  stamps incident observations with the statement wall clock, and gives strictly causal
-  reconciliation cleanup a bounded account/kind/time index.
+`001_v3_baseline.sql` creates the complete ten-table correctness model, all constraints,
+coordination indexes, the immutable Invoice-owner trigger, and causal incident defaults in
+one transaction. It creates final state directly: no historical backfill, table rewrite,
+foreign-key rebuild, or compatibility-only payload digest column is involved.
 
-Migration `006` drops and recreates the Invoice-owner foreign key and builds an ordinary
-index on unresolved incidents. Those statements acquire PostgreSQL table locks and the
-index is not created concurrently, so this migration is not a zero-downtime operation.
-Schedule a maintenance window, stop authenticated billing writes and workers, set and
-exercise an appropriate `lock_timeout`, and rehearse duration and lock waiting against a
-production-scale restored copy before production. Monitor `pg_stat_activity` and
-`pg_locks`; if the migration times out, leave traffic stopped, resolve the blocker, and
-rerun the same migration command rather than editing the migration history.
+The baseline is intentionally fresh-install-only. Version 0.3 does not support an in-place
+upgrade from databases initialized by v0.2.x tags. Drop and recreate old development,
+demo, and staging databases after preserving any test evidence you still need. Both
+lineages fail closed when mixed; do not bypass the guard by editing `schema_migrations`.
 
 The migration runner serializes changes with a PostgreSQL advisory lock and rejects a
 changed checksum for any bundled migration already applied. A database may contain later
-migration rows so a previous backward-compatible replica can remain healthy during a
-rolling deploy or rollback. Do not send authenticated billing traffic to a new process
-until every migration bundled with that version has been applied.
+migration rows so a previous backward-compatible replica can remain healthy during future
+rolling deploys. Starting from the released 0.3 baseline, add migrations rather than
+editing it. Do not send authenticated billing traffic to a process until every migration
+bundled with that version has been applied.
 
 ## Scheduled jobs
 
@@ -166,8 +149,8 @@ Track separately:
 - required `STRIPE_WEBHOOK_API_VERSION` for the signed endpoint payload's top-level
   Event `api_version`; there is intentionally no outbound-request-version default.
 
-The current request code targets `2026-06-24.dahlia`. Both `0.2.2` Stripe CLI browser
-gates on 2026-08-18 observed signed Clover payloads and a Clover Event API view. The
+The current request code targets `2026-06-24.dahlia`. Both 0.3 candidate Stripe CLI
+browser gates on 2026-08-28 observed signed Clover payloads and a Clover Event API view. The
 separate 2026-08-02 temporary endpoints were pinned to Dahlia and delivered real signed
 Dahlia payloads while Event API retrieval remained Clover. Neither CLI forwarding nor an
 Event API view substitutes for inspecting a deployed endpoint contract and its signed
@@ -192,9 +175,9 @@ Back up all ten correctness tables together:
 10. `billing_incidents`.
 
 A restore that omits inbox, invoice, ledger, debit, Checkout or plan-change identity can
-reopen duplicate/unauthorized effects. Perform point-in-time recovery drills, verify all
-six migration versions, then run reconciliation and inspect incidents before reopening
-traffic.
+reopen duplicate/unauthorized effects. Perform point-in-time recovery drills, verify the
+complete migration history for the deployed 0.3-or-later version, then run reconciliation
+and inspect incidents before reopening traffic.
 
 ## Production monitoring
 

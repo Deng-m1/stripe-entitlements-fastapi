@@ -43,7 +43,9 @@ jobs:
           uv build --out-dir dist
           uv run python - <<'PY'
           import glob
+          import tarfile
           import zipfile
+          from pathlib import Path
 
           wheel = glob.glob("dist/*.whl")
           assert len(wheel) == 1, wheel
@@ -51,15 +53,36 @@ jobs:
               names = set(archive.namelist())
           required = {
               "stripe_entitlements/plans.toml",
-              "stripe_entitlements/migrations/001_schema.sql",
-              "stripe_entitlements/migrations/002_plan_transitions.sql",
-              "stripe_entitlements/migrations/003_transition_policies.sql",
-              "stripe_entitlements/migrations/004_event_audit_hardening.sql",
-              "stripe_entitlements/migrations/005_simplify_event_audit.sql",
-              "stripe_entitlements/migrations/006_invoice_ownership_and_incident_causality.sql",
+              "stripe_entitlements/migrations/001_v3_baseline.sql",
           }
           missing = required - names
           assert not missing, sorted(missing)
+          packaged_migrations = {
+              name for name in names if name.startswith("stripe_entitlements/migrations/")
+          }
+          assert packaged_migrations == {
+              "stripe_entitlements/migrations/001_v3_baseline.sql"
+          }, sorted(packaged_migrations)
+
+          sdist = glob.glob("dist/*.tar.gz")
+          assert len(sdist) == 1, sdist
+          with tarfile.open(sdist[0], "r:gz") as archive:
+              sdist_names = set(archive.getnames())
+          roots = {Path(name).parts[0] for name in sdist_names if Path(name).parts}
+          assert len(roots) == 1, sorted(roots)
+          root = roots.pop()
+          normalized_sdist_names = {
+              name.removeprefix(f"{root}/") for name in sdist_names if name != root
+          }
+          required_sdist = {"plans.toml", "migrations/001_v3_baseline.sql"}
+          missing_sdist = required_sdist - normalized_sdist_names
+          assert not missing_sdist, sorted(missing_sdist)
+          packaged_sdist_migrations = {
+              name for name in normalized_sdist_names if name.startswith("migrations/")
+          }
+          assert packaged_sdist_migrations == {
+              "migrations/001_v3_baseline.sql"
+          }, sorted(packaged_sdist_migrations)
           PY
 
           wheel="$(realpath "$(find dist -maxdepth 1 -name '*.whl' -print -quit)")"
@@ -81,12 +104,7 @@ jobs:
           migration_dir = default_migration_directory()
           assert catalog_path.is_file(), catalog_path
           assert [path.name for path in sorted(migration_dir.glob("*.sql"))] == [
-              "001_schema.sql",
-              "002_plan_transitions.sql",
-              "003_transition_policies.sql",
-              "004_event_audit_hardening.sql",
-              "005_simplify_event_audit.sql",
-              "006_invoice_ownership_and_incident_causality.sql",
+              "001_v3_baseline.sql",
           ]
           assert [plan.key for plan in PlanCatalog.from_toml(catalog_path).ordered()] == [
               "starter",
@@ -129,8 +147,26 @@ jobs:
           applied_migrations="$(docker exec "$wheel_pg_container" \
             psql -U postgres -d wheel_ci -Atqc \
             "select string_agg(filename, ',' order by filename) from schema_migrations")"
-          test "$applied_migrations" = \
-            "001_schema.sql,002_plan_transitions.sql,003_transition_policies.sql,004_event_audit_hardening.sql,005_simplify_event_audit.sql,006_invoice_ownership_and_incident_causality.sql"
+          test "$applied_migrations" = "001_v3_baseline.sql"
+          wheel_schema_contract="$(docker exec "$wheel_pg_container" \
+            psql -U postgres -d wheel_ci -Atqc \
+            "select
+               not exists (
+                 select 1 from information_schema.columns
+                  where table_schema='public' and table_name='stripe_webhook_events'
+                    and column_name='payload_sha256'
+               ),
+               position('ON DELETE RESTRICT' in pg_get_constraintdef(oid)) > 0,
+               (select column_default='clock_timestamp()'
+                  from information_schema.columns
+                 where table_schema='public' and table_name='billing_incidents'
+                   and column_name='last_seen_at'),
+               to_regclass('billing_incidents_unresolved_account_kind_seen') is not null,
+               to_regclass('billing_plan_changes_one_pending') is not null
+             from pg_constraint
+            where conrelid='stripe_invoice_state'::regclass
+              and conname='stripe_invoice_state_account_id_fkey'")"
+          test "$wheel_schema_contract" = "t|t|t|t|t"
           cleanup_wheel_pg
           trap - EXIT
       - name: Check whitespace
@@ -194,8 +230,26 @@ jobs:
           applied_migrations="$(docker exec "$runtime_pg" \
             psql -U postgres -d container_ci -Atqc \
             "select string_agg(filename, ',' order by filename) from schema_migrations")"
-          test "$applied_migrations" = \
-            "001_schema.sql,002_plan_transitions.sql,003_transition_policies.sql,004_event_audit_hardening.sql,005_simplify_event_audit.sql,006_invoice_ownership_and_incident_causality.sql"
+          test "$applied_migrations" = "001_v3_baseline.sql"
+          container_schema_contract="$(docker exec "$runtime_pg" \
+            psql -U postgres -d container_ci -Atqc \
+            "select
+               not exists (
+                 select 1 from information_schema.columns
+                  where table_schema='public' and table_name='stripe_webhook_events'
+                    and column_name='payload_sha256'
+               ),
+               position('ON DELETE RESTRICT' in pg_get_constraintdef(oid)) > 0,
+               (select column_default='clock_timestamp()'
+                  from information_schema.columns
+                 where table_schema='public' and table_name='billing_incidents'
+                   and column_name='last_seen_at'),
+               to_regclass('billing_incidents_unresolved_account_kind_seen') is not null,
+               to_regclass('billing_plan_changes_one_pending') is not null
+             from pg_constraint
+            where conrelid='stripe_invoice_state'::regclass
+              and conname='stripe_invoice_state_account_id_fkey'")"
+          test "$container_schema_contract" = "t|t|t|t|t"
 
           docker run -d \
             --name "$runtime_app" \

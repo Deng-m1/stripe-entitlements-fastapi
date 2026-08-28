@@ -644,8 +644,11 @@ async function submitCheckout(page: Page): Promise<void> {
 
 async function hasVisibleTextAcrossFrames(page: Page, pattern: RegExp): Promise<boolean> {
   for (const frame of page.frames()) {
-    const match = frame.getByText(pattern).first();
-    if (await match.isVisible().catch(() => false)) return true;
+    const matches = frame.getByText(pattern);
+    const count = await matches.count().catch(() => 0);
+    for (let index = 0; index < count; index += 1) {
+      if (await matches.nth(index).isVisible().catch(() => false)) return true;
+    }
   }
   return false;
 }
