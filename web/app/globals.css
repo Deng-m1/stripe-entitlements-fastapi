@@ -3733,4 +3733,181 @@ body:has(.pricing-route) .page {
 }
 
 .pricing-page .price-row > span {
-  color: var(--muted
+  color: var(--muted);
+  font-family: var(--font-mono-stack);
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.pricing-page .price-block small {
+  color: var(--muted);
+  display: block;
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.pricing-page .price-block .saving {
+  background: var(--success-soft);
+  border-radius: 999px;
+  color: var(--success);
+  font-weight: 700;
+  justify-self: start;
+  margin-top: 6px;
+  padding: 3px 10px;
+}
+
+.pricing-page .pricing-compare {
+  margin-top: 84px;
+}
+
+.pricing-page .pricing-compare h2 {
+  font-size: clamp(1.7rem, 3vw, 2.3rem);
+  margin-bottom: 10px;
+}
+
+.pricing-page .pricing-compare > p {
+  color: var(--muted);
+  line-height: 1.65;
+  max-width: 760px;
+}
+
+/* A static-positioned scroll container lets the 640px table propagate
+   layout overflow to the document; anchoring the wrapper keeps the
+   horizontal pan inside the card. */
+.pricing-page .comparison-table-wrap {
+  position: relative;
+}
+
+.pricing-page .comparison-table th,
+.pricing-page .comparison-table td {
+  padding: 15px 18px;
+}
+
+.pricing-page .comparison-table th[scope="row"] {
+  color: var(--muted);
+  font-weight: 550;
+}
+
+/* Sunken stripes on the row axis; the featured tint rides the column. */
+.pricing-page .comparison-table tbody tr:nth-child(even) {
+  background: var(--surface-soft);
+}
+
+.pricing-page .comparison-table .compare-featured {
+  background: rgba(91, 76, 245, 0.05);
+}
+
+.pricing-page .comparison-table thead th.compare-featured {
+  background: var(--accent-soft);
+  box-shadow: inset 0 2px 0 var(--accent);
+  color: var(--text);
+}
+
+.pricing-page .pricing-included {
+  color: var(--success);
+  font-weight: 700;
+}
+
+.pricing-page .pricing-excluded {
+  color: var(--muted);
+}
+
+.pricing-page .pricing-sr {
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+.pricing-page .pricing-footnote {
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.6;
+  margin: 14px 0 0;
+  max-width: 760px;
+}
+
+/* Closing CTA: quiet hairline-opened band, one accent fill on the page. */
+.pricing-cta {
+  align-items: center;
+  border-top: 1px solid var(--hairline);
+  display: grid;
+  gap: 28px 64px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin-top: 84px;
+  padding-top: 56px;
+}
+
+.pricing-cta h2 {
+  font-size: clamp(1.55rem, 2.6vw, 2.1rem);
+  margin-bottom: 10px;
+}
+
+.pricing-cta > div > p:last-child {
+  color: var(--muted);
+  line-height: 1.65;
+  margin: 0;
+  max-width: 52ch;
+}
+
+.pricing-cta-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+@media (max-width: 850px) {
+  .pricing-hero {
+    padding-block: 92px 40px;
+  }
+
+  /* Phones scan the table by panning; pin the row-header column so every
+     value keeps its label. Stripes need opaque paint on the pinned cells. */
+  .pricing-page .comparison-table thead th:first-child,
+  .pricing-page .comparison-table tbody th[scope="row"] {
+    box-shadow: inset -1px 0 0 var(--line);
+    left: 0;
+    position: sticky;
+    z-index: 2;
+  }
+
+  .pricing-page .comparison-table tbody th[scope="row"] {
+    background: var(--surface);
+  }
+
+  .pricing-page .comparison-table tbody tr:nth-child(even) th[scope="row"] {
+    background: var(--surface-soft);
+  }
+
+  .pricing-cta {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .pricing-hero {
+    padding-block: 80px 32px;
+  }
+
+  .pricing-page .plan-grid {
+    margin-top: 30px;
+  }
+
+  .pricing-page .price-row strong {
+    font-size: 2.4rem;
+  }
+
+  .pricing-page .comparison-table th,
+  .pricing-page .comparison-table td {
+    padding: 13px 14px;
+  }
+
+  .pricing-page .table-scroll-hint {
+    margin-bottom: 10px;
+  }
+}
