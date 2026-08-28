@@ -376,3 +376,73 @@ P2-10 terminal legibility at 390 px.
   the shared token.
 - `visual-review-pages.mjs` now includes `/billing/error?code=payment_failed`
   so future full-site rounds cover both settlement routes.
+
+---
+
+## Round 6 — /account P2 closure — 2026-08-28
+
+- Stream: account page optimization (fable 5)
+- Landed: `b5d13f1` + `0401d0f` (branch `cursor/landing-settlement-field`);
+  scope was `AccountScreen.tsx` + `globals.css` only — no billing behavior,
+  API, or polling changes
+- Screenshots: `/tmp/account-v2/` — full `visual-review-pages.mjs` run at
+  1440 px and 390 px from an isolated worktree at the branch tip
+  (`next dev` + mock; the shared checkout carried another stream's
+  uncommitted work and was not used as evidence)
+
+### What changed
+
+1. **Credits-card void (Round 1 P2-8) closed.** The card is now a flex
+   column: stat block up top (display-scale balance with a mono-caps
+   `credits` unit and an honest webhook-projection caption), a grant meter
+   in the middle, and the fact rows pinned to the bottom edge, so the card
+   composes at full grid height next to the denser subscription card. The
+   meter is data, not decoration — `balance / grant_amount` as a
+   settlement-orange fill on a paper track, echoing the landing chart's
+   data-stroke rule; it renders only when a grant exists.
+2. **Entitlement tiles (Round 1 P2-9) re-textured.** Flat `--surface-soft`
+   boxes became the landing's node-card grammar: raised paper, thin border,
+   quiet border-color hover. Boolean values render as mint/cream square-dot
+   chips (the ledger-table chip grammar), numeric values as mono
+   `tabular-nums` figures, and the raw entitlement key closes each tile as
+   a dashed-rule receipt footer pinned to the tile bottom.
+3. **Heading hierarchy per DESIGN_SYSTEM §5.3/§2.2.** The page title drops
+   from the sitewide H1 display clamp to the H2 scale
+   (`clamp(1.9rem, 1.5rem + 1.8vw, 2.75rem)`) with the route's single brand
+   signal — a 3px × 64px mesh-ramp rule — under it. Card titles drop to the
+   H3 scale (plan name holds 1.75rem to anchor against the credit figure);
+   pending-banner titles tightened to 1.3rem.
+4. **Fact lists read as ledger lines.** Each `dt/dd` row is a flex line:
+   mono-caps key left, right-aligned mono figure right, hairline rules
+   between rows (opening rule in `--line`). Wrapped values keep hugging the
+   right edge via `margin-left: auto` (`0401d0f`).
+5. **Status unified on the ledger chip.** `active`/`Enforceable` are mint
+   square-dot chips, `past_due`/`Paused` cream, unknown states plain
+   bordered — same grammar as the landing ledger's applied/absorbed chips.
+   Manage-card actions reordered to landing CTA priority (primary first)
+   and left-aligned; the projection-loaded line became mono microcopy.
+
+### Verified green
+
+- 0 px horizontal overflow at 390 px on all six probe routes from the
+  branch-tip worktree run; account hydrates and settles at both widths.
+- Unit suite 139/139, ESLint, `tsc --noEmit` clean on the clean tree; all
+  existing `AccountScreen.test.tsx` assertions (headings, empty states,
+  past-due copy, pending-change flow) pass unchanged.
+
+### Process note
+
+Two commits from this stream (`b5d13f1`, `0401d0f`) were cut from the
+shared checkout while parallel streams held uncommitted work there, and
+each swept some of that work in early (the `--band-deep`/settlement styles
+later owned by `ea1086b`, and pricing-route CSS later owned by `e6e2468`).
+Nothing was lost — both owners' follow-up commits subsumed their work and
+the tip is coherent — but future rounds should cut commits from an
+isolated worktree, as this round's evidence run already does.
+
+### Open items
+
+- Re-read /account against the white-canvas/iris restyle when it lands:
+  the grant meter and title rule bind to `--accent`/`--gradient-accent`,
+  so they follow the token flip automatically, but mint/cream chip
+  contrast should be re-checked on pure white.
