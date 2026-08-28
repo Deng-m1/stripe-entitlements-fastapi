@@ -588,3 +588,78 @@ isolated worktree, as this round's evidence run already does.
 - `scroll-motion-shots.mjs` probes `.ledger-stage-glow`/`.matrix-stack`
   and friends by class; if the depth-composite stream renames its layers,
   update the probe list in the same commit.
+
+## Round 9 — landing sections (§3.2 reveals + §3.3 depth composites) — 2026-08-28
+
+- Reviewer/implementer: fable 5 (landing sections owner; the
+  "depth-composite stream" referenced by Round 8)
+- Scope: every landing section except the hero — ledger, pipeline node
+  graph, upgrade matrix, proof band, catalog, FAQ. Hero shader files
+  untouched (owned by the hero stream). No copy changes, so
+  `seo.test.tsx` and the promo specs needed no sync.
+- Evidence: `/tmp/landing-sections-v2/` — desktop/mobile/reduced-motion
+  section shots from `visual-review-shots.mjs`, plus
+  `motion/parallax-shifts.json` and per-section frame sequences from the
+  new `scripts/landing-sections-shots.mjs` rig.
+
+### What landed
+
+- **Staggered entry reveals (§3.2 bullet 1).** `ScrollReveal` now supports
+  `data-reveal="group"`: the section's IntersectionObserver hit cascades
+  its `.reveal-item` children on `--stagger × 80ms` delays
+  (`reveal-rise`: 24px lift + fade). Applied to the node-graph cards and
+  connectors, capability grid, proof gates, catalog tiles/table, and FAQ
+  items; ledger steps keep their own nth-child cascade.
+- **Section-scoped parallax (§3.2 bullet 2).** A rAF-synced scroll
+  listener in `ScrollReveal` writes px-valued `--parallax-shift` to
+  `[data-depth]` layers (desktop ≥851px only; namespace disjoint from
+  Round 8's `[data-parallax]`). Recorded at three scroll stops per
+  section in `parallax-shifts.json`: ledger glow (depth −18) +12.6px →
+  −0px → negative while the card stack (depth +26) runs −18.2px → +0px →
+  positive — opposite directions at distinct rates; same pattern for the
+  matrix stage and proof popover.
+- **Depth composites (§3.3).** Ledger and matrix white cards float on
+  `--shadow-float` over blurred `stage-glow` radial underlays with faded
+  `stage-ghost` silhouettes and static perspective tilts. The pipeline
+  node graph moved from paper onto a full-bleed violet/pink gradient band
+  (`.pipeline-band`, layered radials over `--band-deep`) with the white
+  node cards on layered shadows — the brief's "white product UI over a
+  gradient band" MUST; the no-op node goes glassy
+  (backdrop-filter + translucent white).
+- **Design-system alignment.** Eyebrow spec (0.75rem / 500 / 0.14em, mesh
+  gradient dash), H2 clamp scale + section ledes, 4px `--space-N` tokens
+  for band/stage rhythm, iris accent tokens for links, catalog-tile H3
+  and FAQ-summary H4 scales, hover float on tiles.
+
+### Caught in this round's screenshot review
+
+- **P1, fixed:** node-card titles on the gradient band were nearly
+  invisible — the white cards inherited `.pipeline-band`'s light
+  `#f6f5ff` text. `.pipeline-band .node-card` now resets `color:
+  var(--ink)`; the glassy no-op override still wins in cascade order.
+  Verified in the re-shot `desktop-nodegraph.png`.
+
+### Reduced motion / degradation
+
+- Reveal and parallax both stand down under
+  `prefers-reduced-motion: reduce` (JS bails; `js-reveal` gating keeps
+  no-JS content visible); `reduced-motion-{hero,ledger}.png` show the
+  static pose. Parallax is inert below 851px — mobile shots show the
+  resting composite.
+
+### Gates run this round
+
+- ESLint and `tsc --noEmit` clean; vitest 147/147.
+- `landing-responsive.spec.ts` green (390px containment, reduced
+  motion); re-shoot after the node-card fix reports 0px mobile
+  horizontal overflow.
+
+### Open items carried forward
+
+- `ScrollReveal`'s `[data-depth]` writer and Round 8's `ScrollMotion`
+  are deliberately separate drivers today; if a future round merges
+  them, keep the px (`--parallax-shift`) vs progress
+  (`--scroll-progress`) contracts distinct.
+- The pipeline band's light-on-dark text pairs live in `globals.css`
+  under `.pipeline-band`; any future recolor of the mesh ramp should
+  re-check the band's eyebrow/lede contrast.
