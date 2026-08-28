@@ -8,7 +8,8 @@ export default function manifest(): MetadataRoute.Manifest {
     description: SITE_DESCRIPTION,
     start_url: "/",
     display: "standalone",
-    background_color: "#faf6ef",
-    theme_color: "#faf6ef",
+    // DESIGN_SYSTEM.md §3: white canvas, iris as the single brand accent.
+    background_color: "#ffffff",
+    theme_color: "#5b4cf5",
   };
 }

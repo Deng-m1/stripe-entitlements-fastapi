@@ -379,7 +379,140 @@ P2-10 terminal legibility at 390 px.
 
 ---
 
-## Round 6 — scroll motion (§3.2): hero drift + sitewide progress — 2026-08-28
+## Round 6 — /account P2 closure — 2026-08-28
+
+- Stream: account page optimization (fable 5)
+- Landed: `b5d13f1` + `0401d0f` (branch `cursor/landing-settlement-field`);
+  scope was `AccountScreen.tsx` + `globals.css` only — no billing behavior,
+  API, or polling changes
+- Screenshots: `/tmp/account-v2/` — full `visual-review-pages.mjs` run at
+  1440 px and 390 px from an isolated worktree at the branch tip
+  (`next dev` + mock; the shared checkout carried another stream's
+  uncommitted work and was not used as evidence)
+
+### What changed
+
+1. **Credits-card void (Round 1 P2-8) closed.** The card is now a flex
+   column: stat block up top (display-scale balance with a mono-caps
+   `credits` unit and an honest webhook-projection caption), a grant meter
+   in the middle, and the fact rows pinned to the bottom edge, so the card
+   composes at full grid height next to the denser subscription card. The
+   meter is data, not decoration — `balance / grant_amount` as a
+   settlement-orange fill on a paper track, echoing the landing chart's
+   data-stroke rule; it renders only when a grant exists.
+2. **Entitlement tiles (Round 1 P2-9) re-textured.** Flat `--surface-soft`
+   boxes became the landing's node-card grammar: raised paper, thin border,
+   quiet border-color hover. Boolean values render as mint/cream square-dot
+   chips (the ledger-table chip grammar), numeric values as mono
+   `tabular-nums` figures, and the raw entitlement key closes each tile as
+   a dashed-rule receipt footer pinned to the tile bottom.
+3. **Heading hierarchy per DESIGN_SYSTEM §5.3/§2.2.** The page title drops
+   from the sitewide H1 display clamp to the H2 scale
+   (`clamp(1.9rem, 1.5rem + 1.8vw, 2.75rem)`) with the route's single brand
+   signal — a 3px × 64px mesh-ramp rule — under it. Card titles drop to the
+   H3 scale (plan name holds 1.75rem to anchor against the credit figure);
+   pending-banner titles tightened to 1.3rem.
+4. **Fact lists read as ledger lines.** Each `dt/dd` row is a flex line:
+   mono-caps key left, right-aligned mono figure right, hairline rules
+   between rows (opening rule in `--line`). Wrapped values keep hugging the
+   right edge via `margin-left: auto` (`0401d0f`).
+5. **Status unified on the ledger chip.** `active`/`Enforceable` are mint
+   square-dot chips, `past_due`/`Paused` cream, unknown states plain
+   bordered — same grammar as the landing ledger's applied/absorbed chips.
+   Manage-card actions reordered to landing CTA priority (primary first)
+   and left-aligned; the projection-loaded line became mono microcopy.
+
+### Verified green
+
+- 0 px horizontal overflow at 390 px on all six probe routes from the
+  branch-tip worktree run; account hydrates and settles at both widths.
+- Unit suite 139/139, ESLint, `tsc --noEmit` clean on the clean tree; all
+  existing `AccountScreen.test.tsx` assertions (headings, empty states,
+  past-due copy, pending-change flow) pass unchanged.
+
+### Process note
+
+Two commits from this stream (`b5d13f1`, `0401d0f`) were cut from the
+shared checkout while parallel streams held uncommitted work there, and
+each swept some of that work in early (the `--band-deep`/settlement styles
+later owned by `ea1086b`, and pricing-route CSS later owned by `e6e2468`).
+Nothing was lost — both owners' follow-up commits subsumed their work and
+the tip is coherent — but future rounds should cut commits from an
+isolated worktree, as this round's evidence run already does.
+
+### Open items
+
+- Re-read /account against the white-canvas/iris restyle when it lands:
+  the grant meter and title rule bind to `--accent`/`--gradient-accent`,
+  so they follow the token flip automatically, but mint/cream chip
+  contrast should be re-checked on pure white.
+
+---
+
+## Round 7 — site chrome on the white canvas — 2026-08-28
+
+- Stream: chrome/token unification (fable 5)
+- Baseline: branch tip after Round 6 (`b05033e`), isolated worktree — per
+  Round 6's process note, no commit was cut from the shared checkout
+- Preview: production `next build` + `next start` for the header states
+  (hero renderer and poster handover differ under the dev overlay);
+  mock-mode `next dev` for the demo notice, which production `http` builds
+  never render
+- Screenshots: `/tmp/chrome-v2/` — `prod-{desktop-1440,mobile-390}-{top,
+  scrolled}[-header].png` (header transparent-over-hero vs white-blur bar)
+  and `mock-{desktop-1440,mobile-390}-demo-notice.png`
+
+### Landed this round
+
+1. **Paper tokens retired sitewide.** `:root` now carries the
+   DESIGN_SYSTEM.md §3 white-canvas system — navy ink, iris interactive
+   accent, retuned chip family, §4.3 layered shadows, §4.1 spacing scale —
+   with the old names (`--paper`, `--accent`, `--line`, …) kept as aliases
+   so every parallel stream's selectors resolve into the new palette. The
+   dotted-grid body texture is gone; settlement orange survives only as
+   `--data-orange` in the ledger chart and the matrix-highlight cell.
+2. **Chrome coordinated with the WebGL hero.** The header rests transparent
+   on the opening viewport and gains a `saturate(160%) blur(14px)` white
+   bar once scrolled (verified: `rgba(255, 255, 255, 0.82)` + flag at both
+   widths); the brand mark and nav underline speak in the mesh ramp.
+3. **Round 1 P2-7 closed.** The demo notice is a single-line pill — 29px
+   body, 0px overflow at 390px (was ≈4 lines) — with the trailing
+   production-rejection clause visually dropped below 860px but intact in
+   the accessibility tree (`DemoNotice.tsx` adopted from the polish
+   stream verbatim).
+4. **Type unified per §2.1.** Instrument Sans carries display and body
+   (Bricolage Grotesque retired), IBM Plex Mono replaces Spline Sans Mono;
+   `--font-display-stack`/`--font-body-stack` remain as aliases of
+   `--font-sans-stack`, so no selector changed.
+5. **Manifest, favicon, and social card re-skinned** to white + iris/mesh
+   in the same change as the tokens (§6), adopted verbatim from the polish
+   stream so the eventual merge is byte-identical.
+
+### Verified green
+
+- `scripts/pages-polish-assert.mjs` (retargeted at the white canvas and
+  the §2.1 fonts): 30/30 PASS across `/`, `/pricing`, `/account` — fonts
+  loaded and applied, white canvas, grid retired, header transparent at
+  top and white-blur on scroll, 0px overflow, gradient hero accent and 8
+  terminal lines intact.
+- Unit suite 139/139, ESLint, `tsc --noEmit` clean after rebasing over the
+  Round 5/6 and pricing-scorecard commits.
+
+### Open items
+
+- The hero ribbon must be re-read against pure white (inherited from
+  Round 4): the trough dissolve was tuned for warm paper. Owned by the
+  hero-v2 stream; no shader file was touched here.
+- The terminal window and proof band now sit on `--band-deep` flat fills
+  via the `--band-ink` alias; the gradient-over-band treatment (§3.5)
+  stays with the polish stream's landing rework.
+- The two dark-object foreground palettes (warm whites `#e8efe9`,
+  `#f0e2c8` in the terminal; `243, 246, 243` in the proof band) read fine
+  over the indigo base but should be retuned when those bands are redone.
+
+---
+
+## Round 8 — scroll motion (§3.2): hero drift + sitewide progress — 2026-08-28
 
 - Reviewer/implementer: fable 5 (scroll-motion owner)
 - Reviewed against: production `next start` builds of this branch before
@@ -447,9 +580,11 @@ P2-10 terminal legibility at 390 px.
 
 ### Open items carried forward
 
-- The branch has three concurrent streams (this one, the local hero/depth
-  stream, and a remote chrome/type stream); the lockup gate and these
-  motion probes should be re-run once the streams converge on one head.
+- The branch carried three concurrent streams (this one, the local
+  hero/depth stream, and a remote chrome/type stream); they converge in
+  the merge that lands this round, and the post-merge gate results are
+  recorded in that merge commit. The lockup gate should be re-read on the
+  merged head by the hero-lockup stream.
 - `scroll-motion-shots.mjs` probes `.ledger-stage-glow`/`.matrix-stack`
   and friends by class; if the depth-composite stream renames its layers,
   update the probe list in the same commit.

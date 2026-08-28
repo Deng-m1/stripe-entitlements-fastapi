@@ -33,10 +33,10 @@ for (const [name, path, h1] of [
       h1Text: h1El?.textContent ?? "",
       h1Family: h1El ? getComputedStyle(h1El).fontFamily : "",
       eyebrowFamily: eyebrow ? getComputedStyle(eyebrow).fontFamily : "",
-      display: document.fonts.check('16px "Bricolage Grotesque"'),
+      display: document.fonts.check('16px "Instrument Sans"'),
       bodyFont: document.fonts.check('16px "Instrument Sans"'),
-      mono: document.fonts.check('16px "Spline Sans Mono"'),
-      paper: body.backgroundColor,
+      mono: document.fonts.check('16px "IBM Plex Mono"'),
+      canvas: body.backgroundColor,
       grid: body.backgroundImage.includes("radial-gradient"),
       headerScrolledAtTop: header?.hasAttribute("data-scrolled") ?? true,
       overflow:
@@ -46,15 +46,15 @@ for (const [name, path, h1] of [
   });
 
   report(`${name}: h1 present`, facts.h1Text.includes(h1), facts.h1Text.slice(0, 60));
-  report(`${name}: h1 display font`, facts.h1Family.includes("Bricolage"), facts.h1Family);
-  report(`${name}: eyebrow mono font`, facts.eyebrowFamily.includes("Spline"), facts.eyebrowFamily);
+  report(`${name}: h1 display font`, facts.h1Family.includes("Instrument"), facts.h1Family);
+  report(`${name}: eyebrow mono font`, facts.eyebrowFamily.includes("IBM Plex Mono"), facts.eyebrowFamily);
   report(
     `${name}: fonts loaded`,
     facts.display && facts.bodyFont && facts.mono,
     `display=${facts.display} body=${facts.bodyFont} mono=${facts.mono}`,
   );
-  report(`${name}: paper canvas`, facts.paper === "rgb(250, 246, 239)", facts.paper);
-  report(`${name}: dotted grid`, facts.grid);
+  report(`${name}: white canvas`, facts.canvas === "rgb(255, 255, 255)", facts.canvas);
+  report(`${name}: dotted grid retired`, !facts.grid);
   report(`${name}: header transparent at top`, !facts.headerScrolledAtTop);
   report(`${name}: no horizontal overflow`, facts.overflow === 0, `${facts.overflow}px`);
 
@@ -70,8 +70,8 @@ for (const [name, path, h1] of [
     };
   });
   report(
-    `${name}: header gains paper bar on scroll`,
-    scrolled.flagged && scrolled.background.includes("250"),
+    `${name}: header gains white blur bar on scroll`,
+    scrolled.flagged && scrolled.background.includes("255, 255, 255"),
     scrolled.background,
   );
 }

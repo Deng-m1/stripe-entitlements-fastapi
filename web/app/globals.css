@@ -1,35 +1,52 @@
 :root {
   color-scheme: light;
 
-  /* "Engineering ledger paper" tokens, promoted site-wide (v2.1): one warm
-     paper canvas, near-black ink, and a single settlement-orange accent
-     shared by the landing, /pricing, /account, and /billing/* screens. */
-  --paper: #faf6ef;
-  --paper-raised: #ffffff;
-  --grid-dot: #d8d2c6;
-  --ink: #17201c;
-  --ink-dim: #67716a;
-  --pill-forest: #1e3a2f;
-  --pill-mint: #cfe8d8;
-  --pill-cream: #f0e2c8;
-  --ok-chip: #1f9d55;
-  --band-ink: #101513;
+  /* DESIGN_SYSTEM.md §3 — a pristine white content canvas floating over the
+     brand's mesh-gradient atmosphere. The v2 warm-paper tint, its dotted
+     grid, and the settlement-orange interactive accent are retired
+     (DESIGN_BRIEF.md v3 §9); orange survives only as a data-visualisation
+     stroke, exposed here as --data-orange. */
+  --surface: #ffffff;
+  --surface-sunken: #f6f8fb;
+  --ink: #0b1e3d;
+  --ink-dim: #4f5e7b;
+  --hairline: #e4e9f1;
+  --hairline-strong: #d5dded;
+
+  /* Interactive accent (§3.3): iris everywhere a visitor can click. */
+  --iris: #5b4cf5;
+  --iris-strong: #4638c9;
+  --iris-soft: #eeecfe;
+
+  /* Event-vocabulary chips, re-tuned from the v2 forest/mint/cream family to
+     the navy-and-iris palette. The class names are unchanged so the ledger,
+     node graph, and hero keep one chip grammar. */
+  --pill-forest: #12234a;
+  --pill-forest-ink: #dbe4f5;
+  --pill-mint: var(--iris-soft);
+  --pill-mint-ink: #3b2fb0;
+  --pill-cream: #fdf0dd;
+  --pill-cream-ink: #7a4d09;
+  --ok-chip: #0e7a52;
   /* DESIGN_SYSTEM.md §3.5: full-width bands are gradients over this deep
      violet-navy base, never flat black. First consumer: the /billing/*
-     settlement band. */
+     settlement band. The v2 warm-black --band-ink resolves here too, so the
+     terminal window and proof band sit in the same navy world. */
   --band-deep: #0f0a2e;
+  --band-ink: var(--band-deep);
+  --data-orange: #e35a1f;
 
   /* Shared aliases used by app chrome and interactive screens. */
-  --bg: var(--paper);
-  --surface: var(--paper-raised);
-  --surface-soft: #f4efe6;
+  --bg: var(--surface);
+  --paper: var(--surface);
+  --paper-raised: var(--surface);
+  --surface-soft: var(--surface-sunken);
   --text: var(--ink);
   --muted: var(--ink-dim);
-  --line: #e3ddd2;
-  --hairline: #ece7db;
-  --accent: #e35a1f;
-  --accent-strong: #c14a15;
-  --accent-soft: rgba(227, 90, 31, 0.1);
+  --line: var(--hairline);
+  --accent: var(--iris);
+  --accent-strong: var(--iris-strong);
+  --accent-soft: var(--iris-soft);
 
   /* Interactive iris accent (DESIGN_SYSTEM.md §3.3) — adopted first by the
      landing's below-the-fold sections; the sitewide teal/orange retirement
@@ -66,31 +83,54 @@
     var(--mesh-lemon) 100%
   );
   --cta: var(--ink);
-  --cta-hover: #2c3a33;
+  --cta-hover: #16305c;
   --brand: var(--accent);
   --brand-dark: var(--accent-strong);
-  --success: #187a4b;
-  --success-soft: #e5f3ea;
-  --warning: #8f5a0d;
-  --warning-soft: #f9f0dc;
+  --success: #0e7a52;
+  --success-soft: #e2f5ec;
+  --warning: #91580a;
+  --warning-soft: #fbf3e0;
   --danger: #b3261c;
   --danger-soft: #fdecea;
   --radius-lg: 16px;
-  --radius-md: 10px;
+  --radius-md: 12px;
   --radius-sm: 8px;
+
+  /* Depth grammar (§4.3): layered shadows replace the v2 hairline framing.
+     Cards are separated from the white canvas by light, not by outlines. */
   --shadow-card:
-    0 1px 2px rgba(23, 32, 28, 0.04),
-    0 12px 32px rgba(23, 32, 28, 0.05);
-  --font-body-stack:
-    var(--font-body, "Instrument Sans"), "Segoe UI", ui-sans-serif, sans-serif;
-  --font-display-stack:
-    var(--font-display, "Bricolage Grotesque"), var(--font-body-stack);
-  --font-mono-stack:
-    var(--font-mono, "Spline Sans Mono"), ui-monospace, "SFMono-Regular",
-    Menlo, Consolas, monospace;
+    0 1px 2px rgba(11, 30, 61, 0.06),
+    0 12px 32px rgba(11, 30, 61, 0.1);
   --shadow-float:
-    0 2px 4px rgba(23, 32, 28, 0.07),
-    0 24px 56px rgba(23, 32, 28, 0.13);
+    0 2px 4px rgba(11, 30, 61, 0.08),
+    0 24px 64px rgba(11, 30, 61, 0.16);
+
+  /* 4px spacing scale (§4.1). */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-24: 96px;
+  --space-32: 128px;
+
+  /* Type (§2.1): ONE grotesque for display and body — the single-family
+     discipline is the "product, not template" signal — plus IBM Plex Mono
+     for code, figures, and eyebrows. Body/display stacks survive as aliases
+     so every existing selector keeps resolving. */
+  --font-sans-stack:
+    var(--font-sans, "Instrument Sans"), "Helvetica Neue", ui-sans-serif,
+    system-ui, sans-serif;
+  --font-body-stack: var(--font-sans-stack);
+  --font-display-stack: var(--font-sans-stack);
+  --font-mono-stack:
+    var(--font-mono, "IBM Plex Mono"), ui-monospace, "SFMono-Regular", Menlo,
+    Consolas, monospace;
+
   /* DESIGN_SYSTEM.md 2.2 Display scale, shared verbatim by the landing hero
      and the /pricing route title so both H1s provably set from one token. */
   --type-display: clamp(2.75rem, 2rem + 3.2vw, 4.25rem);
@@ -106,12 +146,10 @@
 
 body {
   -webkit-font-smoothing: antialiased;
-  /* The paper canvas with its faint dotted grid is the one site-wide
-     signature; every route shares it so the landing and the app screens
-     read as a single product. */
-  background-color: var(--paper);
-  background-image: radial-gradient(var(--grid-dot) 1px, transparent 1.5px);
-  background-size: 24px 24px;
+  /* A pristine white canvas on every route (DESIGN_SYSTEM.md §1.2). The
+     premium signal is the mesh-gradient atmosphere behind and between the
+     content planes, not a tint or a texture on the page itself. */
+  background-color: var(--surface);
   color: var(--text);
   margin: 0;
   min-height: 100vh;
@@ -120,7 +158,7 @@ body {
 }
 
 ::selection {
-  background: rgba(227, 90, 31, 0.2);
+  background: rgba(91, 76, 245, 0.18);
 }
 
 a {
@@ -134,18 +172,24 @@ input {
 }
 
 :where(a, button, input, [tabindex]):focus-visible {
-  outline: 3px solid rgba(227, 90, 31, 0.6);
-  outline-offset: 3px;
+  outline: 2px solid var(--iris);
+  outline-offset: 2px;
 }
 
 .shell {
   margin-inline: auto;
-  max-width: 1160px;
-  padding-inline: 24px;
+  /* DESIGN_SYSTEM.md §4.1 container: 1200px, gutter --space-8 on desktop. */
+  max-width: 1200px;
+  padding-inline: var(--space-8);
+}
+
+/* App routes read better in a narrower measure (§4.1). */
+.shell.reading {
+  max-width: 960px;
 }
 
 /* Header: transparent while it sits over a page's opening viewport, then a
-   blurred paper bar once the visitor scrolls (data-scrolled is toggled by
+   blurred white bar once the visitor scrolls (data-scrolled is toggled by
    the SiteHeader client component). */
 
 .site-header {
@@ -160,9 +204,9 @@ input {
 }
 
 .site-header[data-scrolled] {
-  backdrop-filter: blur(14px);
-  background: rgba(250, 246, 239, 0.86);
-  border-bottom-color: var(--line);
+  backdrop-filter: saturate(160%) blur(14px);
+  background: rgba(255, 255, 255, 0.82);
+  border-bottom-color: var(--hairline);
 }
 
 .header-inner {
@@ -183,13 +227,13 @@ input {
 }
 
 .brand-mark {
-  background: var(--accent);
-  border-radius: 2px;
+  background: var(--gradient-accent);
+  border-radius: 3px;
   display: inline-block;
   flex: none;
-  height: 11px;
+  height: 12px;
   transform: rotate(45deg);
-  width: 11px;
+  width: 12px;
 }
 
 .brand-suffix {
@@ -217,7 +261,7 @@ input {
 }
 
 .header-inner nav a::after {
-  background: var(--accent);
+  background: var(--gradient-accent);
   border-radius: 1px;
   bottom: 0;
   content: "";
@@ -243,26 +287,76 @@ input {
   color: var(--text);
 }
 
+/* Demo notice: a build-configuration disclosure, not a product banner. It
+   keeps its `note` role and its full sentence for assistive technology, but
+   drops to a single quiet line so it never competes with the hero (Round 1
+   P2-7: the full-bleed bar cost three lines at 390px). */
+
 .demo-notice {
-  background: var(--surface-soft);
-  border-block: 1px solid var(--line);
-  color: var(--ink-dim);
-  font-family: var(--font-mono-stack);
-  font-size: 0.72rem;
-  font-weight: 500;
-  letter-spacing: 0.06em;
-  padding: 10px 24px;
-  text-align: center;
+  display: flex;
+  justify-content: center;
+  padding: 10px 24px 0;
 }
 
-.demo-notice::before {
-  background: #b98a3a;
+.demo-notice-body {
+  align-items: baseline;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  color: var(--muted);
+  display: inline-flex;
+  font-family: var(--font-mono-stack);
+  font-size: 0.68rem;
+  font-weight: 500;
+  gap: 8px;
+  letter-spacing: 0.05em;
+  max-width: 100%;
+  padding: 6px 14px;
+}
+
+.demo-notice-flag {
+  align-items: center;
+  color: var(--warning);
+  display: inline-flex;
+  flex: none;
+  font-weight: 600;
+  gap: 6px;
+  letter-spacing: 0.12em;
+}
+
+.demo-notice-flag::before {
+  background: var(--warning);
   border-radius: 50%;
   content: "";
-  display: inline-block;
-  height: 7px;
-  margin-right: 9px;
-  width: 7px;
+  height: 6px;
+  transform: translateY(-1px);
+  width: 6px;
+}
+
+.demo-notice-detail {
+  min-width: 0;
+  overflow: hidden;
+  /* Containing block for the hidden tail below: without it the tail resolves
+     against the initial containing block, and its static position — past the
+     end of an unwrapped sentence — widened the document to 640px at 390px. */
+  position: relative;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The trailing production-rejection sentence stays in the accessibility tree
+   at every width; below the tablet breakpoint it simply stops being drawn. */
+@media (max-width: 860px) {
+  .demo-notice-tail {
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    height: 1px;
+    inset-block-start: 0;
+    inset-inline-start: 0;
+    overflow: hidden;
+    position: absolute;
+    white-space: nowrap;
+    width: 1px;
+  }
 }
 
 .page {
@@ -330,7 +424,10 @@ input {
 }
 
 .eyebrow::before {
+  /* A two-stop slice of the mesh ramp (§3.2): the full four-stop ramp
+     turns to mush inside a 20px rule. */
   background: linear-gradient(90deg, var(--mesh-violet), var(--mesh-pink));
+  border-radius: 1px;
   content: "";
   flex: none;
   height: 2px;
@@ -625,9 +722,9 @@ h2 {
    so the event pills stay level. */
 
 .hero-terminal {
-  background: var(--band-ink, #101513);
+  background: var(--band-ink, #0f0a2e);
   border-radius: 14px;
-  box-shadow: 0 28px 56px -30px rgba(23, 32, 28, 0.45);
+  box-shadow: 0 28px 56px -30px rgba(11, 30, 61, 0.45);
   color: #e8efe9;
   margin: 0;
   transform: rotate(2.4deg);
@@ -804,23 +901,23 @@ h2 {
 }
 
 .pill-forest {
-  background: var(--pill-forest, #1e3a2f);
-  color: #dcefe2;
+  background: var(--pill-forest);
+  color: var(--pill-forest-ink);
 }
 
 .pill-mint {
-  background: var(--pill-mint, #cfe8d8);
-  color: #1e3a2f;
+  background: var(--pill-mint);
+  color: var(--pill-mint-ink);
 }
 
 .pill-cream {
-  background: var(--pill-cream, #f0e2c8);
-  color: #17201c;
+  background: var(--pill-cream);
+  color: var(--pill-cream-ink);
 }
 
 .pill-plain {
-  background: var(--paper-raised, #ffffff);
-  border: 1px solid var(--line);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
 }
 
 .pill-negative {
@@ -1146,13 +1243,15 @@ h2 {
   width: 100%;
 }
 
+/* Settlement orange survives ONLY as a data-visualisation stroke (§3.3):
+   the chart keeps it while every interactive accent moves to iris. */
 .chart-area {
-  fill: rgba(227, 90, 31, 0.1);
+  fill: rgba(227, 90, 31, 0.12);
 }
 
 .chart-line {
   fill: none;
-  stroke: var(--accent);
+  stroke: var(--data-orange);
   stroke-width: 1.5;
 }
 
@@ -1164,10 +1263,10 @@ h2 {
 }
 
 .chart-label {
-  background: var(--paper-raised, var(--surface));
-  border: 1px dashed var(--accent);
+  background: var(--surface);
+  border: 1px dashed var(--data-orange);
   border-radius: 6px;
-  color: var(--accent);
+  color: var(--data-orange);
   font-family: var(--font-mono-stack);
   font-size: 0.65rem;
   letter-spacing: 0.05em;
@@ -1444,21 +1543,21 @@ h2 {
 }
 
 .chip-applied {
-  background: var(--pill-mint, #cfe8d8);
-  color: #1e3a2f;
+  background: var(--pill-mint);
+  color: var(--pill-mint-ink);
 }
 
 .chip-applied::before {
-  background: #1e3a2f;
+  background: var(--iris);
 }
 
 .chip-absorbed {
-  background: var(--pill-cream, #f0e2c8);
-  color: #6b4a12;
+  background: var(--pill-cream);
+  color: var(--pill-cream-ink);
 }
 
 .chip-absorbed::before {
-  background: #b98a3a;
+  background: var(--warning);
 }
 
 /* ===== Pipeline gradient band: white UI cards layered over a full-width
@@ -1570,23 +1669,23 @@ h2 {
 }
 
 .chip-mint {
-  background: var(--pill-mint, #cfe8d8);
-  color: #1e3a2f;
+  background: var(--pill-mint);
+  color: var(--pill-mint-ink);
 }
 
 .chip-forest {
-  background: var(--pill-forest, #1e3a2f);
-  color: #dcefe2;
+  background: var(--pill-forest);
+  color: var(--pill-forest-ink);
 }
 
 .chip-cream {
-  background: var(--pill-cream, #f0e2c8);
-  color: #6b4a12;
+  background: var(--pill-cream);
+  color: var(--pill-cream-ink);
 }
 
 .chip-plain {
   background: transparent;
-  border: 1px solid var(--line);
+  border: 1px solid var(--hairline-strong);
   color: var(--muted);
 }
 
@@ -1636,11 +1735,11 @@ h2 {
 }
 
 .c-mint {
-  color: #5d977a;
+  color: var(--pill-mint-ink);
 }
 
 .c-forest {
-  color: var(--pill-forest, #1e3a2f);
+  color: var(--pill-forest);
 }
 
 /* The duplicate-delivery branch: dashed elbow into the no-op node. */
@@ -1693,6 +1792,7 @@ h2 {
   box-shadow:
     0 1px 2px rgba(5, 3, 20, 0.3),
     0 20px 48px rgba(5, 3, 20, 0.42);
+  color: var(--ink);
 }
 
 .pipeline-band .node-connector {
@@ -1969,20 +2069,26 @@ h2 {
   width: 5px;
 }
 
-/* Orange stays on the highlighted prorated_delta cell (data-visualization
-   semantics); the mesh-ramp glow lifts it off the grid (brief §5.5). */
+/* Orange is reserved for the highlighted prorated_delta cell (brief §5.4):
+   a data-visualisation emphasis, so it keeps --data-orange while the glow
+   underlay speaks in the mesh ramp. */
 
 .upgrade-matrix td.matrix-highlight {
+  /* The glow is a box-shadow rather than a blurred pseudo-element: a cell's
+     own opaque background would paint over any underlay stacked behind it. */
+  background:
+    radial-gradient(120% 120% at 50% 50%, rgba(255, 138, 60, 0.16), transparent 70%),
+    var(--surface);
   box-shadow:
-    0 0 16px rgba(255, 92, 143, 0.45),
-    0 0 40px rgba(122, 90, 248, 0.3);
-  outline: 1.5px solid var(--accent);
+    0 0 0 4px rgba(122, 90, 248, 0.12),
+    0 0 22px rgba(255, 92, 143, 0.3);
+  outline: 1.5px solid var(--data-orange);
   outline-offset: -1.5px;
   z-index: 1;
 }
 
 .upgrade-matrix td.matrix-highlight .matrix-dot {
-  background: var(--accent);
+  background: var(--data-orange);
   border: 0;
 }
 
@@ -1990,7 +2096,7 @@ h2 {
   background: var(--paper-raised, var(--surface));
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  box-shadow: 0 8px 24px rgba(23, 32, 28, 0.12);
+  box-shadow: 0 8px 24px rgba(11, 30, 61, 0.12);
   color: var(--text);
   display: none;
   font-size: 0.74rem;
@@ -2075,6 +2181,8 @@ h2 {
 /* ===== Proof band (M5): the single near-black band on the page ===== */
 
 .proof-band {
+  /* Gradient band over --band-deep, never flat black (brief §5.6) — kept
+     through the token merge; --band-ink now aliases --band-deep. */
   background:
     radial-gradient(
       110% 140% at 88% -18%,
@@ -2197,7 +2305,7 @@ h2 {
 }
 
 .proof-popover-title {
-  border-bottom: 1px solid #e3ddd2;
+  border-bottom: 1px solid var(--hairline);
   font-size: 0.88rem;
   font-weight: 700;
   margin: 0 0 4px;
@@ -2212,13 +2320,13 @@ h2 {
 }
 
 .proof-popover dl div {
-  border-bottom: 1px solid #efe9dd;
+  border-bottom: 1px solid var(--hairline);
   border-top: 0;
   padding-block: 10px;
 }
 
 .proof-popover dt {
-  color: #6b7570;
+  color: var(--muted);
   font-family: var(--font-mono-stack);
   font-size: 0.6rem;
   font-weight: 500;
@@ -2237,9 +2345,9 @@ h2 {
 /* Green exists ONLY inside this chip on the whole page (brief §4). */
 
 .ok-chip {
-  background: rgba(31, 157, 85, 0.13);
+  background: var(--success-soft);
   border-radius: 999px;
-  color: var(--ok-chip, #1f9d55);
+  color: var(--ok-chip);
   display: inline-block;
   font-size: 0.74rem;
   font-weight: 700;
@@ -2432,7 +2540,7 @@ h2 {
 }
 
 .comparison-table tbody tr:hover {
-  background: rgba(23, 32, 28, 0.03);
+  background: var(--surface-sunken);
 }
 
 .comparison-table tbody tr:last-child > * {
@@ -2563,7 +2671,7 @@ h2 {
 }
 
 .plan-card:hover {
-  border-color: rgba(23, 32, 28, 0.35);
+  border-color: rgba(11, 30, 61, 0.35);
   transform: translateY(-2px);
 }
 
@@ -2642,13 +2750,14 @@ h2 {
 }
 
 .button.primary {
-  background: var(--accent);
+  background: var(--iris);
+  box-shadow: 0 1px 2px rgba(11, 30, 61, 0.14);
   color: #ffffff;
 }
 
 .button.primary:hover:not(:disabled) {
-  background: var(--accent-strong);
-  box-shadow: 0 10px 24px rgba(227, 90, 31, 0.24);
+  background: var(--iris-strong);
+  box-shadow: 0 10px 24px rgba(91, 76, 245, 0.3);
   transform: translateY(-1px);
 }
 
@@ -2659,14 +2768,14 @@ h2 {
 }
 
 .button.secondary:hover:not(:disabled) {
-  background: rgba(23, 32, 28, 0.05);
+  background: rgba(11, 30, 61, 0.05);
   border-color: var(--ink);
   color: var(--ink);
 }
 
 .button.ink {
   background: var(--ink);
-  color: var(--paper);
+  color: #ffffff;
 }
 
 .button.ink:hover:not(:disabled) {
@@ -2759,15 +2868,15 @@ h2 {
 
 .timing-panel {
   background: var(--warning-soft);
-  border: 1px solid #e8d3a8;
+  border: 1px solid rgba(145, 88, 10, 0.24);
   border-radius: var(--radius-md);
   margin-block: 20px;
   padding: 16px;
 }
 
 .timing-panel.timing-immediate {
-  background: var(--accent-soft);
-  border-color: rgba(227, 90, 31, 0.3);
+  background: var(--iris-soft);
+  border-color: rgba(91, 76, 245, 0.28);
 }
 
 .timing-panel p {
@@ -3046,7 +3155,7 @@ dd {
 }
 
 .status::before {
-  background: var(--grid-dot);
+  background: var(--hairline-strong);
   border-radius: 2px;
   content: "";
   flex: none;
@@ -3058,29 +3167,29 @@ dd {
 .status-enforceable {
   background: var(--pill-mint);
   border-color: transparent;
-  color: #1e3a2f;
+  color: var(--pill-mint-ink);
 }
 
 .status-active::before,
 .status-enforceable::before {
-  background: #1e3a2f;
+  background: var(--iris);
 }
 
 .status-past_due,
 .status-paused {
   background: var(--pill-cream);
   border-color: transparent;
-  color: #6b4a12;
+  color: var(--pill-cream-ink);
 }
 
 .status-past_due::before,
 .status-paused::before {
-  background: #b98a3a;
+  background: var(--warning);
 }
 
 .pending-banner {
   background: var(--warning-soft);
-  border-color: #e8d3a8;
+  border-color: rgba(145, 88, 10, 0.24);
   margin-bottom: 20px;
   padding: 22px;
 }
@@ -3091,7 +3200,7 @@ dd {
 }
 
 .pending-banner p:last-child {
-  color: #6d5426;
+  color: var(--warning);
   margin-bottom: 0;
 }
 
@@ -3193,11 +3302,11 @@ dd {
 
 .entitlement-flag.is-included {
   background: var(--pill-mint);
-  color: #1e3a2f;
+  color: var(--pill-mint-ink);
 }
 
 .entitlement-flag.is-included::before {
-  background: #1e3a2f;
+  background: var(--iris);
 }
 
 .entitlement-flag.is-excluded {
@@ -3206,7 +3315,7 @@ dd {
 }
 
 .entitlement-flag.is-excluded::before {
-  background: var(--grid-dot);
+  background: var(--hairline-strong);
 }
 
 /* The raw entitlement key closes each tile like a receipt footer; pinned to
@@ -3441,9 +3550,9 @@ body:has(.settlement-band) .page {
 
 .spinner {
   animation: spin 0.8s linear infinite;
-  border: 3px solid var(--line);
+  border: 3px solid var(--hairline);
   border-radius: 50%;
-  border-top-color: var(--accent);
+  border-top-color: var(--iris);
   height: 30px;
   width: 30px;
 }
@@ -3905,8 +4014,8 @@ body:has(.pricing-route) .page {
 }
 
 .pricing-page .interval-toggle button.active .toggle-save {
-  background: rgba(250, 246, 239, 0.18);
-  color: var(--paper);
+  background: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
 }
 
 /* Mono-caps guarantee strip: the same voice as the landing hero microcopy. */
@@ -3997,8 +4106,8 @@ body:has(.pricing-route) .page {
 .pricing-page .pricing-flag {
   background: var(--ink);
   border-radius: 999px;
-  box-shadow: 0 10px 22px rgba(23, 32, 28, 0.28);
-  color: var(--paper);
+  box-shadow: 0 10px 22px rgba(11, 30, 61, 0.28);
+  color: #ffffff;
   font-family: var(--font-mono-stack);
   font-size: 0.64rem;
   font-weight: 600;
@@ -4023,9 +4132,9 @@ body:has(.pricing-route) .page {
 }
 
 /* Price lockup: the figure leads on the display face with proportional
-   lining figures (Bricolage's tabular decimal point takes a full digit
-   advance and would render "$19 . 00"); the interval rides the baseline in
-   the mono voice. Comparison figures below keep tabular-nums for scans. */
+   lining figures (a tabular decimal point takes a full digit advance and
+   would render "$19 . 00"); the interval rides the baseline in the mono
+   voice. Comparison figures below keep tabular-nums for scans. */
 .pricing-page .price-block {
   border-bottom: 1px solid var(--hairline);
   display: grid;
@@ -4113,7 +4222,7 @@ body:has(.pricing-route) .page {
 }
 
 .pricing-page .comparison-table .compare-featured {
-  background: rgba(227, 90, 31, 0.055);
+  background: rgba(91, 76, 245, 0.05);
 }
 
 .pricing-page .comparison-table thead th.compare-featured {
@@ -4149,7 +4258,7 @@ body:has(.pricing-route) .page {
   max-width: 760px;
 }
 
-/* Closing CTA: quiet hairline-opened band, one orange fill on the page. */
+/* Closing CTA: quiet hairline-opened band, one accent fill on the page. */
 .pricing-cta {
   align-items: center;
   border-top: 1px solid var(--hairline);
