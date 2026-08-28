@@ -6,10 +6,11 @@ import { useEffect, useState } from "react";
 import { REPOSITORY_URL } from "@/lib/site";
 
 /**
- * Sticky site header. Transparent while it rests on a page's opening
- * viewport so the hero owns the canvas, then a blurred paper bar once the
- * visitor scrolls (globals.css keys off [data-scrolled]). Server-rendered
- * markup starts in the transparent state, so no-JS visitors simply keep it.
+ * Sticky site header, coordinated with the WebGL hero: transparent while it
+ * rests on a page's opening viewport so the wave and the white canvas own
+ * the frame, then a saturated-blur white bar once the visitor scrolls
+ * (globals.css keys off [data-scrolled]). Server-rendered markup starts in
+ * the transparent state, so no-JS visitors simply keep it.
  */
 export function SiteHeader() {
   const pathname = usePathname();
