@@ -64,6 +64,11 @@ all numeric UI (tables, prices, ledger figures) MUST set
 Rules:
 
 - Exactly ONE H1 per route; heading levels never skip.
+- Landing-hero exception (Round 4 review): in a two-column hero the Display
+  clamp may be held back on 851–1080 px viewports
+  (`clamp(2.5rem, 1.1rem + 3.1vw, 3.5rem)`) — at the full scale the headline
+  column is narrower than the word “entitlements” there and the lockup
+  shatters into five ragged lines. Full Display scale resumes above 1080 px.
 - Gradient text (mesh ramp, `background-clip: text`) is allowed on **one
   phrase of one headline per route**, with a solid `--iris` fallback color
   declared before the clip for non-supporting engines.
