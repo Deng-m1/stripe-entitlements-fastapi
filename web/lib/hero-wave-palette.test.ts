@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createPaletteRamp,
   HERO_WAVE_PALETTE,
+  MESH_STOPS,
   PALETTE_TEXTURE_WIDTH,
   type PaletteStop,
 } from "@/lib/hero-wave-palette";
@@ -58,6 +59,26 @@ describe("hero wave palette ramp", () => {
         expect(Math.abs(sampled[channel] - stop.color[channel])).toBeLessThan(4);
       }
     }
+  });
+
+  it("anchors on the four normative mesh stops in ramp order", () => {
+    // DESIGN_SYSTEM.md §3.2 fixes both the values and their violet → pink →
+    // orange → lemon order; the shader and the poster both read this ramp.
+    const anchors = [
+      MESH_STOPS.violet,
+      MESH_STOPS.pink,
+      MESH_STOPS.orange,
+      MESH_STOPS.lemon,
+    ];
+    const offsets = anchors.map((anchor) => {
+      const stop = HERO_WAVE_PALETTE.find(
+        (candidate) => String(candidate.color) === String(anchor),
+      );
+      expect(stop, `missing mesh anchor ${anchor}`).toBeDefined();
+      return stop?.offset ?? -1;
+    });
+
+    expect(offsets).toEqual([...offsets].sort((a, b) => a - b));
   });
 
   it("drives red monotonically from violet toward amber", () => {

@@ -19,20 +19,34 @@ export interface PaletteStop {
 }
 
 /**
- * Violet → magenta → coral → amber, read off the Stripe hero wave. The two
- * near-duplicate magenta stops slow the ramp through the fold crests, where
- * the surface spends the most screen area.
+ * The four normative `--mesh-*` stops from `DESIGN_SYSTEM.md` §3.2, in the
+ * fixed violet → pink → orange → lemon order. These anchor the ramp; changing
+ * them changes the shader, the static poster, and the CSS gradients together.
+ */
+export const MESH_STOPS = {
+  violet: [122, 90, 248],
+  pink: [255, 92, 143],
+  orange: [255, 138, 60],
+  lemon: [255, 212, 77],
+} as const satisfies Record<string, readonly [number, number, number]>;
+
+/**
+ * The ramp the hero samples. The four anchors sit at their design-system
+ * values; the interleaved stops only shape *where* the ramp spends its length,
+ * pulling extra resolution into the violet-to-pink crossover that the fold
+ * crests occupy on screen. A deep violet leads in so the sheet has somewhere
+ * darker than `--mesh-violet` to fall away to.
  */
 export const HERO_WAVE_PALETTE: readonly PaletteStop[] = [
   { offset: 0.0, color: [86, 46, 214] },
-  { offset: 0.14, color: [122, 62, 240] },
-  { offset: 0.3, color: [166, 78, 240] },
-  { offset: 0.44, color: [225, 84, 200] },
-  { offset: 0.56, color: [255, 92, 152] },
-  { offset: 0.68, color: [255, 108, 98] },
-  { offset: 0.8, color: [255, 141, 61] },
-  { offset: 0.9, color: [255, 180, 48] },
-  { offset: 1.0, color: [255, 226, 92] },
+  { offset: 0.16, color: MESH_STOPS.violet },
+  { offset: 0.32, color: [166, 78, 240] },
+  { offset: 0.46, color: [223, 83, 197] },
+  { offset: 0.58, color: MESH_STOPS.pink },
+  { offset: 0.7, color: [255, 108, 98] },
+  { offset: 0.82, color: MESH_STOPS.orange },
+  { offset: 0.92, color: [255, 175, 55] },
+  { offset: 1.0, color: MESH_STOPS.lemon },
 ];
 
 export const PALETTE_TEXTURE_WIDTH = 256;
