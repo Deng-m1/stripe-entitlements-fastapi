@@ -243,128 +243,155 @@ export function AccountScreen({
         </p>
       ) : null}
 
-      <div className="account-grid">
-        <section className="account-card">
-          <p className="eyebrow">Subscription</p>
-          <h2>{currentName}</h2>
-          {!hasSubscription ? (
-            <p>
-              No Stripe subscription is active for this account. Use “Review plan
-              changes” below to start one — access is granted only after the paid
-              webhook is processed, never by the redirect back to this app.
+      {/* Workspace body: the projection people read runs down the main
+          column, the numbers and the controls they act on sit in the rail.
+          Splitting them this way also stops the shorter card from stretching
+          to its neighbour's height and leaving a dead half-column. */}
+      <div className="account-workspace">
+        <div className="account-main">
+          <section className="account-card">
+            <p className="eyebrow">
+              <span className="eyebrow-label">Subscription</span>
             </p>
-          ) : null}
-          <dl className="fact-list">
-            <div>
-              <dt>Plan key</dt>
-              <dd>{account.plan_key}</dd>
-            </div>
-            <div>
-              <dt>Billing interval</dt>
-              <dd>{account.plan_interval ?? "None"}</dd>
-            </div>
-            <div>
-              <dt>Status</dt>
-              <dd><span className={`status status-${account.subscription_status}`}>{account.subscription_status}</span></dd>
-            </div>
-            <div>
-              <dt>Upgrade settlement</dt>
-              <dd>{account.transition_policy.replaceAll("_", " ")}</dd>
-            </div>
-            <div>
-              <dt>Current period ends</dt>
-              <dd>{formatDate(account.current_period_end)}</dd>
-            </div>
-          </dl>
-        </section>
+            <h2>{currentName}</h2>
+            {!hasSubscription ? (
+              <p>
+                No Stripe subscription is active for this account. Use “Review
+                plan changes” to start one — access is granted only after the
+                paid webhook is processed, never by the redirect back to this
+                app.
+              </p>
+            ) : null}
+            <dl className="fact-list">
+              <div>
+                <dt>Plan key</dt>
+                <dd>{account.plan_key}</dd>
+              </div>
+              <div>
+                <dt>Billing interval</dt>
+                <dd>{account.plan_interval ?? "None"}</dd>
+              </div>
+              <div>
+                <dt>Status</dt>
+                <dd>
+                  <span
+                    className={`status status-${account.subscription_status}`}
+                  >
+                    {account.subscription_status}
+                  </span>
+                </dd>
+              </div>
+              <div>
+                <dt>Upgrade settlement</dt>
+                <dd>{account.transition_policy.replaceAll("_", " ")}</dd>
+              </div>
+              <div>
+                <dt>Current period ends</dt>
+                <dd>{formatDate(account.current_period_end)}</dd>
+              </div>
+            </dl>
+          </section>
 
-        <section className="account-card">
-          <p className="eyebrow">Credits</p>
-          <p className="credit-balance">{account.credits.balance.toLocaleString()}</p>
-          <p>available credits</p>
-          {account.credits.balance === 0 && !account.credits.next_grant_at ? (
-            <p>
-              No grant is scheduled. Credit grants start with a paid subscription
-              period and are recorded with database-enforced idempotency.
+          <section className="entitlements-section">
+            <p className="eyebrow">
+              <span className="eyebrow-label">Structured entitlements</span>
             </p>
-          ) : null}
-          <dl className="fact-list">
-            <div>
-              <dt>Grant amount</dt>
-              <dd>{account.credits.grant_amount.toLocaleString()}</dd>
+            <h2>What the product may enforce</h2>
+            {account.entitlements.length === 0 ? (
+              <div className="entitlement-empty">
+                <strong>Nothing enforceable yet</strong>
+                <span>
+                  Structured entitlements appear here after a subscription
+                  webhook projects them. The product enforces exactly what is
+                  listed — nothing is inferred from prices or redirects.
+                </span>
+              </div>
+            ) : (
+              <div className="entitlement-grid">
+                {account.entitlements.map((entitlement) => (
+                  <EntitlementCard
+                    entitlement={entitlement}
+                    key={entitlement.key}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+
+        <div className="account-rail-column">
+          <section className="account-card credits-card">
+            <p className="eyebrow">
+              <span className="eyebrow-label">Credits</span>
+            </p>
+            <p className="credit-balance">
+              {account.credits.balance.toLocaleString()}
+            </p>
+            <p className="credit-caption">available credits</p>
+            {account.credits.balance === 0 && !account.credits.next_grant_at ? (
+              <p>
+                No grant is scheduled. Credit grants start with a paid
+                subscription period and are recorded with database-enforced
+                idempotency.
+              </p>
+            ) : null}
+            <dl className="fact-list">
+              <div>
+                <dt>Grant amount</dt>
+                <dd>{account.credits.grant_amount.toLocaleString()}</dd>
+              </div>
+              <div>
+                <dt>Next grant</dt>
+                <dd>{formatDate(account.credits.next_grant_at)}</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section
+            aria-labelledby="manage-title"
+            className="account-card manage-card"
+          >
+            <p className="eyebrow">
+              <span className="eyebrow-label">Manage</span>
+            </p>
+            <h2 id="manage-title">Plan changes and billing management</h2>
+            <p>
+              Plan and interval changes stay in this app so the server can
+              enforce the safe transition matrix. The Stripe Billing Portal
+              handles payment methods, invoices, and cancellation.
+            </p>
+            <div className="account-actions">
+              <Link className="button primary" href="/pricing">
+                Review plan changes
+              </Link>
+              <button
+                aria-busy={portalBusy}
+                className="button secondary"
+                disabled={portalBusy}
+                onClick={() => void openPortal()}
+                type="button"
+              >
+                {portalBusy ? "Opening Portal…" : "Open Stripe Billing Portal"}
+              </button>
+              <button
+                aria-busy={loading}
+                className="button ghost"
+                disabled={loading}
+                onClick={() => void refresh()}
+                type="button"
+              >
+                {loading ? "Refreshing…" : "Refresh projection"}
+              </button>
             </div>
-            <div>
-              <dt>Next grant</dt>
-              <dd>{formatDate(account.credits.next_grant_at)}</dd>
-            </div>
-          </dl>
-        </section>
+            {loadedAt ? (
+              <p className="projection-stamp">
+                Projection loaded {formatDate(loadedAt)}. Refreshing re-reads
+                the webhook-backed account API and never mutates billing state.
+              </p>
+            ) : null}
+          </section>
+        </div>
       </div>
-
-      <section className="entitlements-section">
-        <div>
-          <p className="eyebrow">Structured entitlements</p>
-          <h2>What the product may enforce</h2>
-        </div>
-        {account.entitlements.length === 0 ? (
-          <div className="entitlement-grid">
-            <article className="entitlement-card">
-              <p>No entitlements granted</p>
-              <strong>Nothing enforceable yet</strong>
-              <span>
-                Structured entitlements appear here after a subscription webhook
-                projects them. The product enforces exactly what is listed —
-                nothing is inferred from prices or redirects.
-              </span>
-            </article>
-          </div>
-        ) : (
-          <div className="entitlement-grid">
-            {account.entitlements.map((entitlement) => (
-              <EntitlementCard entitlement={entitlement} key={entitlement.key} />
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section aria-labelledby="manage-title" className="account-card" style={{ marginTop: 18 }}>
-        <p className="eyebrow">Manage</p>
-        <h2 id="manage-title">Plan changes and billing management</h2>
-        <p>
-          Plan and interval changes stay in this app so the server can enforce the
-          safe transition matrix. The Stripe Billing Portal handles payment methods,
-          invoices, and cancellation.
-        </p>
-        {loadedAt ? (
-          <p>
-            Projection loaded {formatDate(loadedAt)}. Refreshing re-reads the
-            webhook-backed account API and never mutates billing state.
-          </p>
-        ) : null}
-        <div className="account-actions">
-          <button
-            aria-busy={loading}
-            className="button ghost"
-            disabled={loading}
-            onClick={() => void refresh()}
-            type="button"
-          >
-            {loading ? "Refreshing…" : "Refresh projection"}
-          </button>
-          <button
-            aria-busy={portalBusy}
-            className="button secondary"
-            disabled={portalBusy}
-            onClick={() => void openPortal()}
-            type="button"
-          >
-            {portalBusy ? "Opening Portal…" : "Open Stripe Billing Portal"}
-          </button>
-          <Link className="button primary" href="/pricing">
-            Review plan changes
-          </Link>
-        </div>
-      </section>
     </div>
   );
 }

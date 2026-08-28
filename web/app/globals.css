@@ -2686,8 +2686,16 @@ h2 {
   background: var(--danger-soft);
   color: var(--danger);
   display: flex;
+  /* The retry control is a flex item with its own minimum width; without a
+     wrap it pushed past the viewport at 390px and made the whole page
+     horizontally pannable. */
+  flex-wrap: wrap;
   gap: 12px;
   justify-content: space-between;
+}
+
+.inline-error .button {
+  flex: none;
 }
 
 .account-loading {
@@ -2878,11 +2886,24 @@ dd {
   padding: 0;
 }
 
-.account-grid {
+/* Workspace body: what the account *is* reads down the main column; the
+   numbers and the controls that change them sit in the rail. Each column
+   packs its own cards, so a short card never stretches to a tall
+   neighbour's height and leaves a dead half-column. */
+
+.account-workspace {
   align-items: start;
   display: grid;
   gap: var(--space-4);
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.75fr);
+  grid-template-columns: minmax(0, 1.32fr) minmax(0, 0.68fr);
+}
+
+.account-main,
+.account-rail-column {
+  align-content: start;
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
 }
 
 .account-card {
@@ -2902,6 +2923,37 @@ dd {
   letter-spacing: -0.045em;
   line-height: 1;
   margin-bottom: 5px;
+}
+
+/* The balance carries its own scale; the caption under it is a unit label,
+   not body copy. */
+.credit-caption {
+  color: var(--muted) !important;
+  font-family: var(--font-mono-stack);
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* In the rail the actions have no horizontal room to sit side by side, so
+   they stack full-width in decreasing order of intent. */
+.manage-card .account-actions {
+  display: grid;
+  gap: var(--space-2);
+  justify-content: stretch;
+}
+
+.manage-card .account-actions > * {
+  justify-content: center;
+  width: 100%;
+}
+
+.projection-stamp {
+  border-top: 1px solid var(--hairline);
+  color: var(--muted) !important;
+  font-size: 0.8rem;
+  margin: var(--space-4) 0 0;
+  padding-top: var(--space-3);
 }
 
 /* Status chip: a dot plus the raw Stripe status string. Every subscription
@@ -2969,8 +3021,35 @@ dd {
 }
 
 .entitlements-section {
-  margin-top: var(--space-4);
   padding: 28px;
+}
+
+.entitlements-section h2 {
+  font-size: 1.6rem;
+  margin-bottom: 0;
+}
+
+/* Empty entitlements are a statement, not a card in a one-item grid: a
+   dashed field reads as "nothing here yet" instead of a broken tile. */
+.entitlement-empty {
+  background: var(--surface-sunken);
+  border: 1px dashed var(--hairline-strong);
+  border-radius: var(--radius-md);
+  display: grid;
+  gap: 6px;
+  margin-top: 18px;
+  padding: 24px;
+}
+
+.entitlement-empty strong {
+  font-size: 1.0625rem;
+}
+
+.entitlement-empty span {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.55;
+  max-width: 62ch;
 }
 
 .entitlement-grid {
@@ -3326,7 +3405,7 @@ dd {
     min-height: 0;
   }
 
-  .account-grid {
+  .account-workspace {
     grid-template-columns: 1fr;
   }
 
