@@ -12,6 +12,10 @@ const pages = [
   ["landing", "/"],
   ["pricing", "/pricing"],
   ["account", "/account"],
+  // The billing returns only render their settled state with the expectation
+  // the redirect carried, so the rig has to arrive the way Checkout does.
+  ["billing-success", "/billing/success?expected_plan=pro&expected_interval=month"],
+  ["billing-error", "/billing/error?code=payment_failed"],
 ];
 
 const browser = await chromium.launch();

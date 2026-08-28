@@ -328,24 +328,26 @@ export default function HomePage() {
               </span>
             </a>
           </div>
-          {/* The band's own gradient is painted on the section, so giving
-              the node cards a rate of their own is what separates the two
-              layers as the section scrolls (brief §3.2). */}
-          <div className="node-graph-layer" data-parallax="0.04">
+          {/* The band's gradient is painted on the section itself, so the
+              white cards need a rate of their own to read as a plane
+              floating above it (brief §3.2). Graph and capability cards are
+              one plane: moving them apart would only breathe the gap
+              between them. */}
+          <div className="band-card-plane" data-parallax="0.04">
             <PipelineNodeGraph />
+            <ol className="capability-grid">
+              {capabilities.map((capability, index) => (
+                <li
+                  data-reveal-step
+                  key={capability.title}
+                  style={{ "--reveal-step": index } as CSSProperties}
+                >
+                  <h3>{capability.title}</h3>
+                  <p>{capability.body}</p>
+                </li>
+              ))}
+            </ol>
           </div>
-          <ol className="capability-grid">
-            {capabilities.map((capability, index) => (
-              <li
-                data-reveal-step
-                key={capability.title}
-                style={{ "--reveal-step": index } as CSSProperties}
-              >
-                <h3>{capability.title}</h3>
-                <p>{capability.body}</p>
-              </li>
-            ))}
-          </ol>
         </div>
       </section>
 

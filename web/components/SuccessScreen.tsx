@@ -206,7 +206,15 @@ export function SuccessScreen({
         <Link className="button primary" href="/account">
           View account
         </Link>
-        <Link className="button ghost" href="/pricing">
+        {/* One iris CTA and one outline secondary (DESIGN_SYSTEM.md §5.4).
+            When the timeout adds a recovery action that outline slot is
+            already spoken for, so the escape hatch goes quiet. */}
+        <Link
+          className={
+            state === "timed_out" ? "button ghost" : "button secondary"
+          }
+          href="/pricing"
+        >
           Back to pricing
         </Link>
       </div>

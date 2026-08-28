@@ -71,7 +71,7 @@ export default async function BillingErrorPage({
       {knownCode ? <code>Error code: {knownCode}</code> : null}
       <div className="account-actions">
         <Link className="button primary" href="/account">Review account</Link>
-        <Link className="button ghost" href="/pricing">Back to pricing</Link>
+        <Link className="button secondary" href="/pricing">Back to pricing</Link>
       </div>
     </section>
   );

@@ -595,12 +595,21 @@ const pricingLocalStyles = `
     radial-gradient(46% 130% at 54% -10%, rgba(255, 92, 143, 0.4), transparent 64%),
     radial-gradient(58% 150% at 92% 4%, rgba(255, 179, 71, 0.42), transparent 66%);
   content: "";
-  height: 240px;
+  height: 320px;
   left: 50%;
-  mask-image: linear-gradient(to bottom, #000 8%, rgba(0, 0, 0, 0.35) 62%, transparent 100%);
+  /* Both ends fade. The ribbon is anchored to the page container, which
+     starts below the header, so a hard top edge drew a full-width seam
+     across the white chrome above it. */
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    #000 26%,
+    rgba(0, 0, 0, 0.34) 70%,
+    transparent 100%
+  );
   pointer-events: none;
   position: absolute;
-  top: -72px;
+  top: -120px;
   transform: translateX(-50%);
   width: 100vw;
   z-index: -1;
@@ -739,8 +748,8 @@ const pricingLocalStyles = `
   }
 
   .pricing-page::before {
-    height: 190px;
-    top: -56px;
+    height: 250px;
+    top: -94px;
   }
 }
 
