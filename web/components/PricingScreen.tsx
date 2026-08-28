@@ -227,7 +227,11 @@ export function PricingScreen({
     <div className="pricing-page">
       <style>{pricingLocalStyles}</style>
       <section className="hero">
-        <p className="eyebrow">Explicit billing, structured entitlements</p>
+        <p className="eyebrow">
+          <span className="eyebrow-label">
+            Explicit billing, structured entitlements
+          </span>
+        </p>
         <h1>Choose a plan without hiding the billing consequences.</h1>
         <p>
           Plan identity comes from stable catalog keys. Prices are display and billing
@@ -376,7 +380,9 @@ export function PricingScreen({
       </div>
 
       <section aria-labelledby="plan-comparison-heading" className="pricing-compare">
-        <p className="eyebrow">Catalog truth</p>
+        <p className="eyebrow">
+          <span className="eyebrow-label">Catalog truth</span>
+        </p>
         <h2 id="plan-comparison-heading">Compare plans</h2>
         <p>
           Every value below comes from the same catalog the billing server enforces.
@@ -575,9 +581,38 @@ function comparisonRows(plans: CatalogPlan[]): ComparisonRow[] {
 }
 
 const pricingLocalStyles = `
-/* Schibsted Grotesk tabular figures give the decimal point a full digit
-   advance, rendering "$19 . 00". Proportional lining figures keep the price
-   compact; the comparison table below keeps tabular-nums for column scans. */
+/* The route's gradient ribbon (DESIGN_SYSTEM.md §5.2): a slim static render
+   of the same --mesh-stops ramp behind the page header, so /pricing visibly
+   belongs to the landing's world without paying for a second WebGL canvas.
+   It is painted, not imaged, and it is decorative — nothing reads on it. */
+.pricing-page {
+  position: relative;
+}
+
+.pricing-page::before {
+  background:
+    radial-gradient(52% 150% at 16% 0%, rgba(122, 90, 248, 0.5), transparent 62%),
+    radial-gradient(46% 130% at 54% -10%, rgba(255, 92, 143, 0.4), transparent 64%),
+    radial-gradient(58% 150% at 92% 4%, rgba(255, 179, 71, 0.42), transparent 66%);
+  content: "";
+  height: 240px;
+  left: 50%;
+  mask-image: linear-gradient(to bottom, #000 8%, rgba(0, 0, 0, 0.35) 62%, transparent 100%);
+  pointer-events: none;
+  position: absolute;
+  top: -72px;
+  transform: translateX(-50%);
+  width: 100vw;
+  z-index: -1;
+}
+
+.pricing-page > .hero {
+  padding-top: 8px;
+}
+
+/* Bricolage's tabular figures give the decimal point a full digit advance,
+   rendering "$19 . 00". Proportional lining figures keep the price compact;
+   the comparison table below keeps tabular-nums for column scans. */
 .pricing-page .price-block strong {
   font-variant-numeric: normal;
 }
@@ -606,19 +641,53 @@ const pricingLocalStyles = `
 }
 
 .pricing-page .interval-toggle button.active .toggle-save {
-  background: rgba(250, 246, 239, 0.18);
-  color: var(--paper);
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
 }
 
+/* Featured plan: raised a step in the depth grammar (§4.3) — heavier shadow,
+   a mesh shadow base underneath, a gradient top edge, and a physical lift —
+   rather than the v2 "same card, darker border". */
 .pricing-page .pricing-featured {
-  border-color: var(--ink);
-  box-shadow: 0 16px 40px rgba(23, 32, 28, 0.1);
+  box-shadow: var(--shadow-float);
   position: relative;
+  transform: translateY(-10px);
+  z-index: 1;
+}
+
+.pricing-page .pricing-featured::before {
+  background: var(--gradient-accent);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  content: "";
+  height: 3px;
+  left: 0;
+  position: absolute;
+  right: 0;
+  top: 0;
+}
+
+.pricing-page .pricing-featured::after {
+  background: var(--gradient-accent);
+  border-radius: 50%;
+  bottom: -22px;
+  content: "";
+  filter: blur(38px);
+  height: 76px;
+  left: 10%;
+  opacity: 0.38;
+  position: absolute;
+  right: 10%;
+  z-index: -1;
+}
+
+.pricing-page .pricing-featured:hover {
+  transform: translateY(-14px);
 }
 
 .pricing-page .pricing-flag {
-  background: var(--accent);
+  background: var(--iris);
   border-radius: 999px;
+  box-shadow: 0 6px 18px rgba(91, 76, 245, 0.32);
   color: #fff;
   font-family: var(--font-mono-stack);
   font-size: 0.64rem;
@@ -647,8 +716,32 @@ const pricingLocalStyles = `
   margin: 0 0 -16px;
 }
 
+.pricing-page .entitlement-list span {
+  color: var(--iris);
+}
+
 .pricing-page .pricing-compare {
-  margin-top: 72px;
+  margin-top: 96px;
+}
+
+/* The featured card's lift would clip against the grid's own bounds. */
+@media (min-width: 851px) {
+  .pricing-page .plan-grid {
+    align-items: start;
+    padding-top: 14px;
+  }
+}
+
+@media (max-width: 850px) {
+  .pricing-page .pricing-featured,
+  .pricing-page .pricing-featured:hover {
+    transform: none;
+  }
+
+  .pricing-page::before {
+    height: 190px;
+    top: -56px;
+  }
 }
 
 .pricing-page .pricing-compare h2 {
@@ -670,6 +763,10 @@ const pricingLocalStyles = `
 .pricing-page .pricing-included {
   color: var(--success);
   font-weight: 700;
+}
+
+.pricing-page .comparison-table {
+  font-variant-numeric: tabular-nums;
 }
 
 .pricing-page .pricing-excluded {

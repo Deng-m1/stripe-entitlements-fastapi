@@ -133,7 +133,9 @@ export function SuccessScreen({
       <div className={`success-mark ${state}`} aria-hidden="true">
         {state === "confirmed" ? "✓" : state === "timed_out" ? "!" : "↻"}
       </div>
-      <p className="eyebrow">Checkout returned</p>
+      <p className="eyebrow">
+        <span className="eyebrow-label">Checkout returned</span>
+      </p>
       <h1>{heading}</h1>
       {state !== "invalid" ? (
         <ol className="success-steps">
@@ -213,6 +215,9 @@ export function SuccessScreen({
 }
 
 const successLocalStyles = `
+/* The settlement progress rail: three states of one webhook handover, drawn
+   as connected steps rather than three loose dots, so the screen reads as a
+   process that is still running instead of a page that is merely waiting. */
 .success-steps {
   display: flex;
   flex-wrap: wrap;
@@ -227,15 +232,19 @@ const successLocalStyles = `
   align-items: center;
   color: var(--muted);
   display: inline-flex;
-  font-size: 0.88rem;
-  font-weight: 650;
+  font-family: var(--font-mono-stack);
+  font-size: 0.72rem;
+  font-weight: 600;
   gap: 8px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .success-steps li::before {
-  background: var(--line);
+  background: var(--hairline-strong);
   border-radius: 50%;
   content: "";
+  flex: none;
   height: 9px;
   width: 9px;
 }
@@ -246,6 +255,7 @@ const successLocalStyles = `
 
 .success-steps li.active::before {
   background: var(--warning);
+  box-shadow: 0 0 0 4px var(--warning-soft);
 }
 
 .success-steps li.done {
@@ -264,9 +274,13 @@ const successLocalStyles = `
 }
 
 .success-facts div {
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--hairline);
   padding-top: 10px;
   text-align: left;
+}
+
+.success-facts dd {
+  font-variant-numeric: tabular-nums;
 }
 
 @media (max-width: 560px) {

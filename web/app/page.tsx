@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import type { CSSProperties } from "react";
 import { HeroTerminal } from "@/components/HeroTerminal";
 import { HeroWaveCanvas } from "@/components/HeroWaveCanvas";
 import { LedgerFlow } from "@/components/LedgerFlow";
 import { PipelineNodeGraph } from "@/components/PipelineNodeGraph";
+import { ScrollParallax } from "@/components/ScrollParallax";
 import { ScrollReveal } from "@/components/ScrollReveal";
 import { SettlementChart } from "@/components/SettlementChart";
 import { UpgradeMatrix } from "@/components/UpgradeMatrix";
@@ -176,6 +178,21 @@ const structuredData = {
   ],
 };
 
+/**
+ * One eyebrow structure for every landing section (DESIGN_SYSTEM.md §2.2:
+ * "Eyebrows are mono-caps and MUST precede every landing H2"). The index is
+ * a separate span so the numbering carries the iris accent while the label
+ * stays muted, and so a section cannot silently ship without one.
+ */
+function SectionEyebrow({ index, label }: { index?: string; label: string }) {
+  return (
+    <p className="eyebrow">
+      {index ? <span className="eyebrow-index">{index}</span> : null}
+      <span className="eyebrow-label">{label}</span>
+    </p>
+  );
+}
+
 export default function HomePage() {
   return (
     <div className="landing-page">
@@ -184,6 +201,7 @@ export default function HomePage() {
         type="application/ld+json"
       />
       <ScrollReveal />
+      <ScrollParallax />
 
       {/* Hero — WebGL mesh-gradient wave behind the headline column
           (brief v3 §3.1), with the static poster as the SSR frame. */}
@@ -192,7 +210,7 @@ export default function HomePage() {
         <div className="shell">
           <div className="hero-grid">
             <div className="hero-copy">
-              <p className="eyebrow">Open-source billing reference</p>
+              <SectionEyebrow label="Open-source billing reference" />
               <h1 id="hero-heading">
                 <span className="h1-line">Billing events are chaos.</span>{" "}
                 <span className="h1-line">
@@ -239,7 +257,10 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* Sources → ledger — M3 centerpiece + M1 annotated chart. */}
+      {/* Sources → ledger — the centerpiece artifact. The table is a tilted
+          card over a mesh shadow base with a faded sibling behind it (brief
+          §3.3), and the stack scrolls at its own rate against the copy
+          column so the two layers separate (§3.2). */}
       <section
         aria-labelledby="ledger-heading"
         className="paper-band"
@@ -247,7 +268,7 @@ export default function HomePage() {
       >
         <div className="shell ledger-grid">
           <div className="ledger-intro">
-            <p className="eyebrow">01 · How it works</p>
+            <SectionEyebrow index="01" label="How it works" />
             <h2 id="ledger-heading">
               Out-of-order events in. An ordered ledger out.
             </h2>
@@ -272,15 +293,26 @@ export default function HomePage() {
             </ol>
             <SettlementChart />
           </div>
-          <LedgerFlow />
+          {/* The stage holds the gradient shadow base and does not move, so
+              the two card layers travel against it at distinct rates rather
+              than against each other's transforms. */}
+          <div className="artifact-stage">
+            <span aria-hidden="true" className="artifact-ghost" data-parallax="0.03" />
+            <div className="artifact-front" data-parallax="0.09">
+              <LedgerFlow />
+            </div>
+          </div>
         </div>
       </section>
 
-      {/* Guarantees — M4 node graph with the duplicate-delivery branch. */}
-      <section aria-labelledby="invariants-heading" className="paper-band">
+      {/* Guarantees — the node graph with its duplicate-delivery branch.
+          This is the section that satisfies brief §3.3's requirement that at
+          least one section layer white UI cards over a full-width gradient
+          band (Stripe's dashboard-section grammar). */}
+      <section aria-labelledby="invariants-heading" className="gradient-band">
         <div className="shell" data-reveal>
           <div className="section-heading">
-            <p className="eyebrow">02 · Guarantees, not features</p>
+            <SectionEyebrow index="02" label="Guarantees, not features" />
             <h2 id="invariants-heading">
               A Stripe billing reference built on invariants.
             </h2>
@@ -298,8 +330,12 @@ export default function HomePage() {
           </div>
           <PipelineNodeGraph />
           <ol className="capability-grid">
-            {capabilities.map((capability) => (
-              <li key={capability.title}>
+            {capabilities.map((capability, index) => (
+              <li
+                data-reveal-step
+                key={capability.title}
+                style={{ "--reveal-step": index } as CSSProperties}
+              >
                 <h3>{capability.title}</h3>
                 <p>{capability.body}</p>
               </li>
@@ -308,11 +344,12 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* Upgrade matrix — M1 thin-bordered paper-card discipline. */}
-      <section aria-labelledby="matrix-heading" className="paper-band">
+      {/* Upgrade matrix — depth-composed card over a mesh shadow base, with
+          the highlighted prorated_delta cell carrying the gradient glow. */}
+      <section aria-labelledby="matrix-heading" className="paper-band band-sunken">
         <div className="shell" data-reveal>
           <div className="section-heading">
-            <p className="eyebrow">03 · The upgrade matrix</p>
+            <SectionEyebrow index="03" label="The upgrade matrix" />
             <h2 id="matrix-heading">All 36 plan transitions, defined.</h2>
             <p>
               Three plans, two intervals, no undefined cell. Every source state
@@ -320,8 +357,10 @@ export default function HomePage() {
               never has to guess what an upgrade did to an invoice.
             </p>
           </div>
-          <div className="matrix-card">
-            <UpgradeMatrix />
+          <div className="artifact-stage">
+            <div className="matrix-card" data-parallax="0.05">
+              <UpgradeMatrix />
+            </div>
           </div>
         </div>
       </section>
@@ -330,7 +369,7 @@ export default function HomePage() {
       <section aria-labelledby="gates-heading" className="proof-band">
         <div className="shell" data-reveal>
           <div className="proof-heading">
-            <p className="eyebrow">04 · Proof, not promises</p>
+            <SectionEyebrow index="04" label="Proof, not promises" />
             <h2 id="gates-heading">Proven against real Stripe test mode.</h2>
             <p>
               The payment lifecycle has automated gates against real Stripe
@@ -338,7 +377,7 @@ export default function HomePage() {
             </p>
           </div>
           <div className="proof-grid">
-            <div className="proof-artifact">
+            <div className="proof-artifact" data-parallax="0.05">
               <table aria-hidden="true" className="proof-table">
                 <tbody>
                   {proofLedger.map((row, index) => (
@@ -400,7 +439,7 @@ export default function HomePage() {
       <section aria-labelledby="catalog-heading" className="paper-band">
         <div className="shell" data-reveal>
           <div className="section-heading">
-            <p className="eyebrow">05 · Bundled reference catalog</p>
+            <SectionEyebrow index="05" label="Bundled reference catalog" />
             <h2 id="catalog-heading">Three tiers, monthly and annual billing.</h2>
             <p>
               Prices are explicit billing data. Stable plan rank controls
@@ -499,11 +538,11 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* FAQ — pure content, restyled to paper; JSON-LD kept. */}
-      <section aria-labelledby="faq-heading" className="paper-band">
+      {/* FAQ — pure content, restyled to the new system; JSON-LD kept. */}
+      <section aria-labelledby="faq-heading" className="paper-band band-sunken">
         <div className="shell" data-reveal>
           <div className="section-heading">
-            <p className="eyebrow">06 · Frequently asked questions</p>
+            <SectionEyebrow index="06" label="Frequently asked questions" />
             <h2 id="faq-heading">Stripe billing template FAQ</h2>
           </div>
           <div className="faq-list">

@@ -128,13 +128,47 @@ export function AccountScreen({
       aria-busy={loading}
       style={{ opacity: loading ? 0.7 : 1, transition: "opacity 160ms ease" }}
     >
-      <section className="hero compact">
-        <p className="eyebrow">Webhook-authoritative account projection</p>
+      {/* Workspace header (DESIGN_SYSTEM.md §5.3): one quiet mesh accent rule,
+          the page title, and a rail of the three facts a visitor checks
+          first, so the answer is legible before any card is read. */}
+      <section className="account-header">
+        <p className="eyebrow">
+          <span className="eyebrow-label">
+            Webhook-authoritative account projection
+          </span>
+        </p>
         <h1>Your billing account</h1>
         <p>
           This view reports stored plan identity, interval, credits, and entitlements
           independently. A price is never used to guess the current tier.
         </p>
+        <dl aria-label="Account status summary" className="account-rail">
+          <div>
+            <dt>Plan</dt>
+            <dd>
+              {currentName}
+              {account.plan_interval ? ` · ${account.plan_interval}` : ""}
+            </dd>
+          </div>
+          <div>
+            <dt>Product access</dt>
+            <dd>
+              <span
+                className={
+                  account.entitlements_enforceable
+                    ? "status status-active"
+                    : "status status-past_due"
+                }
+              >
+                {account.entitlements_enforceable ? "Enforceable" : "Paused"}
+              </span>
+            </dd>
+          </div>
+          <div>
+            <dt>Entitlements</dt>
+            <dd>{account.entitlements.length}</dd>
+          </div>
+        </dl>
       </section>
 
       {account.subscription_status === "past_due" ? (
@@ -236,10 +270,6 @@ export function AccountScreen({
             <div>
               <dt>Upgrade settlement</dt>
               <dd>{account.transition_policy.replaceAll("_", " ")}</dd>
-            </div>
-            <div>
-              <dt>Product access</dt>
-              <dd>{account.entitlements_enforceable ? "Enforceable" : "Paused"}</dd>
             </div>
             <div>
               <dt>Current period ends</dt>

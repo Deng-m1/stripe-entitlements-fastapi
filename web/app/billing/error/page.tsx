@@ -58,7 +58,9 @@ export default async function BillingErrorPage({
   return (
     <section className="success-card error-card" role="alert">
       <div className="success-mark timed_out" aria-hidden="true">!</div>
-      <p className="eyebrow">Billing action stopped</p>
+      <p className="eyebrow">
+        <span className="eyebrow-label">Billing action stopped</span>
+      </p>
       <h1>{copy.title}</h1>
       <p>{copy.detail}</p>
       <p>

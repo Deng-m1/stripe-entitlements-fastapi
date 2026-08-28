@@ -1,12 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Stripe Entitlements ledger-paper mark">
-  <rect width="64" height="64" rx="14" fill="#faf6ef"/>
-  <rect x="0.5" y="0.5" width="63" height="63" rx="13.5" fill="none" stroke="#e3ddd2"/>
-  <!-- ruled ledger lines -->
-  <g stroke="#17201c" stroke-width="4" stroke-linecap="round">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Stripe Entitlements mesh-ledger mark">
+  <!-- Mesh ramp from DESIGN_SYSTEM.md 3.2: violet, pink, orange, lemon. -->
+  <defs>
+    <linearGradient id="mesh" x1="6" y1="58" x2="58" y2="6" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7a5af8"/>
+      <stop offset="0.42" stop-color="#ff5c8f"/>
+      <stop offset="0.78" stop-color="#ff8a3c"/>
+      <stop offset="1" stop-color="#ffd44d"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#ffffff"/>
+  <rect x="0.5" y="0.5" width="63" height="63" rx="13.5" fill="none" stroke="#e4e9f1"/>
+  <!-- Ordered ledger rules: the deterministic side of the story. -->
+  <g stroke="#0b1e3d" stroke-width="4" stroke-linecap="round">
     <line x1="14" y1="20" x2="50" y2="20"/>
     <line x1="14" y1="32" x2="50" y2="32"/>
     <line x1="14" y1="44" x2="36" y2="44"/>
   </g>
-  <!-- the settling entry -->
-  <circle cx="46" cy="44" r="5.5" fill="#e35a1f"/>
+  <!-- The settling entry, carrying the brand ramp. -->
+  <circle cx="46" cy="44" r="5.5" fill="url(#mesh)"/>
 </svg>

@@ -21,7 +21,9 @@ export function ErrorState({
   return (
     <div className="state-card error-card" role="alert">
       <div>
-        <p className="eyebrow">Billing request failed</p>
+        <p className="eyebrow">
+          <span className="eyebrow-label">Billing request failed</span>
+        </p>
         <h2>{title}</h2>
         <p>{error}</p>
         <p>
