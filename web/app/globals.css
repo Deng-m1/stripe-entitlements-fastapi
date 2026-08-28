@@ -4292,6 +4292,27 @@ body:has(.pricing-route) .page {
     padding-block: 92px 40px;
   }
 
+  /* Narrow viewports show the ribbon pill's rounded end caps (-14% is only
+     ~-55px at 390px, less than the cap radius) and the stacked headline
+     pushes the eyebrow up into the band's glow. Pull the caps fully
+     off-frame and lift the band clear of the first text line. */
+  .pricing-ribbon::before,
+  .pricing-ribbon::after {
+    left: -34%;
+    right: -34%;
+  }
+
+  .pricing-ribbon::after {
+    height: 132px;
+    top: -70px;
+  }
+
+  .pricing-ribbon::before {
+    height: 168px;
+    opacity: 0.32;
+    top: -96px;
+  }
+
   /* Phones scan the table by panning; pin the row-header column so every
      value keeps its label. Stripes need opaque paint on the pinned cells. */
   .pricing-page .comparison-table thead th:first-child,
@@ -4317,7 +4338,7 @@ body:has(.pricing-route) .page {
 
 @media (max-width: 560px) {
   .pricing-hero {
-    padding-block: 80px 32px;
+    padding-block: 88px 32px;
   }
 
   .pricing-page .plan-grid {
