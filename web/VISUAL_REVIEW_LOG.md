@@ -746,3 +746,70 @@ have caught the unterminated rule at commit time.
   catalog's explicit annual price; if the catalog ever drops a yearly
   price, the toggle hides the pill silently — no visual guard asserts
   that state.
+
+---
+
+## Round 11 — hero WebGL v2, Stripe-parity pass — 2026-08-28
+
+- Stream: hero WebGL optimization (fable 5)
+- Scope: hero-only files — `HeroWaveCanvas.tsx`, `HeroWaveScene.tsx`,
+  `hero-wave-material.ts`, `hero-wave-geometry.ts`, `hero-wave-palette.ts`,
+  `app/page.tsx` (headline lockup markup), `globals.css` (hero rules only),
+  `promo/hero-webgl.spec.ts`, rebaked `public/hero-wave-*` posters
+- Screenshots: `/tmp/hero-webgl-v2/` — production `next build` +
+  `next start`, 1440/1024/390 plus a late-frame phase check and a
+  reduced-motion poster pass; evidence mirrored on branch
+  `hero-evidence-56a8` (iteration trail `i1`…`i5`)
+
+### What changed
+
+1. **Ribbon geometry toward Stripe's two-to-three broad sweeps.** Fold
+   count 3.1 → 2.2, curvature 0.62 → 1.15, skew 0.55 → 0.62, depth 0.5 →
+   0.56: fewer, wider diagonal ribbons with sweeping arcs instead of thin
+   parallel bands. The trough alpha window widened
+   (`smoothstep(0.06, 0.42)`) so bare white canvas reads between ribbons,
+   as on stripe.com.
+2. **Shading pass.** Palette rebalanced — indigo lead-in deepened
+   (`[70, 40, 210]`), pink anchored at 0.55, orange-to-lemon stretched
+   through the right edge; rim exponent 2.6 → 3.4 for crisper crest edges;
+   a luminous crest-core glow mixes toward white at fold peaks; a slow
+   `uTime` hue shimmer keeps the field alive between fold passes.
+3. **Phase stability.** `uTime` wraps at `WAVE_TIME_PERIOD` (200π) with a
+   capped frame delta, so multi-hour sessions and tab restores cannot
+   accumulate float error or jump phase.
+4. **Host hardening.** Pointer returns to rest on `pointerout`/`blur` (no
+   more frozen edge swell); `webglcontextlost` unmounts to the poster and
+   re-probes once after 1.5 s; `data-drawn` releases whenever the renderer
+   is denied mid-session, and the fallback's opacity transition now applies
+   only on the way out, so the poster returns instantly with no blank gap.
+5. **P1 headline rag closed.** `.h1-line` gets `text-wrap: balance` and
+   "are chaos." holds in an unbreakable `.h1-hold` span — "chaos." can no
+   longer strand alone at 1440 px and the lockup caps at four lines.
+6. **Posters rebaked from the final shader** via
+   `build-hero-wave-poster.mjs`, so the reduced-motion/no-JS frame and the
+   drawn canvas are near-indistinguishable and the 900 ms crossfade is
+   invisible.
+
+### Verified green
+
+- `promo/hero-webgl.spec.ts` 6/6 against the production build: WebGL2
+  context proof, mid-session reduced-motion handback and recovery, lockup
+  line-count, inter-frame motion, reduced-motion poster, no-JS server
+  HTML. This closes Round 8's 5/6 report: the lockup gate now renders
+  four visual lines under the Instrument Sans display face, and the
+  counter clusters fragment tops by half line-height — nested inline
+  rects (the hold span, the gradient em) overcounted 4 lines as 6 under
+  exact matching.
+- Unit suite 139/139, ESLint, `tsc --noEmit` clean.
+- Capture report: `drawn=true` with exactly one canvas at 1440/1024/390;
+  the reduced-motion run mounts zero canvases.
+
+### Stripe parity notes
+
+- Matched: white canvas left of the headline, broad warm diagonal sweep
+  with pink entering top-left, bare-canvas gaps between ribbons, seamless
+  poster handover, pointer swell.
+- Still short of stripe.com: their WebGL2 scene layers ribbons that thread
+  over/under each other with depth testing; ours is a single sheet with
+  fold-driven translucency. Their grain/dither pass is also finer. Both
+  would need a multi-sheet scene graph — noted for a future round.
