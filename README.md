@@ -212,8 +212,8 @@ are documented in [web/README.md](web/README.md).
   equal that actual Event value and is a required startup setting; it deliberately
   has no fallback to `STRIPE_API_VERSION`.
 
-The request version does not rewrite webhook payloads. The 2026-08-18 `0.2.2` browser
-reruns used Stripe CLI signed forwarding and observed `2025-12-15.clover`; those runs
+The request version does not rewrite webhook payloads. The 2026-08-28 0.3 candidate
+browser reruns used Stripe CLI signed forwarding and observed `2025-12-15.clover`; those runs
 prove raw-signature processing but not endpoint metadata. In the separate 2026-08-02
 endpoint gates, Event API retrievals reported Clover while isolated endpoints pinned to
 Dahlia delivered signed `2026-06-24.dahlia` payloads for the same lifecycle. A mismatch
@@ -227,6 +227,10 @@ not infer request, Event API view, or endpoint payload versions from one another
 
 Requirements: Python 3.12+, `uv`, Docker, Node.js 22+, npm, Stripe CLI, and a
 Stripe test-mode account.
+
+Version 0.3 requires a fresh database. If the PostgreSQL volume was initialized by a
+v0.2.x checkout, preserve any evidence you need and recreate that development volume;
+there is intentionally no in-place upgrade across the pre-release baseline reset.
 
 ```bash
 cp .env.example .env
@@ -317,29 +321,26 @@ privacy rules, and reproducible workflow.
 Evidence is split by execution layer; collecting a test or retaining an older run does
 not prove the current tree against Stripe's network.
 
-Local review-candidate evidence was rerun on 2026-08-28 from a branch based on
-`main@75070ef`; it is not evidence for that base commit and must be rebound to
-the exact final commit before release. Networked `0.2.2` evidence remains the separate
-run recorded on 2026-08-18:
+Local and networked 0.3 baseline-candidate evidence was rerun on 2026-08-28 from a
+working tree based on `main@4df7f73`; it is not evidence for that base commit and must be
+rebound to the exact final commit before release:
 
-- the local candidate passed 743 backend tests against disposable PostgreSQL 17; the
-  full collection contained 752 cases and 9 `real_stripe` cases were deselected;
-- the local candidate passed 153 frontend tests, lint, typecheck, and a production build;
-- an independently installed candidate Wheel loaded its packaged catalog and all six
-  migrations from an arbitrary working directory and migrated a fresh PostgreSQL 17
-  database; the candidate Docker image applied all six migrations over an internal-only
+- the local candidate passed 787 backend tests against disposable PostgreSQL 17; the
+  full collection contained 796 cases and 9 `real_stripe` cases were deselected;
+- the local candidate passed 155 frontend tests, lint, typecheck, and a production build;
+- an independently installed candidate Wheel loaded its packaged catalog and complete
+  schema baseline from an arbitrary working directory and migrated a fresh PostgreSQL 17
+  database; the candidate Docker image applied the same baseline over an internal-only
   network, then ran as UID/GID 10001 with a read-only root while a host-side `/health`
   request returned `ok=true` and `database=true`;
-- all 9 real Stripe cases executed and passed against test mode, including strict
+- the current candidate passed all 9 real Stripe cases against test mode, including strict
   run-owned cleanup, paid/refund projection, both upgrade policies, the four-case failed-
   payment matrix, annual Schedule construction, and the complete Test Clock renewal
   lifecycle;
-- `full_period_reset` and `prorated_delta` each passed the real-browser lifecycle through
-  explicit Stripe CLI signed forwarding: decline, Checkout 3DS, Starter/300 projection,
-  upgrade SCA, Pro/1,000 projection, seven related Events, zero unrelated Events, and
-  exact three-essential-Event binding;
-- those retained Stripe/browser passes predate the current production HTTPS, browser
-  environment, and runner changes and therefore do not validate the new runner;
+- `full_period_reset` and `prorated_delta` each passed the current production-build
+  real-browser lifecycle through explicit Stripe CLI signed forwarding: decline,
+  Checkout 3DS, Starter/300 projection, upgrade SCA, Pro/1,000 projection, seven related
+  Events, zero unrelated Events, exact three-essential-Event binding, and strict cleanup;
 - the final 48.800-second public demo remains the separately reviewed `0.2.0` visual
   artifact: 1,464 decoded frames, no long black segment, zero forbidden-term OCR matches,
   15/15 semantic scene checks, and 1080p/30 fps H.264 with 48 kHz stereo AAC at -20.0
@@ -352,6 +353,10 @@ latest separate endpoint-mode evidence remains the 2026-08-02 dual-policy run: b
 policies used isolated temporary Dahlia endpoints, reached Pro/1,000, bound the same
 three essential Events, found zero unrelated Events, and completed strict cleanup while
 the independent Event API view reported Clover.
+The 2026-08-28 endpoint retry stopped before account creation or Checkout because the
+account-less Quick Tunnel hostname remained DNS `NXDOMAIN`; cleanup recovery verified
+the temporary endpoint was closed. The successful current-browser claims therefore name
+Stripe CLI transport and do not claim fresh endpoint-metadata evidence.
 
 Historical pre-hardening evidence from earlier on 2026-08-01 was 239 local/backend
 tests, 7 real Stripe test-mode tests, 60 frontend tests, and 2 browser policy runs. It is
@@ -408,7 +413,7 @@ designed to verify:
   run-marked inventory error;
 - direct Event polling and PostgreSQL projection for those networked API cases.
 
-All nine assertions passed on the `0.2.2` release candidate on 2026-08-18. Future
+All nine assertions passed on the 0.3 baseline candidate on 2026-08-28. Future
 releases must rerun them with an isolated test account rather than treating this result
 as permanent proof.
 
@@ -424,7 +429,7 @@ The current browser verifier binds its final result to one account, Checkout Ses
 initial Invoice, settlement Invoice, and their three essential signed Events. It also
 requires no unresolved incident for that identity and verifies one 700-credit delta
 allocation or no allocation according to policy. The older five-Event observation is
-not a fixed assertion. Both `0.2.2` policies passed on 2026-08-18 through Stripe CLI
+not a fixed assertion. Both 0.3 candidate policies passed on 2026-08-28 through Stripe CLI
 signed forwarding; each run observed seven account-related Events, zero unrelated
 Events, exactly three essential Events, and a Clover signed payload/Event API view. CLI
 forwarding does not prove temporary endpoint metadata. The latest separate temporary-
@@ -446,31 +451,22 @@ customer, Event, Invoice, or secret identifiers are committed. See
 
 ## SQL migrations and production cutover
 
-`stripe-entitlements migrate` applies sorted SQL files:
+`stripe-entitlements migrate` applies the complete `001_v3_baseline.sql` to a fresh
+PostgreSQL database. It directly creates all ten correctness tables, final constraints,
+partial uniqueness guards, coordination indexes, immutable Invoice ownership, and causal
+incident timestamps. There are no historical backfills, FK rebuilds, or deprecated audit-
+digest compatibility columns in a fresh installation.
 
-1. `001_schema.sql`: accounts, Event inbox, invoice facts, ledgers, Checkout
-   claims, and incidents;
-2. `002_plan_transitions.sql`: entitlement expiry/revocation columns, durable
-   plan-change state, request identity, one-pending-change constraint, and
-   immutable invoice/account attribution;
-3. `003_transition_policies.sql`: persisted policy/preview/remote-call snapshots,
-   unique settlement binding, cross-Invoice funding allocations, clawback debt,
-   terminal-closure business idempotency, and reconciliation rotation state;
-4. `004_event_audit_hardening.sql`: redacted Event audit snapshots, legacy payload
-   scrubbing, and the transitional audit-shape contract;
-5. `005_simplify_event_audit.sql`: stops new payload hashing, clears stored digests,
-   removes hash-based constraints, and retains a nullable compatibility column for a
-   safe rolling upgrade while keeping the redacted audit snapshot;
-6. `006_invoice_ownership_and_incident_causality.sql`: makes retained Invoice ownership
-   explicitly restrict independent billing-account deletion, records incident observation
-   time using the statement wall clock, and indexes strictly causal unresolved-incident
-   cleanup.
+This is an intentional pre-1.0 lineage reset. Version 0.3 cannot upgrade a database
+initialized by a public v0.2.x tag: recreate old development, demo, and staging databases.
+The new filename makes mixed histories fail closed in both directions; do not edit
+`schema_migrations` to bypass that protection. Once 0.3 is released, its baseline checksum
+is immutable and future schema changes must be appended as `002_...sql` and later files.
 
-The runner serializes migration application, verifies the checksum of every bundled
-migration already present in the database, and allows later migration rows so a backward-
-compatible rolling deploy does not make the previous replica fail readiness. Apply every
-migration required by the new version before routing traffic to it. Back up all ten
-correctness tables together and test point-in-time restore.
+The runner serializes application, verifies every bundled checksum, and allows later rows
+for future backward-compatible rolling deploys. Apply every migration required by the
+target version before routing traffic to it. Back up all ten correctness tables together
+and test point-in-time restore.
 
 Production is a deliberate separate cutover:
 

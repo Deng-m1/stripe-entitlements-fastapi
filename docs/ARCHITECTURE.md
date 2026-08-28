@@ -92,61 +92,36 @@ branches. No correctness decision relies on process memory or an expiring Redis 
 The implementation uses PostgreSQL `READ COMMITTED` plus explicit locks and constraints.
 Paths that touch account and invoice state lock account first, then invoice.
 
-## Data model and migrations
+## Data model and schema baseline
 
-`001_schema.sql` creates:
+`001_v3_baseline.sql` directly creates the complete 0.3 schema for fresh installations:
 
-- `billing_accounts`: locally enforced plan, status, credit and annual state;
-- `stripe_webhook_events`: committed Event inbox and outcome audit;
-- `stripe_invoice_state`: monotonic refund/dispute facts;
-- `credit_ledger`: append-only grants, charges, clawbacks and balances;
-- `credit_debits`: idempotent product usage with grant-epoch snapshot;
-- `checkout_claims`: Checkout single-flight identity;
-- `billing_incidents`: deduplicated unresolved operational work.
+- `billing_accounts`: locally enforced plan, status, credit, expiry and annual state;
+- `stripe_webhook_events`: committed Event inbox with a redacted audit snapshot;
+- `stripe_invoice_state`: immutable Invoice ownership and monotonic refund/dispute facts;
+- `credit_ledger` and `credit_debits`: business-idempotent funding and product usage;
+- `checkout_claims`: Checkout single-flight and replay identity;
+- `billing_plan_changes`: policy, preview, lease, settlement and recovery state;
+- `billing_funding_allocations`: source-to-delta funding lineage;
+- `billing_clawback_debts`: uncollected current-epoch clawbacks; and
+- `billing_incidents`: deduplicated fail-closed operational work with causal timestamps.
 
-`002_plan_transitions.sql` adds:
+The baseline also declares the immutable Invoice-owner trigger, all partial uniqueness
+guards, reconciliation/annual indexes, explicit foreign-key delete actions, and
+`clock_timestamp()` incident observation default. It intentionally omits the deprecated
+`payload_sha256` rolling-compatibility column; signatures authenticate delivery, Event IDs
+identify deliveries, and database constraints provide business-effect idempotency.
 
-- entitlement/cancellation expiry and revocation fields to accounts;
-- replayable Checkout client request identity and stored Session URL;
-- `billing_plan_changes` with preview snapshots, leases, estimates, Schedule/recovery
-  state and one-pending-change constraint;
-- an immutable `stripe_invoice_state.account_id` trigger.
+Together these ten correctness tables are one backup/restore unit. Restoring account
+balances without their inbox, Invoice, allocation, debt, or intent identity can reopen a
+business effect.
 
-`003_transition_policies.sql` adds:
-
-- persisted `full_period_reset` / `prorated_delta` policy, exact preview Invoice facts,
-  `applying`, and `remote_started_at` state to `billing_plan_changes`;
-- `stripe_invoice_state.closure_applied`, an independent business guard for terminal
-  refund/dispute effects delivered under different Event IDs;
-- a unique settlement-Invoice binding;
-- `billing_funding_allocations`, which records source/target lines, cash proration,
-  entitlement delta, grant epoch, and cumulative refund/dispute status;
-- `billing_clawback_debts`, which prevents spent current-epoch funding from reappearing
-  after a refund or dispute; and
-- reconciliation rotation state/indexes so bounded runs do not starve later accounts.
-
-`004_event_audit_hardening.sql` introduces redacted audit snapshots that remove secrets,
-PII, hosted URLs, and internal prefetch fields, and scrubs pre-hardening full payloads.
-`005_simplify_event_audit.sql` then stops new digest writes, clears stored values, and
-removes the hash-based constraints. The nullable column remains for one rolling-upgrade
-compatibility window so an older replica can drain safely. Stripe signatures authenticate
-delivery, Event IDs provide delivery idempotency, and business uniqueness constraints
-provide effect idempotency; the active audit contract uses only the redacted snapshot.
-
-`006_invoice_ownership_and_incident_causality.sql` aligns the Invoice-owner foreign key
-with audit retention: an account referenced by `stripe_invoice_state` cannot be deleted
-independently. It also indexes unresolved incidents by account, kind, and observation time
-and changes `last_seen_at` to a statement-wall-clock default. Reconciliation resolves only
-facts that strictly predate its database attempt token, including when an incident writer's
-transaction began earlier but wrote or committed after the attempt began.
-
-Together the migrations define ten correctness tables. Backup and restore them as one
-unit; restoring account balances without their inbox, Invoice, allocation, debt, or
-intent identity can reopen a business effect.
-
-Apply every migration bundled with the deployed version in filename order. Known
-migration checksums are immutable, while a database may contain later rows during a
-backward-compatible rolling deployment or rollback.
+The 0.3 baseline is a one-time pre-release lineage reset and has no in-place upgrade path
+from the public v0.2.x tags. Recreate development, demo, and staging databases made by a
+v0.2.x checkout. The filename is a generation sentinel: new code rejects old history and
+old code rejects the new history before applying SQL. Starting with 0.3, never edit the
+baseline after release; append `002_...sql` and later migrations, preserving checksums and
+backward compatibility whenever rolling deployment is promised.
 
 ## Supported webhook Event contract
 

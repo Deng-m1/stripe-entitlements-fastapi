@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import shutil
 import uuid
 from pathlib import Path
@@ -12,6 +14,39 @@ from stripe_entitlements.database import Database
 from tests.conftest import TEST_DSN
 
 ROOT = Path(__file__).parents[1]
+BASELINE = "001_v3_baseline.sql"
+CORRECTNESS_TABLES = (
+    "billing_accounts",
+    "stripe_webhook_events",
+    "stripe_invoice_state",
+    "credit_ledger",
+    "credit_debits",
+    "checkout_claims",
+    "billing_plan_changes",
+    "billing_funding_allocations",
+    "billing_clawback_debts",
+    "billing_incidents",
+)
+V3_SCHEMA_CATALOG_SHA256 = "9785581cf7639bef7d510b88ffd3cabfb437e6526cce0ab6dca4be7a4bbe193e"
+
+
+async def _create_database(prefix: str) -> tuple[str, str]:
+    database_name = f"{prefix}_{uuid.uuid4().hex}"
+    dsn = f"{TEST_DSN.rsplit('/', 1)[0]}/{database_name}"
+    admin = await asyncpg.connect(TEST_DSN)
+    try:
+        await admin.execute(f'create database "{database_name}"')
+    finally:
+        await admin.close()
+    return database_name, dsn
+
+
+async def _drop_database(database_name: str) -> None:
+    admin = await asyncpg.connect(TEST_DSN)
+    try:
+        await admin.execute(f'drop database if exists "{database_name}" with (force)')
+    finally:
+        await admin.close()
 
 
 async def test_migration_runner_rejects_missing_or_empty_directory(
@@ -27,7 +62,7 @@ async def test_migration_runner_rejects_missing_or_empty_directory(
         await database.apply_migrations(empty)
 
 
-async def test_migration_runner_serializes_and_records_checksums(
+async def test_migration_runner_serializes_and_records_baseline_checksum(
     pool: asyncpg.Pool,
 ) -> None:
     database = Database(TEST_DSN)
@@ -35,16 +70,174 @@ async def test_migration_runner_serializes_and_records_checksums(
     await asyncio.gather(*(database.apply_migrations(ROOT / "migrations") for _ in range(8)))
     async with pool.acquire() as conn:
         rows = await conn.fetch("select filename,sha256 from schema_migrations order by filename")
-    assert [row["filename"] for row in rows] == [
+    assert [row["filename"] for row in rows] == [BASELINE]
+    assert len(rows[0]["sha256"]) == 64
+    assert await database.schema_ready()
+
+
+async def test_fresh_baseline_is_safe_under_concurrent_first_apply() -> None:
+    database_name, dsn = await _create_database("migration_concurrent_baseline")
+    databases = [Database(dsn) for _ in range(8)]
+    try:
+        await asyncio.gather(*(database.connect() for database in databases))
+        await asyncio.gather(
+            *(database.apply_migrations(ROOT / "migrations") for database in databases)
+        )
+        await asyncio.gather(
+            *(database.apply_migrations(ROOT / "migrations") for database in databases)
+        )
+        async with databases[0].require_pool().acquire() as conn:
+            rows = await conn.fetch(
+                "select filename,sha256 from schema_migrations order by filename"
+            )
+            tables = await conn.fetch(
+                """select tablename from pg_tables
+                    where schemaname='public' and tablename = any($1::text[])
+                    order by tablename""",
+                list(CORRECTNESS_TABLES),
+            )
+        assert [row["filename"] for row in rows] == [BASELINE]
+        assert len(rows[0]["sha256"]) == 64
+        assert [row["tablename"] for row in tables] == sorted(CORRECTNESS_TABLES)
+        assert all(await asyncio.gather(*(database.schema_ready() for database in databases)))
+    finally:
+        await asyncio.gather(*(database.close() for database in databases))
+        await _drop_database(database_name)
+
+
+async def test_failed_baseline_rolls_back_every_schema_effect(tmp_path: Path) -> None:
+    database_name, dsn = await _create_database("migration_atomic_baseline")
+    broken_dir = tmp_path / "broken-baseline"
+    broken_dir.mkdir()
+    baseline = (ROOT / "migrations" / BASELINE).read_text(encoding="utf-8")
+    (broken_dir / BASELINE).write_text(
+        f"{baseline}\nselect * from baseline_statement_that_must_not_exist;\n",
+        encoding="utf-8",
+    )
+    database = Database(dsn)
+    try:
+        await database.connect()
+        with pytest.raises(asyncpg.UndefinedTableError):
+            await database.apply_migrations(broken_dir)
+        async with database.require_pool().acquire() as conn:
+            relations = await conn.fetchrow(
+                """select to_regclass('public.schema_migrations') as history,
+                          to_regclass('public.billing_accounts') as accounts,
+                          to_regclass('public.billing_incidents') as incidents"""
+            )
+        assert relations is not None
+        assert tuple(relations) == (None, None, None)
+
+        await database.apply_migrations(ROOT / "migrations")
+        assert await database.schema_ready()
+    finally:
+        await database.close()
+        await _drop_database(database_name)
+
+
+async def test_pre_v3_history_is_rejected_without_partial_baseline() -> None:
+    database_name, dsn = await _create_database("migration_old_lineage")
+    database = Database(dsn)
+    try:
+        await database.connect()
+        async with database.require_pool().acquire() as conn:
+            await conn.execute(
+                """create table schema_migrations(
+                       filename text primary key,
+                       sha256 text not null check(length(sha256)=64),
+                       applied_at timestamptz not null default now()
+                     )"""
+            )
+            await conn.execute(
+                """insert into schema_migrations(filename,sha256)
+                     values('001_schema.sql',$1)""",
+                "a" * 64,
+            )
+
+        assert not await database.schema_ready()
+        with pytest.raises(RuntimeError, match=r"unsupported pre-0\.3 migration lineage"):
+            await database.apply_migrations(ROOT / "migrations")
+
+        async with database.require_pool().acquire() as conn:
+            history = await conn.fetchval("select array_agg(filename) from schema_migrations")
+            accounts = await conn.fetchval("select to_regclass('public.billing_accounts')")
+        assert history == ["001_schema.sql"]
+        assert accounts is None
+    finally:
+        await database.close()
+        await _drop_database(database_name)
+
+
+async def test_pre_v3_binary_is_rejected_by_v3_history_without_schema_changes(
+    pool: asyncpg.Pool, tmp_path: Path
+) -> None:
+    old_bundle = tmp_path / "pre-v3-migrations"
+    old_bundle.mkdir()
+    old_filenames = (
         "001_schema.sql",
         "002_plan_transitions.sql",
         "003_transition_policies.sql",
         "004_event_audit_hardening.sql",
         "005_simplify_event_audit.sql",
         "006_invoice_ownership_and_incident_causality.sql",
-    ]
-    assert all(len(row["sha256"]) == 64 for row in rows)
+    )
+    for filename in old_filenames:
+        sql = "select 1;\n"
+        if filename == "001_schema.sql":
+            sql = "alter table stripe_webhook_events add column payload_sha256 text;\n"
+        (old_bundle / filename).write_text(sql, encoding="utf-8")
+
+    old_database = Database(TEST_DSN)
+    old_database.pool = pool
+    with pytest.raises(RuntimeError, match="inserted before already applied history"):
+        await old_database.apply_migrations(old_bundle)
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("select filename from schema_migrations order by filename")
+        payload_sha256_exists = await conn.fetchval(
+            """select exists(
+                   select 1 from information_schema.columns
+                    where table_schema='public' and table_name='stripe_webhook_events'
+                      and column_name='payload_sha256'
+                 )"""
+        )
+    assert [row["filename"] for row in rows] == [BASELINE]
+    assert payload_sha256_exists is False
+
+
+async def test_mixed_pre_v3_and_v3_history_is_never_ready(pool: asyncpg.Pool) -> None:
+    database = Database(TEST_DSN)
+    database.pool = pool
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "insert into schema_migrations(filename,sha256) values('001_schema.sql',$1)",
+            "a" * 64,
+        )
+    try:
+        assert not await database.schema_ready()
+        with pytest.raises(RuntimeError, match=r"unsupported pre-0\.3 migration lineage"):
+            await database.apply_migrations(ROOT / "migrations")
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute("delete from schema_migrations where filename='001_schema.sql'")
     assert await database.schema_ready()
+
+
+async def test_v3_can_append_a_future_migration_that_reuses_an_old_suffix(
+    pool: asyncpg.Pool, tmp_path: Path
+) -> None:
+    future_bundle = tmp_path / "future-v3-migrations"
+    shutil.copytree(ROOT / "migrations", future_bundle)
+    future_name = "002_plan_transitions.sql"
+    (future_bundle / future_name).write_text("select 1;\n", encoding="utf-8")
+    database = Database(TEST_DSN)
+    database.pool = pool
+    await database.apply_migrations(future_bundle)
+    await database.apply_migrations(future_bundle)
+    async with pool.acquire() as conn:
+        filenames = await conn.fetch("select filename from schema_migrations order by filename")
+        await conn.execute("delete from schema_migrations where filename=$1", future_name)
+    assert [row["filename"] for row in filenames] == [BASELINE, future_name]
 
 
 async def test_schema_ready_does_not_read_or_rehash_migration_contents(
@@ -60,32 +253,31 @@ async def test_schema_ready_does_not_read_or_rehash_migration_contents(
     assert await database.schema_ready()
 
 
-async def test_schema_ready_requires_known_versions_without_rehashing_files(
+async def test_schema_ready_requires_baseline_version_without_rehashing_files(
     pool: asyncpg.Pool,
 ) -> None:
     database = Database(TEST_DSN)
     database.pool = pool
-    filename = "006_invoice_ownership_and_incident_causality.sql"
     async with pool.acquire() as conn:
         original = await conn.fetchval(
-            "select sha256 from schema_migrations where filename=$1", filename
+            "select sha256 from schema_migrations where filename=$1", BASELINE
         )
         assert original is not None
-        await conn.execute("delete from schema_migrations where filename=$1", filename)
+        await conn.execute("delete from schema_migrations where filename=$1", BASELINE)
     assert not await database.schema_ready()
     async with pool.acquire() as conn:
         await conn.execute(
             "insert into schema_migrations(filename,sha256) values($1,$2)",
-            filename,
+            BASELINE,
             "0" * 64,
         )
     # The migration command owns checksum enforcement. A hot readiness probe only
-    # checks that this binary's migration versions are present.
+    # checks that this binary's schema version is present.
     assert await database.schema_ready()
     async with pool.acquire() as conn:
         await conn.execute(
             "update schema_migrations set sha256=$2 where filename=$1",
-            filename,
+            BASELINE,
             original,
         )
 
@@ -95,7 +287,7 @@ async def test_migration_runner_rejects_changed_applied_file(
 ) -> None:
     migration_dir = tmp_path / "migrations"
     shutil.copytree(ROOT / "migrations", migration_dir)
-    filename = "007_checksum_probe.sql"
+    filename = "002_checksum_probe.sql"
     migration = migration_dir / filename
     migration.write_text("select 1;\n", encoding="utf-8")
     database = Database(TEST_DSN)
@@ -112,7 +304,7 @@ async def test_migration_runner_rejects_changed_applied_file(
     "filenames",
     [
         ["schema.sql"],
-        ["001_schema.sql", "003_gap.sql"],
+        [BASELINE, "003_gap.sql"],
         ["000_zero.sql"],
         ["001_UPPER.sql"],
     ],
@@ -133,13 +325,24 @@ async def test_migration_runner_requires_contiguous_append_only_filenames(
 async def test_migration_runner_allows_database_ahead_of_binary(
     pool: asyncpg.Pool, tmp_path: Path
 ) -> None:
-    migration_dir = tmp_path / "older-binary-migrations"
-    migration_dir.mkdir()
-    for path in sorted((ROOT / "migrations").glob("*.sql"))[:3]:
-        shutil.copy2(path, migration_dir / path.name)
+    older_binary = tmp_path / "older-binary-migrations"
+    older_binary.mkdir()
+    shutil.copy2(ROOT / "migrations" / BASELINE, older_binary / BASELINE)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """insert into schema_migrations(filename,sha256)
+                 values('002_forward_probe.sql',$1)""",
+            "a" * 64,
+        )
     database = Database(TEST_DSN)
     database.pool = pool
-    await database.apply_migrations(migration_dir)
+    try:
+        await database.apply_migrations(older_binary)
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "delete from schema_migrations where filename='002_forward_probe.sql'"
+            )
 
 
 async def test_schema_ready_allows_extra_forward_migration_history(
@@ -149,36 +352,333 @@ async def test_schema_ready_allows_extra_forward_migration_history(
     database.pool = pool
     async with pool.acquire() as conn:
         await conn.execute(
-            "insert into schema_migrations(filename,sha256) values('007_removed.sql',$1)",
+            "insert into schema_migrations(filename,sha256) values('002_removed.sql',$1)",
             "a" * 64,
         )
     assert await database.schema_ready()
     async with pool.acquire() as conn:
-        await conn.execute("delete from schema_migrations where filename='007_removed.sql'")
+        await conn.execute("delete from schema_migrations where filename='002_removed.sql'")
     assert await database.schema_ready()
 
 
-async def test_schema_ready_requires_every_correctness_table(
-    pool: asyncpg.Pool,
-) -> None:
+@pytest.mark.parametrize("table_name", (*CORRECTNESS_TABLES, "schema_migrations"))
+async def test_schema_ready_requires_every_table(table_name: str, pool: asyncpg.Pool) -> None:
     database = Database(TEST_DSN)
     database.pool = pool
+    missing_name = f"{table_name}_missing"
     async with pool.acquire() as conn:
-        await conn.execute("alter table credit_debits rename to credit_debits_missing")
+        await conn.execute(f'alter table "{table_name}" rename to "{missing_name}"')
     try:
         assert not await database.schema_ready()
     finally:
         async with pool.acquire() as conn:
-            await conn.execute("alter table credit_debits_missing rename to credit_debits")
+            await conn.execute(f'alter table "{missing_name}" rename to "{table_name}"')
     assert await database.schema_ready()
 
 
-async def test_invoice_owner_migration_explicitly_restricts_account_deletion_and_rebind(
+async def test_baseline_declares_exact_runtime_columns(pool: asyncpg.Pool) -> None:
+    expected = {
+        "billing_accounts": {
+            "id",
+            "external_ref",
+            "stripe_customer_id",
+            "stripe_subscription_id",
+            "plan_key",
+            "plan_interval",
+            "subscription_status",
+            "credits_balance",
+            "grant_epoch",
+            "event_created",
+            "event_rank",
+            "current_period_end",
+            "annual_anchor",
+            "annual_grants_issued",
+            "annual_grants_allowed",
+            "funding_invoice_id",
+            "cancel_at_period_end",
+            "pending_free_at",
+            "entitlement_period_end",
+            "credit_expires_at",
+            "entitlement_revoked",
+            "last_reconciled_at",
+            "created_at",
+            "updated_at",
+        },
+        "stripe_webhook_events": {
+            "id",
+            "event_type",
+            "livemode",
+            "payload",
+            "outcome",
+            "reason",
+            "received_at",
+            "processed_at",
+        },
+        "stripe_invoice_state": {
+            "invoice_id",
+            "account_id",
+            "amount_total",
+            "amount_refunded",
+            "fully_refunded",
+            "disputed",
+            "grant_units_per_slot",
+            "grants_issued",
+            "closure_applied",
+            "updated_at",
+        },
+        "credit_ledger": {
+            "id",
+            "account_id",
+            "delta",
+            "balance_after",
+            "entitlement_units",
+            "reason",
+            "grant_epoch",
+            "stripe_event_id",
+            "stripe_invoice_id",
+            "grant_slot",
+            "created_at",
+        },
+        "credit_debits": {
+            "idempotency_key",
+            "account_id",
+            "amount",
+            "grant_epoch",
+            "created_at",
+            "refunded_at",
+        },
+        "checkout_claims": {
+            "account_id",
+            "claim_token",
+            "session_id",
+            "plan_key",
+            "plan_interval",
+            "expires_at",
+            "client_request_key",
+            "session_url",
+            "created_at",
+        },
+        "billing_incidents": {
+            "id",
+            "kind",
+            "dedupe_key",
+            "stripe_event_id",
+            "invoice_id",
+            "account_id",
+            "detail",
+            "seen_count",
+            "first_seen_at",
+            "last_seen_at",
+            "resolved_at",
+        },
+        "billing_plan_changes": {
+            "id",
+            "account_id",
+            "idempotency_key",
+            "stripe_subscription_id",
+            "from_plan_key",
+            "from_interval",
+            "target_plan_key",
+            "target_interval",
+            "effective_mode",
+            "status",
+            "effective_at",
+            "stripe_schedule_id",
+            "stripe_request_key",
+            "expected_grant_epoch",
+            "expected_entitlement_period_end",
+            "expected_subscription_status",
+            "expected_cancel_at_period_end",
+            "proration_date",
+            "estimated_amount_due",
+            "estimated_credit_applied",
+            "estimated_customer_balance_credit",
+            "estimate_currency",
+            "preview_expires_at",
+            "lease_token",
+            "lease_expires_at",
+            "remote_pending_expires_at",
+            "recovery_url",
+            "last_error",
+            "transition_policy",
+            "expected_source_invoice_id",
+            "expected_credit_delta",
+            "expected_entitlement_revoked",
+            "settlement_invoice_id",
+            "remote_started_at",
+            "estimated_source_proration",
+            "estimated_target_proration",
+            "estimated_period_start",
+            "estimated_period_end",
+            "created_at",
+            "updated_at",
+            "completed_at",
+        },
+        "billing_funding_allocations": {
+            "id",
+            "account_id",
+            "plan_change_id",
+            "stripe_invoice_id",
+            "source_invoice_id",
+            "stripe_event_id",
+            "transition_policy",
+            "source_plan_key",
+            "source_interval",
+            "target_plan_key",
+            "target_interval",
+            "source_line_id",
+            "target_line_id",
+            "entitlement_delta",
+            "refunded_units",
+            "source_credit_amount",
+            "target_charge_amount",
+            "amount_paid",
+            "currency",
+            "period_start",
+            "period_end",
+            "grant_epoch",
+            "status",
+            "created_at",
+            "updated_at",
+        },
+        "billing_clawback_debts": {
+            "account_id",
+            "grant_epoch",
+            "stripe_invoice_id",
+            "target_units",
+            "collected_units",
+            "created_at",
+            "updated_at",
+        },
+    }
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """select table_name,column_name
+                 from information_schema.columns
+                where table_schema='public' and table_name = any($1::text[])""",
+            list(CORRECTNESS_TABLES),
+        )
+    observed = {table_name: set() for table_name in CORRECTNESS_TABLES}
+    for row in rows:
+        observed[row["table_name"]].add(row["column_name"])
+    assert observed == expected
+
+
+async def test_v3_schema_catalog_fingerprint_is_exact(pool: asyncpg.Pool) -> None:
+    async with pool.acquire() as conn:
+        table_rows = await conn.fetch(
+            """select tablename
+                 from pg_tables
+                where schemaname='public' and tablename <> 'schema_migrations'
+                order by tablename"""
+        )
+        column_rows = await conn.fetch(
+            """select table_name,column_name,ordinal_position::text,data_type,udt_name,
+                      is_nullable,coalesce(column_default,'') as column_default
+                 from information_schema.columns
+                where table_schema='public' and table_name = any($1::text[])
+                order by table_name,ordinal_position""",
+            list(CORRECTNESS_TABLES),
+        )
+        constraint_rows = await conn.fetch(
+            """select conrelid::regclass::text as table_name,conname,
+                      contype::text as constraint_type,pg_get_constraintdef(oid) as definition
+                 from pg_constraint
+                where connamespace='public'::regnamespace
+                  and conrelid::regclass::text = any($1::text[])
+                order by table_name,conname""",
+            list(CORRECTNESS_TABLES),
+        )
+        index_rows = await conn.fetch(
+            """select tablename,indexname,indexdef
+                 from pg_indexes
+                where schemaname='public' and tablename = any($1::text[])
+                order by tablename,indexname""",
+            list(CORRECTNESS_TABLES),
+        )
+        trigger_rows = await conn.fetch(
+            """select tgrelid::regclass::text as table_name,tgname,tgenabled::text,
+                      pg_get_triggerdef(oid) as definition
+                 from pg_trigger
+                where not tgisinternal and tgrelid::regclass::text = any($1::text[])
+                order by table_name,tgname""",
+            list(CORRECTNESS_TABLES),
+        )
+        function_rows = await conn.fetch(
+            """select proname,pg_get_function_identity_arguments(oid) as arguments,
+                      pg_get_functiondef(oid) as definition
+                 from pg_proc
+                where pronamespace='public'::regnamespace
+                  and proname='prevent_invoice_account_rebind'
+                order by proname,arguments"""
+        )
+        comment_rows = await conn.fetch(
+            """select c.relname as table_name,a.attname as column_name,
+                      col_description(c.oid,a.attnum) as comment
+                 from pg_class c
+                 join pg_namespace n on n.oid=c.relnamespace
+                 join pg_attribute a on a.attrelid=c.oid and a.attnum > 0
+                where n.nspname='public' and c.relname = any($1::text[])
+                  and col_description(c.oid,a.attnum) is not null
+                order by table_name,column_name""",
+            list(CORRECTNESS_TABLES),
+        )
+        sequence_rows = await conn.fetch(
+            """select sequencename,data_type,start_value::text,min_value::text,
+                      max_value::text,increment_by::text,cycle::text,cache_size::text
+                 from pg_sequences
+                where schemaname='public'
+                order by sequencename"""
+        )
+
+    tables = [row["tablename"] for row in table_rows]
+    assert tables == sorted(CORRECTNESS_TABLES)
+    manifest = {
+        "columns": [tuple(row) for row in column_rows],
+        "constraints": [tuple(row) for row in constraint_rows],
+        "indexes": [tuple(row) for row in index_rows],
+        "triggers": [tuple(row) for row in trigger_rows],
+        "functions": [tuple(row) for row in function_rows],
+        "comments": [tuple(row) for row in comment_rows],
+        "sequences": [tuple(row) for row in sequence_rows],
+    }
+    serialized = json.dumps(manifest, ensure_ascii=True, separators=(",", ":"))
+    fingerprint = hashlib.sha256(serialized.encode()).hexdigest()
+    assert fingerprint == V3_SCHEMA_CATALOG_SHA256, fingerprint
+
+
+async def test_baseline_preserves_ownership_causality_and_audit_contracts(
     pool: asyncpg.Pool,
 ) -> None:
     owner_id = uuid.uuid4()
     other_id = uuid.uuid4()
     async with pool.acquire() as conn:
+        defaults = await conn.fetch(
+            """select table_name,column_name,column_default
+                 from information_schema.columns
+                where table_schema='public' and (
+                  (table_name='billing_incidents' and column_name='last_seen_at') or
+                  (table_name='stripe_invoice_state' and column_name='closure_applied') or
+                  (table_name='billing_plan_changes' and column_name='transition_policy')
+                )"""
+        )
+        default_map = {
+            (row["table_name"], row["column_name"]): row["column_default"] for row in defaults
+        }
+        assert default_map[("billing_incidents", "last_seen_at")] == "clock_timestamp()"
+        assert default_map[("stripe_invoice_state", "closure_applied")] == "false"
+        assert (
+            default_map[("billing_plan_changes", "transition_policy")]
+            == "'full_period_reset'::text"
+        )
+        assert not await conn.fetchval(
+            """select exists(
+                   select 1 from information_schema.columns
+                    where table_schema='public' and table_name='stripe_webhook_events'
+                      and column_name='payload_sha256'
+                 )"""
+        )
+
         await conn.executemany(
             "insert into billing_accounts(id,external_ref) values($1,$2)",
             [(owner_id, f"owner-{owner_id}"), (other_id, f"other-{other_id}")],
@@ -202,267 +702,84 @@ async def test_invoice_owner_migration_explicitly_restricts_account_deletion_and
         retained = await conn.fetchval(
             "select account_id from stripe_invoice_state where invoice_id='in_retained_owner'"
         )
-        causal_index = await conn.fetchval(
-            "select to_regclass('billing_incidents_unresolved_account_kind_seen') is not null"
+        invoice_fk = await conn.fetchval(
+            """select pg_get_constraintdef(c.oid)
+                 from pg_constraint c
+                where c.conrelid='stripe_invoice_state'::regclass
+                  and c.conname='stripe_invoice_state_account_id_fkey'"""
+        )
+        trigger = await conn.fetchval(
+            """select tgenabled::text from pg_trigger
+                where tgrelid='stripe_invoice_state'::regclass
+                  and tgname='stripe_invoice_state_account_immutable'
+                  and not tgisinternal"""
+        )
+        payload_comment = await conn.fetchval(
+            """select col_description('stripe_webhook_events'::regclass,a.attnum)
+                 from pg_attribute a
+                where a.attrelid='stripe_webhook_events'::regclass
+                  and a.attname='payload'"""
         )
     assert retained == owner_id
-    assert causal_index is True
+    assert invoice_fk is not None and "ON DELETE RESTRICT" in invoice_fk
+    assert trigger == "O"
+    assert payload_comment == "Redacted audit snapshot; not the exact signed request body."
 
 
-async def test_existing_five_migration_schema_upgrades_to_invoice_owner_hardening(
-    tmp_path: Path,
-) -> None:
-    database_name = f"migration_invoice_owner_{uuid.uuid4().hex}"
-    upgrade_dsn = f"{TEST_DSN.rsplit('/', 1)[0]}/{database_name}"
-    first_five = tmp_path / "first-five-migrations"
-    first_five.mkdir()
-    for path in sorted((ROOT / "migrations").glob("*.sql"))[:5]:
-        shutil.copy2(path, first_five / path.name)
-
-    admin = await asyncpg.connect(TEST_DSN)
-    try:
-        await admin.execute(f'create database "{database_name}"')
-    finally:
-        await admin.close()
-
-    owner_id = uuid.uuid4()
-    other_id = uuid.uuid4()
-    database = Database(upgrade_dsn)
-    try:
-        await database.connect()
-        await database.apply_migrations(first_five)
-        async with database.require_pool().acquire() as conn:
-            await conn.executemany(
-                "insert into billing_accounts(id,external_ref) values($1,$2)",
-                [
-                    (owner_id, f"upgrade-owner-{owner_id}"),
-                    (other_id, f"upgrade-other-{other_id}"),
-                ],
-            )
-            await conn.execute(
-                """insert into stripe_invoice_state(
-                       invoice_id,account_id,amount_total,amount_refunded)
-                     values('in_upgrade_retained',$1,1900,475)""",
-                owner_id,
-            )
-            await conn.execute(
-                """insert into billing_incidents(kind,dedupe_key,account_id,detail)
-                     values('reconciliation_failed','upgrade-incident',$1,'{}'::jsonb)""",
-                owner_id,
-            )
-
-        await database.apply_migrations(ROOT / "migrations")
-        await database.apply_migrations(ROOT / "migrations")
-        # A draining older binary with only migrations 001-005 must accept a database
-        # that is ahead by this backward-compatible migration.
-        await database.apply_migrations(first_five)
-
-        async with database.require_pool().acquire() as conn:
-            retained = await conn.fetchrow(
-                """select account_id,amount_total,amount_refunded
-                     from stripe_invoice_state where invoice_id='in_upgrade_retained'"""
-            )
-            migration_rows = await conn.fetch(
-                "select filename,sha256 from schema_migrations order by filename"
-            )
-            constraint = await conn.fetchval(
-                """select pg_get_constraintdef(c.oid)
-                     from pg_constraint c
-                     join pg_class t on t.oid=c.conrelid
-                     join pg_namespace n on n.oid=t.relnamespace
-                    where n.nspname='public' and t.relname='stripe_invoice_state'
-                      and c.conname='stripe_invoice_state_account_id_fkey'"""
-            )
-            causal_index = await conn.fetchval(
-                """select indexdef from pg_indexes
-                    where schemaname='public'
-                      and indexname='billing_incidents_unresolved_account_kind_seen'"""
-            )
-            last_seen_default = await conn.fetchval(
-                """select column_default from information_schema.columns
-                    where table_schema='public' and table_name='billing_incidents'
-                      and column_name='last_seen_at'"""
-            )
-            with pytest.raises(asyncpg.ForeignKeyViolationError):
-                async with conn.transaction():
-                    await conn.execute("delete from billing_accounts where id=$1", owner_id)
-            with pytest.raises(asyncpg.RaiseError, match="immutable once assigned"):
-                async with conn.transaction():
-                    await conn.execute(
-                        """update stripe_invoice_state set account_id=$2
-                             where invoice_id='in_upgrade_retained' and account_id=$1""",
-                        owner_id,
-                        other_id,
-                    )
-
-        assert retained is not None and tuple(retained) == (owner_id, 1900, 475)
-        assert [row["filename"] for row in migration_rows] == [
-            "001_schema.sql",
-            "002_plan_transitions.sql",
-            "003_transition_policies.sql",
-            "004_event_audit_hardening.sql",
-            "005_simplify_event_audit.sql",
-            "006_invoice_ownership_and_incident_causality.sql",
-        ]
-        assert all(len(row["sha256"]) == 64 for row in migration_rows)
-        assert constraint is not None and "ON DELETE RESTRICT" in constraint
-        assert causal_index is not None
-        assert "WHERE (resolved_at IS NULL)" in causal_index
-        assert last_seen_default == "clock_timestamp()"
-    finally:
-        await database.close()
-        admin = await asyncpg.connect(TEST_DSN)
-        try:
-            await admin.execute(f'drop database if exists "{database_name}" with (force)')
-        finally:
-            await admin.close()
-
-
-async def test_event_audit_migration_scrubs_legacy_full_payloads(
-    pool: asyncpg.Pool,
-) -> None:
-    schema = f"migration_event_audit_{uuid.uuid4().hex}"
-    async with pool.acquire() as conn, conn.transaction():
-        await conn.execute(f'create schema "{schema}"')
-        await conn.execute(f'set local search_path to "{schema}", public')
-        await conn.execute((ROOT / "migrations/001_schema.sql").read_text())
-        await conn.execute((ROOT / "migrations/002_plan_transitions.sql").read_text())
-        await conn.execute((ROOT / "migrations/003_transition_policies.sql").read_text())
-        await conn.execute(
-            """insert into stripe_webhook_events(id,event_type,livemode,payload)
-                 values('evt_legacy_secret','invoice.paid',false,$1::jsonb)""",
-            {
-                "id": "evt_legacy_secret",
-                "type": "invoice.paid",
-                "data": {
-                    "object": {
-                        "id": "in_legacy_secret",
-                        "customer_email": "legacy@example.test",
-                        "confirmation_secret": {"client_secret": "pi_legacy_secret_private"},
-                        "hosted_invoice_url": "https://invoice.stripe.test/private",
-                    }
-                },
-            },
-        )
-
-        await conn.execute((ROOT / "migrations/004_event_audit_hardening.sql").read_text())
-
-        row = await conn.fetchrow(
-            """select payload,payload_sha256 from stripe_webhook_events
-                 where id='evt_legacy_secret'"""
-        )
-        assert row is not None
-        serialized = str(row["payload"])
-        assert row["payload"] == {
-            "id": "evt_legacy_secret",
-            "type": "invoice.paid",
-            "livemode": False,
-            "historical_payload": "[redacted]",
-        }
-        assert row["payload_sha256"] is None
-        for secret in (
-            "legacy@example.test",
-            "pi_legacy_secret_private",
-            "invoice.stripe.test/private",
-        ):
-            assert secret not in serialized
-        with pytest.raises(asyncpg.CheckViolationError):
-            async with conn.transaction():
-                await conn.execute(
-                    """insert into stripe_webhook_events(id,event_type,livemode,payload)
-                         values('evt_missing_audit','invoice.paid',false,'{}'::jsonb)"""
-                )
-
-        await conn.execute((ROOT / "migrations/005_simplify_event_audit.sql").read_text())
-        assert await conn.fetchval(
-            """select exists(
-                   select 1 from information_schema.columns
-                    where table_schema=$1 and table_name='stripe_webhook_events'
-                      and column_name='payload_sha256'
-                 )""",
-            schema,
-        )
-        assert not await conn.fetchval(
-            """select exists(
-                   select 1 from pg_constraint con
-                   join pg_class c on c.oid=con.conrelid
-                   join pg_namespace n on n.oid=c.relnamespace
-                  where n.nspname=$1 and c.relname='stripe_webhook_events'
-                    and con.conname in (
-                      'stripe_webhook_events_payload_sha256_ck',
-                      'stripe_webhook_events_payload_audit_ck'
-                    )
-                 )""",
-            schema,
-        )
-        await conn.execute(
-            """insert into stripe_webhook_events(id,event_type,livemode,payload)
-                 values('evt_redacted_only','customer.created',false,
-                        '{"id":"evt_redacted_only","type":"customer.created"}'::jsonb)"""
-        )
-        assert await conn.fetchval(
-            "select payload_sha256 is null from stripe_webhook_events where id='evt_redacted_only'"
-        )
-        # A draining 0.2.1 replica still names the compatibility column in its INSERT.
-        # Keep that write shape valid for this rolling-upgrade window.
-        await conn.execute(
-            """insert into stripe_webhook_events(
-                   id,event_type,livemode,payload,payload_sha256)
-                 values('evt_old_writer','customer.created',false,
-                        '{"id":"evt_old_writer","type":"customer.created"}'::jsonb,$1)""",
-            "a" * 64,
-        )
-        assert await conn.fetchval(
-            "select payload_sha256=$1 from stripe_webhook_events where id='evt_old_writer'",
-            "a" * 64,
-        )
-
-
-async def test_transition_policy_migration_backfills_only_applied_closures(
-    pool: asyncpg.Pool,
-) -> None:
-    schema = f"migration_backfill_{uuid.uuid4().hex}"
-    account_id = uuid.uuid4()
-    async with pool.acquire() as conn, conn.transaction():
-        await conn.execute(f'create schema "{schema}"')
-        await conn.execute(f'set local search_path to "{schema}", public')
-        await conn.execute((ROOT / "migrations/001_schema.sql").read_text())
-        await conn.execute((ROOT / "migrations/002_plan_transitions.sql").read_text())
-        await conn.execute(
-            "insert into billing_accounts(id,external_ref) values($1,'migration-user')",
-            account_id,
-        )
-        await conn.executemany(
-            """insert into stripe_invoice_state(
-                   invoice_id,account_id,amount_total,amount_refunded,fully_refunded)
-                 values($1,$2,100,$3,$4)""",
-            [
-                ("in_closure_was_applied", account_id, 100, True),
-                ("in_refund_arrived_before_paid", account_id, 100, True),
-                ("in_near_full_blocked", account_id, 99, False),
-                ("in_partial_with_normal_grant", account_id, 50, False),
-            ],
-        )
-        await conn.executemany(
-            """insert into credit_ledger(
-                   account_id,delta,balance_after,entitlement_units,reason,grant_epoch,
-                   stripe_invoice_id,grant_slot)
-                 values($1,0,0,$2,$3,1,$4,1)""",
-            [
-                (account_id, 300, "subscription_grant", "in_closure_was_applied"),
-                (account_id, 0, "subscription_grant_blocked", "in_near_full_blocked"),
-                (account_id, 300, "subscription_grant", "in_partial_with_normal_grant"),
-            ],
-        )
-
-        await conn.execute((ROOT / "migrations/003_transition_policies.sql").read_text())
-
+async def test_baseline_declares_all_named_coordination_indexes(pool: asyncpg.Pool) -> None:
+    expected_names = {
+        "billing_accounts_annual_due",
+        "billing_accounts_reconcile_rotation",
+        "credit_ledger_invoice_slot_unique",
+        "credit_ledger_account_created",
+        "credit_debits_account_created",
+        "billing_incidents_unresolved_unique",
+        "billing_incidents_unresolved_account_kind_seen",
+        "billing_plan_changes_one_pending",
+        "billing_plan_changes_account_created",
+        "billing_plan_changes_settlement_invoice_unique",
+        "billing_funding_allocations_account_epoch",
+        "billing_funding_allocations_source_invoice",
+        "billing_clawback_debts_outstanding",
+    }
+    async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "select invoice_id,closure_applied from stripe_invoice_state order by invoice_id"
+            "select indexname,indexdef from pg_indexes where schemaname='public'"
         )
-    assert [tuple(row) for row in rows] == [
-        ("in_closure_was_applied", True),
-        ("in_near_full_blocked", True),
-        ("in_partial_with_normal_grant", False),
-        ("in_refund_arrived_before_paid", False),
-    ]
+    indexes = {row["indexname"]: row["indexdef"] for row in rows}
+    assert expected_names.issubset(indexes)
+    assert "NULLS FIRST" in indexes["billing_accounts_reconcile_rotation"]
+    assert (
+        "WHERE (stripe_subscription_id IS NOT NULL)"
+        in indexes["billing_accounts_reconcile_rotation"]
+    )
+    assert (
+        "WHERE (resolved_at IS NULL)" in indexes["billing_incidents_unresolved_account_kind_seen"]
+    )
+    assert "WHERE (collected_units < target_units)" in indexes["billing_clawback_debts_outstanding"]
+    assert "UNIQUE" in indexes["credit_ledger_invoice_slot_unique"]
+    assert "UNIQUE" in indexes["billing_plan_changes_one_pending"]
+    assert "UNIQUE" in indexes["billing_plan_changes_settlement_invoice_unique"]
+
+
+async def test_baseline_preserves_foreign_key_delete_actions(pool: asyncpg.Pool) -> None:
+    expected = {
+        "stripe_invoice_state_account_id_fkey": "r",
+        "credit_ledger_account_id_fkey": "c",
+        "credit_debits_account_id_fkey": "c",
+        "checkout_claims_account_id_fkey": "c",
+        "billing_incidents_account_id_fkey": "n",
+        "billing_plan_changes_account_id_fkey": "c",
+        "billing_funding_allocations_account_id_fkey": "c",
+        "billing_funding_allocations_plan_change_id_fkey": "r",
+        "billing_clawback_debts_account_id_fkey": "c",
+        "billing_clawback_debts_stripe_invoice_id_fkey": "r",
+    }
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """select conname,confdeltype::text as delete_action
+                 from pg_constraint
+                where contype='f' and conname = any($1::text[])""",
+            list(expected),
+        )
+    assert {row["conname"]: row["delete_action"] for row in rows} == expected

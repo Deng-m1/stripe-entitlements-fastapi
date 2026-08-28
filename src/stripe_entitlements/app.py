@@ -189,7 +189,7 @@ def create_app(
 
     app = FastAPI(
         title="Stripe Entitlements Reference",
-        version="0.2.2",
+        version="0.3.0",
         lifespan=lifespan,
     )
     app.add_middleware(

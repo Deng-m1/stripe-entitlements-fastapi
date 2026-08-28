@@ -6,5 +6,4 @@ authors:
   - name: Tosea
 repository-code: https://github.com/Deng-m1/stripe-entitlements-fastapi
 license: Apache-2.0
-version: 0.2.2
-date-released: 2026-08-18
+version: 0.3.0

@@ -58,24 +58,27 @@ PostgreSQL can still report a deadlock under unrelated application locks. Let th
 transaction fail and retry the same Event or request identity; do not catch a deadlock and
 commit a partial effect.
 
-## Rolling deployment and migration safety
+## Schema deployment and migration safety
 
-Apply all six migrations through `006_invoice_ownership_and_incident_causality.sql` before
-sending traffic
-to code that uses authenticated billing APIs. Avoid running a new process against an old
-schema. During a rolling deploy:
+Version 0.3 starts from the fresh-install-only `001_v3_baseline.sql`. It intentionally
+does not upgrade a database initialized by a v0.2.x tag. Before the first 0.3 deployment,
+recreate every development, demo, or staging database that used the old lineage; never
+point a v0.2.x process at a 0.3 database or a 0.3 process at a v0.2.x database.
+
+Apply the bundled baseline before sending traffic to code that uses authenticated billing
+APIs. For the first deployment and every later schema change:
 
 1. back up all ten correctness tables;
-2. apply forward-compatible migrations once;
+2. apply every migration bundled with the target version once;
 3. deploy API/worker replicas with identical catalog and runtime policy settings;
 4. verify health, catalog and one authenticated account;
 5. start/re-enable schedulers;
 6. run reconciliation and inspect unresolved incidents.
 
-Each binary verifies the checksum of every migration it bundles, but tolerates later rows
-already present in `schema_migrations`. This allows a backward-compatible old replica to
-remain ready while the new schema rolls out or while a rollback drains newer replicas.
-Never remove, rename, or reinterpret an applied migration; add a new one and keep runtime
+Each binary verifies the checksum of every migration it bundles and tolerates later rows
+already present in `schema_migrations`. The 0.3 lineage-reset guard is deliberately not a
+rolling-upgrade bridge from v0.2.x. After the 0.3 baseline is established, never remove,
+rename, or reinterpret an applied migration; append a new migration and keep runtime
 changes backward-compatible until old replicas are gone.
 
 ## Horizontal scaling checklist

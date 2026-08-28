@@ -4,19 +4,18 @@ The project separates deterministic local/PostgreSQL tests, opt-in automated Str
 test-mode tests, real-browser signed-delivery tests, manual observations, and live
 production verification. Passing one layer must not be described as passing another.
 
-Local review-candidate evidence was rerun on 2026-08-28 from a branch based on
-`main@75070ef`; it is not evidence for that base commit and must be rebound to
-the exact final commit before release. Networked `0.2.2` evidence remains the separate
-run recorded on 2026-08-18:
+Local and networked 0.3 baseline-candidate evidence was rerun on 2026-08-28 from a
+working tree based on `main@4df7f73`; it is not evidence for that base commit and must be
+rebound to the exact final commit before release:
 
 | Layer | Current result | Boundary |
 | --- | --- | --- |
-| Local/backend | Candidate: 743 passed from 752 collected; 9 `real_stripe` cases deselected | Real PostgreSQL, mocked Stripe responses; not yet final-commit-bound |
-| Frontend | Candidate: 153 passed; lint, typecheck, and production build passed | No Stripe network; not yet final-commit-bound |
-| Real Stripe suite | Retained `0.2.2`: 9/9 passed with strict cleanup and zero run-owned active inventory | Direct test-mode API/Event polling; predates current changes |
-| Browser policy gates, CLI transport | Retained `0.2.2`: 2/2 passed; each policy reached Pro/1,000 with 7 related, 0 unrelated, and exactly 3 essential Events | Real Checkout/3DS/SCA and signed Stripe CLI forwarding; predates the current runner |
-| Wheel/container | Candidate Wheel and image each applied all six migrations to fresh PostgreSQL; image then returned `ok=true`/`database=true` as UID/GID 10001 with a read-only root and internal-only network | Built artifacts, not Stripe network; not yet final-commit-bound |
-| Temporary endpoint gates | Latest dual-policy pass remains 2026-08-02 | Version-pinned endpoint metadata and signed Dahlia delivery |
+| Local/backend | Candidate: 787 passed from 796 collected; 9 `real_stripe` cases deselected | Real PostgreSQL, mocked Stripe responses; not yet final-commit-bound |
+| Frontend | Candidate: 155 passed; lint, typecheck, and production build passed | No Stripe network; not yet final-commit-bound |
+| Real Stripe suite | Candidate: 9/9 passed with strict cleanup and zero run-owned active inventory | Direct test-mode API/Event polling; not yet final-commit-bound |
+| Browser policy gates, CLI transport | Candidate: 2/2 passed; each policy reached Pro/1,000 with 7 related, 0 unrelated, and exactly 3 essential Events | Current production build, real Checkout/3DS/SCA, and signed Stripe CLI forwarding; not endpoint metadata |
+| Wheel/container | Candidate Wheel and image each applied the complete 0.3 baseline to fresh PostgreSQL; image then returned `ok=true`/`database=true` as UID/GID 10001 with a read-only root and internal-only network | Built artifacts, not Stripe network; not yet final-commit-bound |
+| Temporary endpoint gates | Latest dual-policy pass remains 2026-08-02; the 2026-08-28 retry stopped pre-state because the Quick Tunnel hostname remained DNS `NXDOMAIN` | Version-pinned endpoint metadata and signed Dahlia delivery; no fresh pass is claimed |
 | Live production payload | **not run** | Test mode never substitutes for live mode |
 
 The earlier 2026-08-01 pre-hardening baseline—239 local/backend, 7 real Stripe,
@@ -28,7 +27,7 @@ audits on the final commit.
 ## Default backend suite
 
 `pytest -m "not real_stripe"` starts a disposable PostgreSQL 17 container on a
-workspace-derived loopback port, applies all real SQL migrations, and removes the
+workspace-derived loopback port, applies the complete SQL baseline/migration set, and removes the
 container after the session. Its data directory is a 512 MiB container tmpfs, so test
 data is never persisted and the gate does not consume Docker writable-layer storage.
 Set `TEST_POSTGRES_IMAGE` to an equivalent trusted PostgreSQL 17 image when the
@@ -147,12 +146,17 @@ artifact handling, and evidence boundaries.
 Endpoint metadata, signed transport, database projection and live-production evidence
 requirements are separated in [the webhook verification runbook](WEBHOOK_VERIFICATION.md).
 
-Current `0.2.2` CLI-transport evidence: both policies passed on 2026-08-18. Each
+Current 0.3 candidate CLI-transport evidence: both policies passed on 2026-08-28. Each
 projected Starter/Monthly/300 and Pro/Monthly/1,000, observed seven account-related and
 zero unrelated Events, bound exactly three essential signed Events, used signed Clover
 payloads for that test account, had no unresolved identity-related incident, and
 completed strict cleanup. This does not prove Webhook Endpoint metadata or endpoint-
 specific version pinning.
+
+The prior `0.2.2` CLI runs from 2026-08-18 remain regression history. A current endpoint
+attempt created and verified a temporary Dahlia endpoint but stopped before account
+creation or Checkout because its account-less Quick Tunnel hostname remained DNS
+`NXDOMAIN`; manifest recovery verified the run-owned endpoint was closed.
 
 The latest endpoint-mode evidence remains the 2026-08-02 full-period and prorated-delta
 runs, which completed in about 1.6 and 1.7 minutes. Each verified a Dahlia endpoint
@@ -170,8 +174,8 @@ Tests marked `real_stripe` make network calls only when `STRIPE_SECRET_KEY` star
 `sk_test_`. Live keys fail before a network call. Objects are uniquely marked and cleanup
 targets only objects created by that run.
 
-The current nine-case automated suite passed on the `0.2.2` release candidate on
-2026-08-18 and asserts:
+The current nine-case automated suite passed on the 0.3 baseline candidate on
+2026-08-28 and asserts:
 
 - creation of isolated real test-mode Products, monthly/yearly Prices, Customers and
   Subscriptions;
@@ -204,9 +208,9 @@ The current nine-case automated suite passed on the `0.2.2` release candidate on
   active Prices/Products, Test Clocks, and unfinished Subscription Schedules;
 - a test failure if cleanup, inventory, or zero-inventory verification fails.
 
-All nine assertions passed against Stripe test mode on 2026-08-18 after the current
-hardening and guard simplification. The earlier seven-case run is historical evidence
-only; future releases must rerun the current suite rather than inheriting either result.
+All nine assertions passed against Stripe test mode on 2026-08-28 after the baseline and
+runner hardening. Earlier 0.2.2 and seven-case runs are historical evidence only; future
+releases must rerun the current suite rather than inheriting any result.
 
 The plan-change and Test Clock tests use direct Stripe test-mode requests plus Event
 polling, followed by the real PostgreSQL processor. They do **not** prove signed webhook
@@ -248,7 +252,7 @@ CI:
 | Scenario | Observed result | What it supports |
 | --- | --- | --- |
 | `PY → UM` preview | negative $204 | why every annual-origin transition must defer |
-| declined immediate change | old SKU and active Subscription remained; latest Invoice was open; hosted recovery URL and confirmation secret existed | originally manual; the current 4-case automated failed-payment matrix passed again on 2026-08-18 |
+| declined immediate change | old SKU and active Subscription remained; latest Invoice was open; hosted recovery URL and confirmation secret existed | originally manual; the current 4-case automated failed-payment matrix passed again on 2026-08-28 |
 
 Amounts are observations for that test account/time, not universal expected values. These
 manual checks contain no committed customer, Event, Invoice or secret IDs and should be
@@ -259,7 +263,7 @@ rerun before a release that changes plan transitions or Stripe API version.
 There are three version records that must remain independent:
 
 - outbound SDK requests are configured with `STRIPE_API_VERSION=2026-06-24.dahlia`;
-- the 2026-08-18 Stripe CLI signed-forwarding runs observed
+- the 2026-08-28 Stripe CLI signed-forwarding runs observed
   `api_version=2025-12-15.clover` for their signed payload/Event API view;
 - the separate 2026-08-02 temporary endpoints explicitly pinned to Dahlia delivered
   signed payloads with `api_version=2026-06-24.dahlia`, while Event API retrieval still

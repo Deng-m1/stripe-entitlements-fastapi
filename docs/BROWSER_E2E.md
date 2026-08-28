@@ -38,12 +38,17 @@ A successful complete run proves one isolated Stripe test-mode Checkout and sele
 upgrade lifecycle. It does not prove live mode, every bank's 3DS UI, Stripe Tax,
 coupons, trials, or arbitrary Checkout settings.
 
-Current local signed-forwarding evidence: both policies passed on the `0.2.2` release
-candidate on 2026-08-18 through explicit Stripe CLI forwarding. Each reached
+Current local signed-forwarding evidence: both policies passed on the 0.3 baseline
+candidate on 2026-08-28 through explicit Stripe CLI forwarding. Each reached
 Pro/Monthly/1,000, observed seven account-related and zero unrelated Events, bound exactly
 three essential Events, used a Clover signed payload/Event API view for that test account,
 had no unresolved run-related incident, and completed strict cleanup. This proves the
 raw-signature, application, browser, and PostgreSQL path, not Webhook Endpoint metadata.
+
+The 2026-08-28 endpoint-mode retry created and verified a temporary Dahlia endpoint but
+stopped before account creation or Checkout because the account-less Quick Tunnel
+hostname remained DNS `NXDOMAIN`. Recovery verified the endpoint was closed; no current
+endpoint-mode pass is claimed from that attempt.
 
 The latest stronger endpoint-mode evidence remains the 2026-08-02 dual-policy run.
 `full_period_reset` completed in about 1.6 minutes and `prorated_delta` in about
