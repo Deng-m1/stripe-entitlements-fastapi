@@ -8,10 +8,10 @@ This repository has two discovery surfaces with different jobs:
    when a maintainer deliberately enables indexing on one canonical HTTPS origin.
 
 SEO copy must remain inside the implemented scope. The project may describe three
-monthly/yearly tiers, annual savings, credit entitlements, refunds, disputes, SCA,
-Test Clock renewal, and safe plan changes. It must not claim coupons, trials, tax,
-multi-currency, seats, or metered billing unless those policies are implemented and
-tested first.
+monthly/yearly tiers, annual savings, exact fractional credits, one-time credit packs,
+source-aware refunds, disputes, SCA, Test Clock renewal, and safe plan changes. It must
+not claim coupons, trials, tax, multi-currency, seats, or metered billing unless those
+policies are implemented and tested first.
 
 Coupons and promotion codes are not implemented: Checkout omits
 `allow_promotion_codes` unconditionally and discounted Invoices fail closed. Public
@@ -81,13 +81,13 @@ transition timing.
 Before publishing, apply the description and topics recorded in
 `.github/REPOSITORY_METADATA.md`. The README title and first paragraph intentionally use
 natural developer search phrases such as “Stripe subscription billing”, “FastAPI Stripe
-integration”, “PostgreSQL entitlements”, and “Next.js pricing” without hiding scope
-limits or stuffing keywords.
+integration”, “PostgreSQL entitlements”, “fractional credit ledger”, “Stripe credit
+packs”, and “Next.js pricing” without hiding scope limits or stuffing keywords.
 
 The public title/description/FAQ should naturally cover the two selectable plan-change
 templates, monthly and yearly tiers, positive annual-savings display, Stripe webhooks,
-SCA, and Test Clock gates. Avoid asserting that a gate passed unless the release record
-belongs to the exact published commit.
+SCA, fixed-price packs, and Test Clock gates. Avoid asserting that a gate passed unless
+the release record belongs to the exact published commit.
 
 After the repository exists:
 

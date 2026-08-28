@@ -6,6 +6,7 @@ from typing import Any
 import asyncpg
 
 from .catalog import PlanCatalog
+from .credit_packs import collect_pack_debts_from_subscription
 from .price_policy import catalog_price_matches
 from .processor import EventProcessor
 from .types import ProcessResult, SubscriptionSnapshot
@@ -229,6 +230,12 @@ class AnnualGrantService:
                      updated_at=now() where invoice_id=$1""",
                 invoice_id,
                 target_slot,
+            )
+            await collect_pack_debts_from_subscription(
+                conn,
+                account_id=account["id"],
+                grant_epoch=new_epoch,
+                event_id=f"pack-debt:{event_id}",
             )
             # Partial annual refunds shrink the number of funded slots only. Every
             # still-allowed slot remains a full monthly grant; applying the refund

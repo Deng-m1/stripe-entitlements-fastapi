@@ -8,7 +8,11 @@ Initialize a fresh PostgreSQL database before deploying matching API/worker code
 uv run stripe-entitlements migrate
 ```
 
-`001_v3_baseline.sql` creates the complete ten-table correctness model, all constraints,
+This command loads only `DATABASE_URL`. Run it as a least-privilege schema-init Job
+without Stripe API or webhook credentials; the API and workers still require their full
+runtime configuration.
+
+`001_v3_baseline.sql` creates the complete fourteen-table correctness model, all constraints,
 coordination indexes, the immutable Invoice-owner trigger, and causal incident defaults in
 one transaction. It creates final state directly: no historical backfill, table rewrite,
 foreign-key rebuild, or compatibility-only payload digest column is involved.
@@ -27,8 +31,10 @@ bundled with that version has been applied.
 
 ## Scheduled jobs
 
-Run annual grants hourly and reconciliation daily. Both commands are safe to invoke from
-multiple schedulers against one PostgreSQL primary.
+Run annual grants hourly and reconciliation every five minutes. The reconciliation
+command covers recurring Invoice state and persisted credit-pack
+Session/PaymentIntent/Charge state. Both commands are safe to invoke from multiple
+schedulers against one PostgreSQL primary.
 
 ```bash
 uv run stripe-entitlements grant-due
@@ -106,8 +112,12 @@ Do not copy recovery URLs or confirmation secrets into tickets, analytics or log
 ## Replay and reconciliation
 
 Stripe Event ID replay returns duplicate after committed success. To repair webhook loss,
-reconciliation retrieves Stripe truth and uses a synthetic `reconcile:<invoice_id>`
-identity. The invoice/slot unique index remains the final duplicate-grant guard.
+subscription reconciliation retrieves Stripe truth and uses a synthetic
+`reconcile:<invoice_id>` identity. The invoice/slot unique index remains the final
+duplicate-grant guard. Credit-pack reconciliation leases one order, retrieves only its
+persisted Session and exact PaymentIntent/Charge outside a transaction, then projects a
+fenced synthetic Event through the normal inbox. An order without a durable `cs_` is
+recovered only by the original Checkout caller replaying its same idempotency key.
 
 Do not edit stored Event payloads or delete inbox rows to force replay. A plan change
 without durable intent must remain fail-closed even if the Dashboard shows the target
@@ -161,18 +171,22 @@ every release and alert on `webhook_contract_mismatch`.
 
 ## Backup and restore
 
-Back up all ten correctness tables together:
+Back up all fourteen correctness tables together:
 
 1. `billing_accounts`;
 2. `stripe_webhook_events`;
 3. `stripe_invoice_state`;
 4. `credit_ledger`;
 5. `credit_debits`;
-6. `checkout_claims`;
-7. `billing_plan_changes`;
-8. `billing_funding_allocations`;
-9. `billing_clawback_debts`;
-10. `billing_incidents`.
+6. `credit_pack_orders`;
+7. `credit_funding_lots`;
+8. `credit_debit_allocations`;
+9. `credit_pack_clawback_debts`;
+10. `checkout_claims`;
+11. `billing_plan_changes`;
+12. `billing_funding_allocations`;
+13. `billing_clawback_debts`;
+14. `billing_incidents`.
 
 A restore that omits inbox, invoice, ledger, debit, Checkout or plan-change identity can
 reopen duplicate/unauthorized effects. Perform point-in-time recovery drills, verify the
@@ -189,6 +203,8 @@ At minimum monitor:
 - annual scheduler/reconciliation lag;
 - stale Checkout claims, plan-change leases, and `applying` age;
 - outstanding `billing_clawback_debts` by age and units;
+- outstanding `credit_pack_clawback_debts`, stale pack reconciliation leases, and
+  `last_reconcile_error` by age/code;
 - `requires_action` age and hosted-invoice recovery completion;
 - account projection lag after Checkout/confirm returns;
 - Stripe/API latency and rate limits.

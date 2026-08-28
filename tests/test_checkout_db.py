@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 import asyncpg
 import pytest
@@ -10,9 +10,14 @@ from stripe_entitlements.checkout import (
     CheckoutBusyError,
     CheckoutCoordinator,
     CheckoutCreationRejected,
+    CheckoutReservation,
 )
 from stripe_entitlements.processor import EventProcessor
 from tests.builders import checkout_event
+from tests.db_lock_helpers import (
+    wait_for_account_row_lock_waiter,
+    wait_until_database_time_after,
+)
 
 
 async def test_checkout_reservation_uses_database_clock(pool: asyncpg.Pool, make_account) -> None:
@@ -27,28 +32,73 @@ async def test_checkout_reservation_uses_database_clock(pool: asyncpg.Pool, make
     assert reservation.expires_at <= after + timedelta(minutes=35)
 
 
-@pytest.mark.parametrize(
-    ("now", "ttl", "message"),
-    [
-        (None, timedelta(0), "positive"),
-        (datetime(2026, 1, 1), timedelta(minutes=35), "timezone-aware"),
-    ],
-)
-async def test_checkout_reservation_rejects_invalid_time_inputs(
-    now: datetime | None,
-    ttl: timedelta,
-    message: str,
+async def test_checkout_reservation_rechecks_wall_clock_after_account_lock_wait(
     pool: asyncpg.Pool,
     make_account,
 ) -> None:
     account_id = await make_account(customer=None, subscription=None)
-    with pytest.raises(ValueError, match=message):
+    coordinator = CheckoutCoordinator(pool)
+    previous = await coordinator.reserve(
+        account_id,
+        "starter",
+        "month",
+        request_key="checkout-before-lock-wait",
+    )
+
+    blocker = await pool.acquire()
+    transaction = blocker.transaction()
+    reserve_task: asyncio.Task[CheckoutReservation] | None = None
+    committed = False
+    await transaction.start()
+    try:
+        await blocker.fetchrow(
+            "select id from billing_accounts where id=$1::uuid for update",
+            account_id,
+        )
+        reserve_task = asyncio.create_task(
+            coordinator.reserve(
+                account_id,
+                "starter",
+                "month",
+                request_key="checkout-after-lock-wait",
+            )
+        )
+        await wait_for_account_row_lock_waiter(pool)
+        expires_at = await blocker.fetchval(
+            """update checkout_claims
+                  set expires_at=clock_timestamp()+interval '250 milliseconds'
+                where account_id=$1::uuid returning expires_at""",
+            account_id,
+        )
+        await wait_until_database_time_after(pool, expires_at)
+        await transaction.commit()
+        committed = True
+
+        replacement = await reserve_task
+    finally:
+        if not committed:
+            await transaction.rollback()
+        await pool.release(blocker)
+        if reserve_task is not None and not reserve_task.done():
+            reserve_task.cancel()
+            await asyncio.gather(reserve_task, return_exceptions=True)
+
+    async with pool.acquire() as conn:
+        database_now = await conn.fetchval("select clock_timestamp()")
+    assert replacement.claim_token != previous.claim_token
+    assert replacement.expires_at > database_now + timedelta(minutes=34)
+
+
+async def test_checkout_reservation_rejects_nonpositive_ttl(
+    pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account(customer=None, subscription=None)
+    with pytest.raises(ValueError, match="positive"):
         await CheckoutCoordinator(pool).reserve(
             account_id,
             "starter",
             "month",
-            now=now,
-            ttl=ttl,
+            ttl=timedelta(0),
         )
 
 
@@ -197,15 +247,20 @@ async def test_expired_claim_can_be_replaced_and_old_expiration_cannot_delete_ne
         account_id,
         "starter",
         "month",
-        now=datetime(2026, 1, 1, tzinfo=UTC),
         ttl=timedelta(minutes=1),
     )
     assert await coordinator.attach_session(old, "cs_old", "https://checkout/old")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """update checkout_claims
+                  set expires_at=clock_timestamp()-interval '1 second'
+                where account_id=$1::uuid""",
+            account_id,
+        )
     new = await coordinator.reserve(
         account_id,
         "pro",
         "year",
-        now=datetime(2026, 1, 1, 0, 2, tzinfo=UTC),
     )
     assert await coordinator.attach_session(new, "cs_new", "https://checkout/new")
     result = await processor.process(
@@ -366,10 +421,13 @@ async def test_unknown_checkout_failure_retains_claim_for_same_key_retry(
     coordinator = CheckoutCoordinator(pool)
 
     class FlakyCreator:
-        calls = 0
+        def __init__(self) -> None:
+            self.calls = 0
+            self.parameters: list[tuple[object, object]] = []
 
         async def create_checkout_session(self, **kwargs):  # type: ignore[no-untyped-def]
             self.calls += 1
+            self.parameters.append((kwargs["customer_id"], kwargs["customer_email"]))
             if self.calls == 1:
                 raise TimeoutError("outcome unknown")
             return "cs_recovered", "https://checkout/recovered"
@@ -380,6 +438,7 @@ async def test_unknown_checkout_failure_retains_claim_for_same_key_retry(
             creator,
             account_id=account_id,
             customer_id=None,
+            customer_email="first-login@example.test",
             plan_key="starter",
             interval="month",
             lookup_key="ent_starter_month",
@@ -391,7 +450,8 @@ async def test_unknown_checkout_failure_retains_claim_for_same_key_retry(
     session = await coordinator.create(
         creator,
         account_id=account_id,
-        customer_id=None,
+        customer_id="cus_bound_by_early_webhook",
+        customer_email="changed-login@example.test",
         plan_key="starter",
         interval="month",
         lookup_key="ent_starter_month",
@@ -401,9 +461,62 @@ async def test_unknown_checkout_failure_retains_claim_for_same_key_retry(
         request_key="same-request",
     )
     assert session == ("cs_recovered", "https://checkout/recovered")
+    assert creator.parameters == [(None, None), (None, None)]
     async with pool.acquire() as conn:
         row = await conn.fetchrow("select * from checkout_claims")
     assert row is not None and row["client_request_key"] == "same-request"
+    assert row["request_customer_id"] is None
+
+
+async def test_checkout_retry_freezes_existing_customer_and_omits_email(
+    pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account(customer="cus_original", subscription=None)
+    coordinator = CheckoutCoordinator(pool)
+
+    class FlakyCreator:
+        def __init__(self) -> None:
+            self.parameters: list[tuple[object, object]] = []
+
+        async def create_checkout_session(self, **kwargs):  # type: ignore[no-untyped-def]
+            self.parameters.append((kwargs["customer_id"], kwargs["customer_email"]))
+            if len(self.parameters) == 1:
+                raise TimeoutError("outcome unknown")
+            return "cs_existing_recovered", "https://checkout/existing-recovered"
+
+    creator = FlakyCreator()
+    common = {
+        "account_id": account_id,
+        "plan_key": "starter",
+        "interval": "month",
+        "lookup_key": "ent_starter_month",
+        "expected_currency": "usd",
+        "expected_unit_amount": 1900,
+        "expected_interval": "month",
+        "request_key": "existing-customer-retry",
+    }
+    with pytest.raises(TimeoutError):
+        await coordinator.create(
+            creator,
+            customer_id="cus_original",
+            customer_email="first@example.test",
+            **common,
+        )
+    recovered = await coordinator.create(
+        creator,
+        customer_id="cus_drifted_observation",
+        customer_email="changed@example.test",
+        **common,
+    )
+
+    assert recovered == (
+        "cs_existing_recovered",
+        "https://checkout/existing-recovered",
+    )
+    assert creator.parameters == [
+        ("cus_original", None),
+        ("cus_original", None),
+    ]
 
 
 async def test_checkout_completed_before_api_attach_converges_by_claim_token(

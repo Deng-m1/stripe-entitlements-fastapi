@@ -4,18 +4,18 @@ The project separates deterministic local/PostgreSQL tests, opt-in automated Str
 test-mode tests, real-browser signed-delivery tests, manual observations, and live
 production verification. Passing one layer must not be described as passing another.
 
-Local and networked 0.3 baseline-candidate evidence was rerun on 2026-08-28 from a
-working tree based on `main@4df7f73`; it is not evidence for that base commit and must be
-rebound to the exact final commit before release:
+The credit-pack candidate has current local, frontend, and Stripe test-mode evidence but
+has not yet received the required final-commit browser and container rerun. Working-tree
+results below must not be presented as release evidence or inherit an earlier container
+identity:
 
-| Layer | Current result | Boundary |
+| Layer | Evidence | Boundary |
 | --- | --- | --- |
-| Local/backend | Candidate: 787 passed from 796 collected; 9 `real_stripe` cases deselected | Real PostgreSQL, mocked Stripe responses; not yet final-commit-bound |
-| Frontend | Candidate: 155 passed; lint, typecheck, and production build passed | No Stripe network; not yet final-commit-bound |
-| Real Stripe suite | Candidate: 9/9 passed with strict cleanup and zero run-owned active inventory | Direct test-mode API/Event polling; not yet final-commit-bound |
-| Browser policy gates, CLI transport | Candidate: 2/2 passed; each policy reached Pro/1,000 with 7 related, 0 unrelated, and exactly 3 essential Events | Current production build, real Checkout/3DS/SCA, and signed Stripe CLI forwarding; not endpoint metadata |
-| Wheel/container | Candidate Wheel and image each applied the complete 0.3 baseline to fresh PostgreSQL; image then returned `ok=true`/`database=true` as UID/GID 10001 with a read-only root and internal-only network | Built artifacts, not Stripe network; not yet final-commit-bound |
-| Temporary endpoint gates | Latest dual-policy pass remains 2026-08-02; the 2026-08-28 retry stopped pre-state because the Quick Tunnel hostname remained DNS `NXDOMAIN` | Version-pinned endpoint metadata and signed Dahlia delivery; no fresh pass is claimed |
+| Local/backend | Current working-tree snapshot: 1,187 passed, 10 `real_stripe` deselected | Real PostgreSQL and mocked Stripe responses; not yet bound to a final commit |
+| Frontend | Current working-tree snapshot: 189 passed; lint, typecheck, production build, and both npm audits passed | No Stripe network; not yet bound to a final commit |
+| Real Stripe suite | Current working-tree snapshot: 10/10 passed in 408.12 seconds with strict run-owned cleanup | Test mode and Event polling, not signed webhook transport or live mode; not yet bound to a final commit |
+| Browser policy gates, endpoint transport | Later 2026-08-28 working-tree artifacts: both policies completed the expanded gate with 11 account-related, 0 unrelated, exactly 5 essential Events, and final Pro/1,020 | Predates final hardening and does not embed the final commit SHA; must be rerun |
+| Wheel/container | Current 0.3.0 wheel and sdist built with checksums; earlier candidate container reached healthy non-root/read-only runtime | Current container rebuild still required on the final commit |
 | Live production payload | **not run** | Test mode never substitutes for live mode |
 
 The earlier 2026-08-01 pre-hardening baseline—239 local/backend, 7 real Stripe,
@@ -39,6 +39,16 @@ Coverage includes:
 - raw webhook signature, livemode and Event snapshot-version rejection;
 - authenticated catalog/account/Checkout/Portal/preview/confirm APIs;
 - fail-closed production auth and explicit test-only demo auth;
+- strict JWT/JWKS verification boundaries, personal owner mapping, live team membership,
+  explicit prefix-aware viewer/catalog policy, and billing-admin-only privileged routes;
+- native router/OpenAPI prefixing, standalone behavior compatibility, host lifespan
+  composition, single-kernel `Database` binding, pool ownership, route-scoped
+  CORS/origin behavior, internal-router hardening without browser CORS, and no
+  host-global logging mutation;
+- `EntitlementService` feature/limit decisions and owner-bound exact credit operations;
+- internal workload authentication, operation scopes, separate workload-to-owner
+  authorization, reject-all defaults, sanitized/no-store errors, and replay/conflict
+  semantics;
 - transaction rollback followed by successful retry;
 - concurrent same-Event delivery and different Events targeting one grant;
 - concurrent first ownership of one Invoice across accounts, including paid versus
@@ -46,6 +56,27 @@ Coverage includes:
 - same-second paid/failed/updated/deleted ordering;
 - refund/dispute before/after paid convergence and cumulative refund races;
 - Checkout reservation, same-request replay, attach, expiration and stale Events;
+- credit-pack reserved-order `checkout_replay_required` observability without unsafe
+  global Session discovery, followed by exact Session → PaymentIntent → Charge
+  reconciliation once `cs_` is durable;
+- rejection of an expired credit-pack Session or a same-key retry beyond the bounded
+  Stripe idempotency recovery window, without making another remote create call;
+- same-key pack Checkout recovery from its immutable Customer/create-mode snapshot when
+  a webhook binds the Customer/Session before local attachment, the auth email changes,
+  or the account's later Customer observation differs;
+- full pack Checkout/PaymentIntent/Charge/Dispute contract binding for authorized and
+  received cash amount, latest Charge, customer lineage, and every immutable catalog
+  metadata snapshot field;
+- account-scoped pack order/lot/debit/allocation/debt foreign keys plus deferred debit
+  and funding-conservation equations, including direct corruption attempts, exact
+  synthetic debt-collection allocation binding, and rejection of counter-only debt
+  erasure;
+- account-lock waits that begin before pack expiry and resume afterward, proving charges
+  cannot spend and product refunds cannot restore the expired lot, plus equivalent
+  post-lock Checkout claim cutoff and TTL behavior;
+- missed pack payment/refund/dispute recovery, remote contract rejection, transaction-
+  free network probes, `SKIP LOCKED` multi-replica claims, expired-lease takeover, and
+  EventProcessor token fencing before Event inbox claim;
 - Subscription-update claim consumption plus terminal delete versus delayed/concurrent
   paid permutations;
 - annual multi-worker grants, downtime slot jumps, mismatch and refund reduction;
@@ -121,20 +152,24 @@ The frontend never tests or grants backend entitlement by itself.
 
 `web/e2e/stripe-checkout.spec.ts` is an opt-in Playwright lifecycle, not part of the
 network-free CI job. It requires an isolated Free account and real Stripe test-mode
-Checkout. One serial Session first submits Stripe's decline card, proves the account is
+Checkout. The subscription Session first submits Stripe's decline card, proves the account is
 still Free, then submits Stripe's 3DS-required card, completes the challenge, and waits
 for `GET /api/account` to expose Starter Monthly with 300 enforceable credits. It then
 uses the real Next.js preview/confirm UI for the configured transition policy and waits
-for Pro Monthly with 1,000 credits.
+for Pro Monthly with 1,000 credits. A second real Checkout buys Boost 100, after which
+the gate performs a hosted Portal round trip and an owner-bound Job charge/replay/refund
+flow ending at Pro/1,020.
 
 The browser refuses card entry unless the actual hosted URL contains a `cs_test_`
 Session. A remote base URL requires a second explicit acknowledgement. The full-stack
 runner defaults to creating and verifying a temporary test Webhook Endpoint; an explicit
 Stripe CLI mode is available for local signed forwarding when a Quick Tunnel is
 unavailable. Both inspect PostgreSQL for handled signed Events at the configured snapshot
-version. The final verifier binds exactly one Checkout Event, one initial `invoice.paid`, and one
-settlement `invoice.paid` to this run's account, Session, two funding Invoices, grants,
-and allocation policy; it also requires no unresolved incident for those identities.
+version. The final verifier binds exactly five essential Events: the two Checkout
+completions, initial and settlement `invoice.paid`, and pack
+`payment_intent.succeeded`. It binds the account, Sessions, funding Invoices, grants,
+allocation policy, PaymentIntent, Charge, funding lot, and Job debit/refund equations,
+and requires no unresolved incident for those identities.
 Every additional account-matched Event is checked against Stripe's identity, type, mode,
 and version, but an incidental total Event count is not part of the invariant.
 
@@ -146,23 +181,20 @@ artifact handling, and evidence boundaries.
 Endpoint metadata, signed transport, database projection and live-production evidence
 requirements are separated in [the webhook verification runbook](WEBHOOK_VERIFICATION.md).
 
-Current 0.3 candidate CLI-transport evidence: both policies passed on 2026-08-28. Each
-projected Starter/Monthly/300 and Pro/Monthly/1,000, observed seven account-related and
-zero unrelated Events, bound exactly three essential signed Events, used signed Clover
-payloads for that test account, had no unresolved identity-related incident, and
-completed strict cleanup. This does not prove Webhook Endpoint metadata or endpoint-
-specific version pinning.
+Earlier pre-credit-pack 2026-08-28 CLI-transport evidence: both subscription/upgrade
+policies passed. Each projected Starter/Monthly/300 and Pro/Monthly/1,000, observed seven
+account-related and zero unrelated Events, bound the then-current three essential signed
+Events, used signed Clover payloads, had no unresolved identity-related incident, and
+completed strict cleanup. This does not prove Webhook Endpoint metadata or the current
+pack/Portal/Job gate.
 
-The prior `0.2.2` CLI runs from 2026-08-18 remain regression history. A current endpoint
-attempt created and verified a temporary Dahlia endpoint but stopped before account
-creation or Checkout because its account-less Quick Tunnel hostname remained DNS
-`NXDOMAIN`; manifest recovery verified the run-owned endpoint was closed.
-
-The latest endpoint-mode evidence remains the 2026-08-02 full-period and prorated-delta
-runs, which completed in about 1.6 and 1.7 minutes. Each verified a Dahlia endpoint
-payload versus the independent Clover Event API view and met the same projection,
-identity, incident, and cleanup checks. Each happened to observe seven account-related
-Events; seven is incidental and is not a fixed assertion.
+The prior `0.2.2` CLI runs from 2026-08-18 remain regression history. An earlier
+2026-08-28 endpoint attempt stopped before account creation because Quick Tunnel DNS was
+`NXDOMAIN` and recovery closed its endpoint. Two later working-tree endpoint runs did
+complete the expanded five-essential-Event gate for both policies, with 11 account-
+related and zero unrelated Events and final Pro/1,020. Their artifacts are not
+commit-bound and therefore do not replace the final rerun. The 2026-08-02 runs remain
+historical endpoint-version evidence only.
 
 Historical note: the pre-hardening 2026-08-01 policy runs each completed in about 1.2
 minutes and happened to store five account-related signed Events. Those older runs are
@@ -174,7 +206,7 @@ Tests marked `real_stripe` make network calls only when `STRIPE_SECRET_KEY` star
 `sk_test_`. Live keys fail before a network call. Objects are uniquely marked and cleanup
 targets only objects created by that run.
 
-The current nine-case automated suite passed on the 0.3 baseline candidate on
+The nine-case automated suite passed on the earlier 0.3 baseline candidate on
 2026-08-28 and asserts:
 
 - creation of isolated real test-mode Products, monthly/yearly Prices, Customers and
@@ -211,6 +243,12 @@ The current nine-case automated suite passed on the 0.3 baseline candidate on
 All nine assertions passed against Stripe test mode on 2026-08-28 after the baseline and
 runner hardening. Earlier 0.2.2 and seven-case runs are historical evidence only; future
 releases must rerun the current suite rather than inheriting any result.
+
+The current ten-case working-tree suite passed on 2026-08-28. It adds a credit-pack
+PaymentIntent, exact immutable metadata and Customer/Charge lineage, partial/full cash
+clawback, product refund interaction, and strict run-owned cleanup to the earlier nine
+cases. This is current test-mode evidence, but it still must be rebound to the exact
+release commit before publication.
 
 The plan-change and Test Clock tests use direct Stripe test-mode requests plus Event
 polling, followed by the real PostgreSQL processor. They do **not** prove signed webhook

@@ -33,6 +33,7 @@ import type {
   AccountResponse,
   BillingApi,
   BillingInterval,
+  CatalogCreditPack,
   CatalogPlan,
   CatalogResponse,
   ChangePreview,
@@ -148,6 +149,33 @@ export function PricingScreen({
       ) {
         completeIdempotentIntent(key.identity);
       }
+      setError(errorMessage(caught));
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function buyCreditPack(pack: CatalogCreditPack) {
+    if (!account) return;
+    const busyIdentity = `pack:${pack.key}`;
+    const intent = `credit-pack:${pack.key}`;
+    setBusyKey(busyIdentity);
+    setError(null);
+    setMessage(null);
+    try {
+      const origin = window.location.origin;
+      const checkoutSuccessUrl = new URL("/billing/success", origin);
+      checkoutSuccessUrl.searchParams.set("expected_credit_pack", pack.key);
+      const result = await api.createCreditPackCheckout(
+        {
+          pack_key: pack.key,
+          success_url: checkoutSuccessUrl.toString(),
+          cancel_url: `${origin}/pricing`,
+        },
+        { idempotencyKey: idempotencyKeyForIntent(intent) },
+      );
+      billingRedirect(result.url);
+    } catch (caught) {
       setError(errorMessage(caught));
     } finally {
       setBusyKey(null);
@@ -384,6 +412,56 @@ export function PricingScreen({
           );
         })}
       </div>
+
+      <section aria-labelledby="credit-pack-heading" className="credit-pack-section">
+        <div className="credit-pack-intro">
+          <p className="eyebrow">One-time credit packs</p>
+          <h2 id="credit-pack-heading">Add burst capacity without changing your plan</h2>
+          <p>
+            Packs are one-time Stripe payments, not subscriptions. They add only product
+            credits, never plan features or higher limits, and remain separate from
+            monthly grant resets.
+          </p>
+        </div>
+        <div className="credit-pack-grid">
+          {[...catalog.credit_packs]
+            .sort((left, right) => left.display_order - right.display_order)
+            .map((pack) => {
+              const packBusyKey = `pack:${pack.key}`;
+              return (
+                <article className="credit-pack-card" key={pack.key}>
+                  <p className="eyebrow">Pack key: {pack.key}</p>
+                  <h3>{pack.name}</h3>
+                  <p>{pack.description}</p>
+                  <p className="credit-pack-amount">
+                    {formatCreditDecimal(pack.credits)} <span>credits</span>
+                  </p>
+                  <p>
+                    {formatMoney(pack.price.unit_amount, pack.price.currency)} one time ·
+                    expires {pack.expires_days} days after payment
+                  </p>
+                  <button
+                    aria-busy={busyKey === packBusyKey}
+                    className="button ghost full"
+                    disabled={!account || busyKey !== null}
+                    onClick={() => void buyCreditPack(pack)}
+                    type="button"
+                  >
+                    {!account
+                      ? "Loading account…"
+                      : busyKey === packBusyKey
+                        ? "Preparing Stripe Checkout…"
+                        : `Buy ${pack.name}`}
+                  </button>
+                </article>
+              );
+            })}
+        </div>
+        <p className="pricing-footnote">
+          The return page does not grant credits. The balance changes only after a
+          signed <code>payment_intent.succeeded</code> webhook is committed.
+        </p>
+      </section>
 
       <section aria-labelledby="plan-comparison-heading" className="pricing-compare">
         <h2 id="plan-comparison-heading">Compare plans</h2>
@@ -644,6 +722,67 @@ const pricingLocalStyles = `
 
 .pricing-page .pricing-compare {
   margin-top: 56px;
+}
+
+.pricing-page .credit-pack-section {
+  margin-top: 56px;
+}
+
+.pricing-page .credit-pack-intro {
+  max-width: 760px;
+}
+
+.pricing-page .credit-pack-intro h2 {
+  font-size: clamp(1.6rem, 3vw, 2.2rem);
+  margin-bottom: 8px;
+}
+
+.pricing-page .credit-pack-grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 22px;
+}
+
+.pricing-page .credit-pack-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+}
+
+.pricing-page .credit-pack-card h3 {
+  font-size: 1.35rem;
+  margin: 0 0 8px;
+}
+
+.pricing-page .credit-pack-card .button {
+  margin-top: auto;
+}
+
+.pricing-page .credit-pack-amount {
+  color: var(--text);
+  font-family: var(--font-display-stack);
+  font-size: 2rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 760;
+  margin: 18px 0 4px;
+}
+
+.pricing-page .credit-pack-amount span {
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+@media (max-width: 820px) {
+  .pricing-page .credit-pack-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .pricing-page .pricing-compare h2 {

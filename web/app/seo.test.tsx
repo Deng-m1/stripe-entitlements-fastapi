@@ -23,10 +23,10 @@ describe("public SEO surface", () => {
     const { container } = render(<HomePage />);
 
     expect(homeMetadata.title).toBe(
-      "Stripe Billing & Entitlements Template for FastAPI",
+      "Stripe Billing, Credit Packs & Entitlements for FastAPI",
     );
     expect(homeMetadata.description).toMatch(
-      /FastAPI, PostgreSQL entitlements, Next\.js.*full-period or prorated/i,
+      /FastAPI, PostgreSQL.*fractional credits.*credit packs.*full-period or prorated/i,
     );
 
     expect(
@@ -39,7 +39,7 @@ describe("public SEO surface", () => {
     // "Stripe billing". Do not weaken these without updating the brief.
     expect(
       screen.getByText(
-        /Stripe billing reference for FastAPI, PostgreSQL, and Next\.js/i,
+        /Stripe billing reference for FastAPI, PostgreSQL, and Next\.js.*credit packs/i,
       ),
     ).toBeInTheDocument();
     expect(
@@ -79,12 +79,26 @@ describe("public SEO surface", () => {
       screen.getByRole("heading", { name: /Full-price or prorated upgrades/i }),
     ).toBeInTheDocument();
     expect(
+      screen.getByRole("heading", {
+        name: /Exact fractional credits and credit packs/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
       screen.getByText(/Both define a complete 6 × 6 monthly\/yearly transition matrix/i),
     ).toBeInTheDocument();
     expect(screen.getByText(/full_period_reset and prorated_delta/i)).toBeInTheDocument();
     expect(
       screen.getByText(/Does it support Stripe prorated subscription upgrades/i),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("table", {
+        name: /Reference one-time Stripe credit packs/i,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("rowheader", { name: "Boost 100" })).toBeInTheDocument();
+    expect(screen.getByRole("rowheader", { name: "Boost 500" })).toBeInTheDocument();
+    expect(screen.getByRole("rowheader", { name: "Boost 2,000" })).toBeInTheDocument();
+    expect(screen.getByText(/Can product credits be fractional/i)).toBeInTheDocument();
     // The repository guarantees effectively-once PostgreSQL effects, not
     // impossible end-to-end exactly-once delivery. Marketing content must also
     // not invent event-volume evidence that no reproducible test produces.

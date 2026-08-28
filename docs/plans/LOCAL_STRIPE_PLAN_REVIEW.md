@@ -2,6 +2,10 @@
 
 复核日期：2026-08-26
 
+> 历史说明：开头的阻塞结论记录当时缺少执行计划/密钥的快照；下面可复用的验收矩阵已于
+> 2026-08-28 更新为当前 10-case real suite 和 5-essential-Event browser gate。它不能替代
+> 最终提交上的新执行证据。
+
 ## 结论
 
 **阻塞，当前不能批准执行。** `docs/plans/LOCAL_STRIPE_REAL_REGRESSION.md` 仍不存在；本次实际
@@ -17,7 +21,7 @@
 
 | 必审项 | 判定 | 说明 |
 | --- | --- | --- |
-| `real_stripe` 九用例 | **已覆盖（仅收集）** | 无网络 `--collect-only` 确认 9 个 node id，含 2 × 2 失败付款矩阵；尚未执行 |
+| 当时的 `real_stripe` 九用例 | **历史上仅收集** | 旧 PRECHECK 确认 9 个 node id；当前套件已扩为 10 个，必须重新收集和执行 |
 | Test Clock 时光跳跃 | **部分覆盖** | 记录 wrapper、key guard 和 recovery manifest，但未写 `+32d`、约 `+190d`、`period_end + 1h` 及逐阶段断言 |
 | browser 双策略 | **部分覆盖** | 列出两个允许值，但未要求两次独立运行及各自成功判据；也未明确 policy 与 transport 是两个维度 |
 | 清理 `inventory=0` | **未充分覆盖** | 只概述“全量清理”，没有 run-owned 六类库存、完整分页、unknown-create sweep 与 cleanup-failure 判负矩阵 |
@@ -35,10 +39,10 @@ publishable key、缺少 `uv`。因此即使补齐计划，也必须先以不泄
 
 ## 必须覆盖的验收矩阵
 
-### 1. `real_stripe` 九用例
+### 1. `real_stripe` 十用例
 
-计划必须把“九用例”写成可核对的收集矩阵，而不只是写一个 pytest 命令。当前代码是六个
-测试函数，其中失败付款测试按两种付款方式和两种变更策略做 2 × 2 参数化，因此合计九个
+计划必须把“十用例”写成可核对的收集矩阵，而不只是写一个 pytest 命令。当前代码是七个
+测试函数，其中失败付款测试按两种付款方式和两种变更策略做 2 × 2 参数化，因此合计十个
 pytest case：
 
 1. 真实 `invoice.paid` 后投影 300 credits，再做 $9.50 部分退款并收敛到 150；
@@ -53,10 +57,12 @@ pytest case：
 8. Starter Yearly → Pro Yearly 的 period-end 两阶段 contiguous Schedule，且
    `end_behavior=release`；
 9. 年度 Test Clock 的 slot、停机跳跃及续费生命周期。
+10. 一次性 pack PaymentIntent、完整 metadata/Customer/Charge lineage、部分/全额现金退款、
+    产品 Job 退款收敛和严格 cleanup。
 
 执行前必须先做 fail-fast key guard：只接受 `sk_test_`，缺失、格式错误或 `sk_live_` 都要在
 pytest 和任何网络请求之前失败。不能把缺少密钥导致的 skip 记成通过。结果证据应记录
-“collected=9、passed=9、failed=0、skipped=0”，并保留每个 node id；只报告六个函数名会
+“collected=10、passed=10、failed=0、skipped=0”，并保留每个 node id；只报告七个函数名会
 掩盖四格参数矩阵缺失。
 
 ### 2. Test Clock 时光跳跃
@@ -82,11 +88,12 @@ Event polling 只证明 Stripe 对象形状和 PostgreSQL 投影，不证明签�
 - `E2E_TRANSITION_POLICY=full_period_reset`；
 - `E2E_TRANSITION_POLICY=prorated_delta`。
 
-两次都要经过 Free/0、同一 Checkout Session 的 decline 稳定屏障、3DS 成功、
-Starter/Monthly/300 webhook 投影、UI preview/confirm、升级 SCA、Pro/Monthly/1,000 投影，
-并验证恰好三个 identity-bound essential Events、策略对应 allocation、无相关 unresolved
-incident 和严格清理。重定向、SCA 完成或页面文案不能代替 `/api/account` 与 PostgreSQL 投影
-证据。
+两次都要经过 Free/0、同一订阅 Checkout Session 的 decline 稳定屏障、3DS 成功、
+Starter/Monthly/300 webhook 投影、UI preview/confirm、升级 SCA、Pro/Monthly/1,000、
+第二个 pack Checkout、Portal 往返和 Job charge/replay/refund 至 Pro/1,020，并验证恰好五个
+identity-bound essential Events、策略对应 allocation、pack/Job provenance、无相关
+unresolved incident 和严格清理。重定向、SCA 完成或页面文案不能代替 `/api/account` 与
+PostgreSQL 投影证据。
 
 计划还要把“策略”与“传输模式”分开：默认 temporary endpoint 是较强发布证据；
 `stripe_cli` 只是 Quick Tunnel 不可用时的显式本地诊断/录制备选。CLI 模式不能被描述成
@@ -114,7 +121,7 @@ Webhook Endpoint metadata 或 endpoint version-pin 证据。若本次只跑 CLI�
 计划和最终报告必须分别记录，不得跨层借证：
 
 1. network-free backend/PostgreSQL 与 frontend 门禁；
-2. 九个 real Stripe case：直接 test-mode API/Event polling；
+2. 十个 real Stripe case：直接 test-mode API/Event polling；
 3. 两个 browser policy gate：真实 Checkout/3DS/SCA、签名传输、UI 与 PostgreSQL；
 4. endpoint metadata/version-pin 与 Stripe CLI signed-forwarding 两种传输证据；
 5. 手工观察和 live production（本轮默认均未运行）。
@@ -148,8 +155,8 @@ fail closed、保留可恢复证据并停止该场景，不能为了完成回归
    超时、证据目录、逐阶段成功判据和失败恢复编排。补齐计划或扩充 PRECHECK 后必须重新复核。
 2. **P0：当前环境不可执行。** PRECHECK 明确报告两类测试密钥未设置且 `uv` 缺失；直接运行
    wrapper 会在入口退出，直接跑 pytest 则可能因无 secret 全部 skip，不能记成通过。
-3. **九用例计数歧义。** 六个函数容易被误报为六个 case，或漏掉 failed-payment 的四格
-   参数矩阵；应以 pytest collected node ids 和 9/9 结果为准。
+3. **十用例计数歧义。** 七个函数容易被误报为七个 case，或漏掉 failed-payment 的四格
+   参数矩阵/pack case；应以 pytest collected node ids 和 10/10 结果为准。
 4. **时钟推进假阳性。** 未等待 `ready`、把约 +190 天拆成逐月 advance，或不检查
    “current slot only” 都无法证明停机无回填语义。
 5. **browser 双策略与双传输混淆。** 两种 policy 都必须跑；endpoint 与 CLI 是另一维度。

@@ -15,6 +15,8 @@ import stripe
 
 from stripe_entitlements.annual import AnnualGrantService
 from stripe_entitlements.catalog import PlanCatalog
+from stripe_entitlements.credit_packs import CreditPackCoordinator
+from stripe_entitlements.credits import CreditService
 from stripe_entitlements.plan_changes import PlanChangeCoordinator
 from stripe_entitlements.processor import EventProcessor
 from stripe_entitlements.stripe_gateway import StripeGateway
@@ -75,6 +77,34 @@ async def _wait_event(key: str, event_type: str, object_id: str) -> dict[str, An
                 return event
         await asyncio.sleep(1)
     raise AssertionError(f"Stripe did not expose {event_type} for {object_id}")
+
+
+async def _wait_charge_refund(
+    key: str,
+    charge_id: str,
+    *,
+    amount_refunded: int,
+    excluding: set[str] | None = None,
+) -> dict[str, Any]:
+    """Wait for one cumulative Charge refund fact, not merely any older refund Event."""
+
+    __tracebackhide__ = True
+    deadline = time.monotonic() + 45
+    while time.monotonic() < deadline:
+        events = await _auto_paging_dicts(
+            stripe.Event.list,
+            type="charge.refunded",
+            limit=100,
+            **_options(key),
+        )
+        for event in events:
+            if excluding and str(event.get("id")) in excluding:
+                continue
+            obj = event.get("data", {}).get("object", {})
+            if obj.get("id") == charge_id and obj.get("amount_refunded") == amount_refunded:
+                return event
+        await asyncio.sleep(1)
+    raise AssertionError(f"Stripe did not expose charge.refunded={amount_refunded} for {charge_id}")
 
 
 async def _latest_charge_for_invoice(key: str, invoice_id: str) -> str:
@@ -244,6 +274,95 @@ async def _cleanup_standard_objects(
             active=False,
             **_options(key),
         )
+
+
+async def _zero_run_owned_pack_payment(
+    errors: list[str],
+    key: str,
+    *,
+    run_id: str,
+    account_id: str,
+    order_id: str,
+    payment_intent: Any,
+    expected_metadata: dict[str, str],
+    expected_amount: int,
+    expected_currency: str,
+) -> None:
+    """Refund only a positively identified run-owned pack Charge and verify zero cash."""
+
+    if payment_intent is None:
+        return
+    try:
+        intent = _dict(
+            await asyncio.to_thread(
+                stripe.PaymentIntent.retrieve,
+                payment_intent.id,
+                **_options(key),
+            )
+        )
+        metadata = intent.get("metadata") or {}
+        charge_id = str(intent.get("latest_charge") or "")
+        if (
+            bool(intent.get("livemode"))
+            or metadata != expected_metadata
+            or intent.get("status") != "succeeded"
+            or intent.get("amount") != expected_amount
+            or intent.get("amount_received") != expected_amount
+            or intent.get("currency") != expected_currency
+            or not charge_id.startswith("ch_")
+        ):
+            errors.append("pack_payment_intent:ownership_mismatch")
+            return
+        charge = _dict(
+            await asyncio.to_thread(
+                stripe.Charge.retrieve,
+                charge_id,
+                **_options(key),
+            )
+        )
+        amount = charge.get("amount")
+        amount_refunded = charge.get("amount_refunded")
+        if (
+            bool(charge.get("livemode"))
+            or charge.get("payment_intent") != intent.get("id")
+            or charge.get("customer") != intent.get("customer")
+            or type(amount) is not int
+            or type(amount_refunded) is not int
+            or amount <= 0
+            or amount != expected_amount
+            or amount_refunded < 0
+            or amount_refunded > amount
+            or charge.get("currency") != expected_currency
+        ):
+            errors.append("pack_charge:ownership_mismatch")
+            return
+        if amount_refunded < amount:
+            await asyncio.to_thread(
+                stripe.Refund.create,
+                charge=charge_id,
+                amount=amount - amount_refunded,
+                metadata={
+                    "automated_test": "true",
+                    "run_id": run_id,
+                    "credit_pack_order_id": order_id,
+                },
+                **_create_options(key, run_id, "pack-cleanup-refund"),
+            )
+        final_charge = _dict(
+            await asyncio.to_thread(
+                stripe.Charge.retrieve,
+                charge_id,
+                **_options(key),
+            )
+        )
+        if (
+            final_charge.get("payment_intent") != intent.get("id")
+            or final_charge.get("amount_refunded") != final_charge.get("amount")
+            or not bool(final_charge.get("refunded"))
+        ):
+            errors.append("pack_charge:refundable_inventory_remaining")
+    except stripe.StripeError as exc:
+        errors.append(f"pack_payment_cleanup:{type(exc).__name__}")
 
 
 async def _cleanup_schedule(
@@ -574,6 +693,293 @@ async def test_real_paid_and_refund_events_converge_in_postgres(
             cleanup_errors,
             key,
             subscription=subscription,
+            customer=customer,
+            prices=(price,),
+            product=product,
+        )
+        await _sweep_run_objects(cleanup_errors, key, run_id)
+        _assert_cleanup(cleanup_errors)
+
+
+async def test_real_credit_pack_payment_cash_clawback_and_product_refund_converge(
+    pool: asyncpg.Pool, catalog: PlanCatalog, make_account
+) -> None:
+    """Exercise one real pack payment while keeping every business effect in PostgreSQL."""
+
+    key = _test_key()
+    run_id = uuid.uuid4().hex[:12]
+    cleanup_errors: list[str] = []
+    prefix = f"p{run_id}"
+    product_line = f"stripe-entitlements-pack-real-{run_id}"
+    account_id = await make_account(customer=None, subscription=None)
+    real_catalog = PlanCatalog(
+        catalog.plans,
+        prefix,
+        credit_packs=catalog.credit_packs,
+    )
+    pack = real_catalog.require_credit_pack("boost-100")
+    product = None
+    price = None
+    customer = None
+    payment_intent = None
+    order_id = ""
+    expected_payment_metadata: dict[str, str] = {}
+    try:
+        product = await asyncio.to_thread(
+            stripe.Product.create,
+            name=f"Stripe Entitlements credit-pack real test {run_id}",
+            metadata={
+                "automated_test": "true",
+                "run_id": run_id,
+                "product_line": product_line,
+                "credit_pack": pack.key,
+            },
+            **_create_options(key, run_id, "pack-product"),
+        )
+        price = await asyncio.to_thread(
+            stripe.Price.create,
+            product=product.id,
+            currency=pack.currency,
+            unit_amount=pack.price_usd * 100,
+            lookup_key=real_catalog.credit_pack_lookup_key(pack.key),
+            metadata={
+                "automated_test": "true",
+                "run_id": run_id,
+                "product_line": product_line,
+                "credit_pack": pack.key,
+            },
+            **_create_options(key, run_id, "pack-price"),
+        )
+        price_raw = _dict(price)
+        assert price_raw.get("type") == "one_time"
+        assert price_raw.get("recurring") is None
+        assert price_raw.get("currency") == pack.currency
+        assert price_raw.get("unit_amount") == pack.price_usd * 100
+        assert price_raw.get("lookup_key") == real_catalog.credit_pack_lookup_key(pack.key)
+
+        customer = await asyncio.to_thread(
+            stripe.Customer.create,
+            name=f"Automated credit-pack test {run_id}",
+            metadata={
+                "automated_test": "true",
+                "run_id": run_id,
+                "account_id": account_id,
+            },
+            **_create_options(key, run_id, "pack-customer"),
+        )
+        reservation = await CreditPackCoordinator(pool, real_catalog).reserve(
+            account_id,
+            pack,
+            f"real-pack-{run_id}",
+        )
+        order_id = reservation.order_id
+        metadata = {
+            "automated_test": "true",
+            "run_id": run_id,
+            "billing_kind": "credit_pack",
+            "pack_schema_version": "1",
+            "product_line": product_line,
+            "credit_pack_order_id": order_id,
+            "account_id": account_id,
+            "pack_key": pack.key,
+            "pack_credits": str(pack.credits),
+            "price_amount": str(pack.price_usd * 100),
+            "currency": pack.currency,
+            "expires_days": str(pack.expires_days),
+            "lookup_key": real_catalog.credit_pack_lookup_key(pack.key),
+        }
+        expected_payment_metadata = metadata
+        payment_method = await asyncio.to_thread(
+            stripe.PaymentMethod.attach,
+            "pm_card_visa",
+            customer=customer.id,
+            **_options(key),
+        )
+        payment_intent = await asyncio.to_thread(
+            stripe.PaymentIntent.create,
+            amount=pack.price_usd * 100,
+            currency=pack.currency,
+            customer=customer.id,
+            payment_method=payment_method.id,
+            payment_method_types=["card"],
+            confirm=True,
+            off_session=True,
+            description=f"Run-scoped Boost 100 test {run_id}",
+            metadata=metadata,
+            **_create_options(key, run_id, "pack-payment-intent"),
+        )
+        intent_raw = _dict(payment_intent)
+        charge_id = str(intent_raw.get("latest_charge") or "")
+        assert intent_raw.get("status") == "succeeded"
+        assert intent_raw.get("amount") == pack.price_usd * 100
+        assert intent_raw.get("amount_received") == pack.price_usd * 100
+        assert intent_raw.get("currency") == pack.currency
+        assert intent_raw.get("customer") == customer.id
+        assert intent_raw.get("metadata") == metadata
+        assert charge_id.startswith("ch_")
+
+        paid_event = await _wait_event(key, "payment_intent.succeeded", payment_intent.id)
+        paid_object = paid_event.get("data", {}).get("object", {})
+        assert paid_object.get("id") == payment_intent.id
+        assert paid_object.get("metadata") == metadata
+        assert paid_object.get("amount_received") == pack.price_usd * 100
+        assert paid_object.get("currency") == pack.currency
+        assert paid_object.get("customer") == customer.id
+        assert paid_object.get("latest_charge") == charge_id
+        observed_event_version = str(paid_event.get("api_version") or "")
+        assert observed_event_version
+        gateway = StripeGateway(key, "whsec_not_used", product_line, api_version=STRIPE_API_VERSION)
+        processor = EventProcessor(
+            pool,
+            real_catalog,
+            product_line,
+            expected_api_version=observed_event_version,
+        )
+        paid_result = await processor.process(await gateway.prepare_event(paid_event))
+        assert paid_result.outcome == "handled", paid_result
+
+        service = CreditService(pool)
+        charged = await service.charge(account_id, "80", f"real-pack-job-{run_id}")
+        assert charged.outcome == "charged"
+        assert charged.balance_atoms == atoms(20)
+
+        await asyncio.to_thread(
+            stripe.Refund.create,
+            charge=charge_id,
+            amount=750,
+            metadata={
+                "automated_test": "true",
+                "run_id": run_id,
+                "credit_pack_order_id": order_id,
+            },
+            **_create_options(key, run_id, "pack-partial-refund"),
+        )
+        partial_event = await _wait_charge_refund(key, charge_id, amount_refunded=750)
+        assert partial_event.get("api_version") == observed_event_version
+        partial_result = await processor.process(await gateway.prepare_event(partial_event))
+        assert partial_result.outcome == "handled", partial_result
+        async with pool.acquire() as conn:
+            partial = await conn.fetchrow(
+                """select o.amount_paid,o.amount_refunded,o.refunded_credits,o.payment_status,
+                          l.remaining_credits,l.cash_clawed_back_credits,l.status,
+                          d.target_credits,d.collected_credits,d.released_credits
+                     from credit_pack_orders o
+                     join credit_funding_lots l on l.order_id=o.id
+                     left join credit_pack_clawback_debts d on d.order_id=o.id
+                    where o.id=$1::uuid""",
+                order_id,
+            )
+        assert partial is not None
+        assert tuple(partial) == (
+            1500,
+            750,
+            atoms(50),
+            "partially_refunded",
+            0,
+            atoms(20),
+            "active",
+            atoms(30),
+            0,
+            0,
+        )
+
+        product_refund = await service.refund(
+            f"real-pack-job-{run_id}",
+            expected_account_id=account_id,
+        )
+        assert product_refund.outcome == "refunded"
+        assert product_refund.requested_atoms == atoms(80)
+        assert product_refund.restored_atoms == atoms(50)
+        assert product_refund.balance_atoms == atoms(50)
+        replayed_product_refund = await service.refund(
+            f"real-pack-job-{run_id}",
+            expected_account_id=account_id,
+        )
+        assert replayed_product_refund.outcome == "replayed"
+        assert replayed_product_refund.requested_atoms == atoms(80)
+        assert replayed_product_refund.restored_atoms == atoms(50)
+        assert replayed_product_refund.balance_atoms == atoms(50)
+
+        await asyncio.to_thread(
+            stripe.Refund.create,
+            charge=charge_id,
+            amount=750,
+            metadata={
+                "automated_test": "true",
+                "run_id": run_id,
+                "credit_pack_order_id": order_id,
+            },
+            **_create_options(key, run_id, "pack-full-refund"),
+        )
+        full_event = await _wait_charge_refund(
+            key,
+            charge_id,
+            amount_refunded=1500,
+            excluding={str(partial_event["id"])},
+        )
+        assert full_event.get("api_version") == observed_event_version
+        full_result = await processor.process(await gateway.prepare_event(full_event))
+        assert full_result.outcome == "handled", full_result
+
+        final_charge = _dict(
+            await asyncio.to_thread(stripe.Charge.retrieve, charge_id, **_options(key))
+        )
+        assert final_charge.get("amount_refunded") == final_charge.get("amount") == 1500
+        assert bool(final_charge.get("refunded"))
+        async with pool.acquire() as conn:
+            final = await conn.fetchrow(
+                """select o.stripe_payment_intent_id,o.stripe_charge_id,
+                          o.stripe_customer_id,o.amount_paid,o.amount_refunded,
+                          o.refunded_credits,o.payment_status,
+                          l.original_credits,l.remaining_credits,
+                          l.cash_clawed_back_credits,l.status,
+                          d.target_credits,d.collected_credits,d.released_credits,
+                          u.amount,u.restored_credits,u.refunded_at is not null
+                     from credit_pack_orders o
+                     join credit_funding_lots l on l.order_id=o.id
+                     join credit_debits u on u.idempotency_key=$2
+                     left join credit_pack_clawback_debts d on d.order_id=o.id
+                    where o.id=$1::uuid""",
+                order_id,
+                f"real-pack-job-{run_id}",
+            )
+        assert final is not None
+        assert tuple(final) == (
+            payment_intent.id,
+            charge_id,
+            customer.id,
+            1500,
+            1500,
+            atoms(100),
+            "refunded",
+            atoms(100),
+            0,
+            atoms(70),
+            "refunded",
+            atoms(30),
+            0,
+            atoms(30),
+            atoms(80),
+            atoms(50),
+            True,
+        )
+    finally:
+        if order_id:
+            await _zero_run_owned_pack_payment(
+                cleanup_errors,
+                key,
+                run_id=run_id,
+                account_id=account_id,
+                order_id=order_id,
+                payment_intent=payment_intent,
+                expected_metadata=expected_payment_metadata,
+                expected_amount=pack.price_usd * 100,
+                expected_currency=pack.currency,
+            )
+        await _cleanup_standard_objects(
+            cleanup_errors,
+            key,
+            subscription=None,
             customer=customer,
             prices=(price,),
             product=product,

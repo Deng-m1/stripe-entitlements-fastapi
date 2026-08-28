@@ -9,8 +9,9 @@ from typing import Any
 
 import stripe
 
-from stripe_entitlements.catalog import Plan, PlanCatalog
+from stripe_entitlements.catalog import CreditPack, Plan, PlanCatalog
 from stripe_entitlements.portal_policy import portal_configuration_is_safe
+from stripe_entitlements.price_policy import catalog_one_time_price_matches
 from stripe_entitlements.stripe_gateway import StripeGateway
 
 STRIPE_API_VERSION = os.getenv("STRIPE_API_VERSION", "2026-06-24.dahlia")
@@ -79,6 +80,18 @@ def _find_product(key: str, product_line: str, plan: str):
     return None
 
 
+def _find_pack_product(key: str, product_line: str, pack_key: str):
+    for product in _products(key):
+        metadata = _dict(product).get("metadata") or {}
+        if (
+            metadata.get("product_line") == product_line
+            and metadata.get("credit_pack") == pack_key
+            and metadata.get("plan") is None
+        ):
+            return product
+    return None
+
+
 def ensure_product(key: str, product_line: str, plan: Plan):
     existing = _find_product(key, product_line, plan.key)
     if existing:
@@ -91,6 +104,21 @@ def ensure_product(key: str, product_line: str, plan: Plan):
         **_options(key),
     )
     print(f"product created: {plan.key} -> {product.id}")
+    return product
+
+
+def ensure_pack_product(key: str, product_line: str, pack: CreditPack):
+    existing = _find_pack_product(key, product_line, pack.key)
+    if existing:
+        print(f"credit-pack product ok: {pack.key} -> {existing.id}")
+        return existing
+    product = stripe.Product.create(
+        name=f"Example Entitlements {pack.name}",
+        description=f"One-time reference credit pack: {pack.credits} credits",
+        metadata={"product_line": product_line, "credit_pack": pack.key},
+        **_options(key),
+    )
+    print(f"credit-pack product created: {pack.key} -> {product.id}")
     return product
 
 
@@ -143,6 +171,54 @@ def ensure_price(
     for old in existing:
         stripe.Price.modify(old.id, active=False, **_options(key))
     print(f"price created: {lookup_key} -> {price.id}")
+    return price
+
+
+def ensure_pack_price(
+    key: str,
+    catalog: PlanCatalog,
+    product: Any,
+    pack: CreditPack,
+) -> Any:
+    lookup_key = catalog.credit_pack_lookup_key(pack.key)
+    expected = pack.price_usd * 100
+    existing = stripe.Price.list(
+        lookup_keys=[lookup_key],
+        active=True,
+        limit=2,
+        expand=["data.currency_options", "data.product"],
+        **_options(key),
+    ).data
+    if len(existing) == 1:
+        price = existing[0]
+        price_raw = _dict(price)
+        if StripeGateway._object_id(price_raw.get("product")) == product.id and (
+            catalog_one_time_price_matches(
+                price_raw,
+                expected_currency=pack.currency,
+                expected_unit_amount=expected,
+                expected_product_line=str(product.metadata["product_line"]),
+                expected_pack_key=pack.key,
+                expected_lookup_key=lookup_key,
+            )
+        ):
+            print(f"credit-pack price ok: {lookup_key} -> {price.id}")
+            return price
+    price = stripe.Price.create(
+        product=product.id,
+        currency=pack.currency,
+        unit_amount=expected,
+        lookup_key=lookup_key,
+        transfer_lookup_key=True,
+        metadata={
+            "product_line": product.metadata["product_line"],
+            "credit_pack": pack.key,
+        },
+        **_options(key),
+    )
+    for old in existing:
+        stripe.Price.modify(old.id, active=False, **_options(key))
+    print(f"credit-pack price created: {lookup_key} -> {price.id}")
     return price
 
 
@@ -214,6 +290,39 @@ def verify(key: str, catalog: PlanCatalog, product_line: str) -> None:
             ):
                 raise RuntimeError(f"price drift: {lookup_key}")
             expected_price_ids.add(price.id)
+    expected_pack_price_ids: set[str] = set()
+    for pack in catalog.ordered_credit_packs():
+        product = _find_pack_product(key, product_line, pack.key)
+        if product is None:
+            raise RuntimeError(f"missing active product for credit pack {pack.key}")
+        if bool(product.livemode) != expected_live:
+            raise RuntimeError("credit-pack product mode does not match the secret key")
+        lookup_key = catalog.credit_pack_lookup_key(pack.key)
+        prices = stripe.Price.list(
+            lookup_keys=[lookup_key],
+            active=True,
+            limit=2,
+            expand=["data.currency_options", "data.product"],
+            **_options(key),
+        ).data
+        if len(prices) != 1:
+            raise RuntimeError(f"expected one active price for {lookup_key}")
+        price = prices[0]
+        price_raw = _dict(price)
+        if (
+            StripeGateway._object_id(price_raw.get("product")) != product.id
+            or not catalog_one_time_price_matches(
+                price_raw,
+                expected_currency=pack.currency,
+                expected_unit_amount=pack.price_usd * 100,
+                expected_product_line=product_line,
+                expected_pack_key=pack.key,
+                expected_lookup_key=lookup_key,
+            )
+            or bool(price.livemode) != expected_live
+        ):
+            raise RuntimeError(f"credit-pack price drift: {lookup_key}")
+        expected_pack_price_ids.add(price.id)
     matching = []
     drifted: list[dict[str, Any]] = []
     for raw in _portal_configs(key):
@@ -239,6 +348,8 @@ def verify(key: str, catalog: PlanCatalog, product_line: str) -> None:
         raise RuntimeError("Portal mode does not match the secret key")
     print(
         f"verified {label}: products={len(catalog.plans)} prices={len(expected_price_ids)} "
+        f"credit_pack_products={len(catalog.credit_packs)} "
+        f"credit_pack_prices={len(expected_pack_price_ids)} "
         f"portal={matching[0]['id']} subscription_update=disabled "
         f"stripe_api_version={STRIPE_API_VERSION}"
     )
@@ -269,6 +380,9 @@ def main() -> None:
         product = ensure_product(key, args.product_line, plan)
         ensure_price(key, catalog, product, plan, "month")
         ensure_price(key, catalog, product, plan, "year")
+    for pack in catalog.ordered_credit_packs():
+        product = ensure_pack_product(key, args.product_line, pack)
+        ensure_pack_price(key, catalog, product, pack)
     ensure_portal(key, args.product_line)
     verify(key, catalog, args.product_line)
 

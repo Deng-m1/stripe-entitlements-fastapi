@@ -54,7 +54,7 @@ The processor stores a mismatch as `webhook_contract_mismatch` and does not appl
 ```bash
 stripe login
 stripe listen --events \\
-checkout.session.completed,checkout.session.expired,invoice.paid,invoice.payment_failed,customer.subscription.updated,customer.subscription.deleted,charge.refunded,charge.dispute.created \\
+checkout.session.completed,checkout.session.expired,invoice.paid,invoice.payment_failed,customer.subscription.updated,customer.subscription.deleted,charge.refunded,charge.dispute.created,payment_intent.succeeded \\
 --forward-to http://127.0.0.1:8000/webhooks/stripe
 ```
 
@@ -189,14 +189,16 @@ availability. Event polling is evidence of Stripe object state, not endpoint tra
 
 ## Manual plan-transition evidence
 
-The current nine-case real suite contains assertions for both a full-price/no-proration
+The current ten-case real suite contains assertions for both a full-price/no-proration
 monthly upgrade and a prorated-delta monthly upgrade through paid Event projection. The
 delta case performs a real full refund and checks cross-Invoice allocation/reversion;
 other cases cover an annual-origin two-phase Schedule and repeatable authentication-
-required/customer-charge-failure pending updates. All nine cases passed on the 0.3
-baseline candidate on 2026-08-28, including strict cleanup and zero run-owned active
-inventory. Both browser policies also passed that day through signed Stripe CLI
-forwarding on the production Next.js build.
+required/customer-charge-failure pending updates. The added case covers a one-time pack
+PaymentIntent, exact metadata/lineage and cash/product-refund convergence. All ten passed
+on the 0.3 working-tree candidate on 2026-08-28 with strict run-owned cleanup; they still
+need to be rebound to the exact release commit before publication.
+Both pre-pack browser policies also passed that day through signed Stripe CLI forwarding
+on the production Next.js build.
 The earlier seven-case network run is historical evidence only. The remaining 2026-07-31
 manual evidence set contains:
 

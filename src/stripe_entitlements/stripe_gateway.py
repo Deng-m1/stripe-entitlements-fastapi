@@ -11,6 +11,10 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import stripe
 
 from .checkout import CheckoutCreationRejected
+from .config import (
+    checkout_success_base_url_is_safe,
+    public_http_url_is_structurally_safe,
+)
 from .invoice_policy import has_unsupported_invoice_adjustments
 from .plan_changes import (
     PlanChangeContext,
@@ -18,7 +22,7 @@ from .plan_changes import (
     RemotePlanChange,
 )
 from .portal_policy import portal_configuration_is_safe
-from .price_policy import catalog_price_matches
+from .price_policy import catalog_one_time_price_matches, catalog_price_matches
 from .transitions import BillingInterval, TransitionPolicy
 from .types import SubscriptionSnapshot
 
@@ -117,6 +121,15 @@ class StripeGateway:
             raise ValueError("Stripe secret key must be an sk_test_ or sk_live_ key")
         if not webhook_secret.startswith("whsec_"):
             raise ValueError("Stripe webhook secret must start with whsec_")
+        for field, value in (
+            ("checkout_success_url", checkout_success_url),
+            ("checkout_cancel_url", checkout_cancel_url),
+            ("portal_return_url", portal_return_url),
+        ):
+            if not public_http_url_is_structurally_safe(value):
+                raise ValueError(f"{field} must be an origin-safe HTTP(S) URL")
+        if not checkout_success_base_url_is_safe(checkout_success_url):
+            raise ValueError("checkout_success_url must not include a query or fragment")
         self.secret_key = secret_key
         self.webhook_secret = webhook_secret
         self.product_line = product_line
@@ -173,6 +186,23 @@ class StripeGateway:
                 charge = obj
             invoice_id = self._object_id(charge.get("invoice"))
             payment_intent_id = self._object_id(charge.get("payment_intent"))
+            if payment_intent_id:
+                payment_intent_object = await asyncio.to_thread(
+                    stripe.PaymentIntent.retrieve,
+                    payment_intent_id,
+                    **self._request_options,
+                )
+                payment_intent = _stripe_object_dict(payment_intent_object)
+                if self._object_id(payment_intent.get("id")) != payment_intent_id:
+                    raise RuntimeError("Stripe returned a conflicting PaymentIntent identity")
+                obj["_resolved_payment_intent"] = payment_intent
+                payment_metadata = payment_intent.get("metadata")
+                if (
+                    not invoice_id
+                    and isinstance(payment_metadata, Mapping)
+                    and payment_metadata.get("billing_kind") == "credit_pack"
+                ):
+                    return prepared
             if not invoice_id and payment_intent_id:
                 payments = await asyncio.to_thread(
                     stripe.InvoicePayment.list,
@@ -478,6 +508,68 @@ class StripeGateway:
             await self._resolve_lookups(raw_items)
         return subscription
 
+    async def checkout_session_object(self, session_id: str) -> dict[str, Any]:
+        """Retrieve one Checkout Session for transaction-free reconciliation."""
+
+        session_id = _required_text(session_id, field="Checkout Session id", max_bytes=255)
+        if not session_id.startswith("cs_"):
+            raise ValueError("Checkout Session id must start with cs_")
+        session = _stripe_object_dict(
+            await asyncio.to_thread(
+                stripe.checkout.Session.retrieve,
+                session_id,
+                **self._request_options,
+            )
+        )
+        if self._object_id(session.get("id")) != session_id:
+            raise RuntimeError("Stripe returned a different Checkout Session identity")
+        livemode = session.get("livemode")
+        if not isinstance(livemode, bool) or livemode != self.secret_key.startswith("sk_live_"):
+            raise RuntimeError("Stripe Checkout Session mode does not match the configured key")
+        return session
+
+    async def payment_intent_object(self, payment_intent_id: str) -> dict[str, Any]:
+        """Retrieve one PaymentIntent for transaction-free reconciliation."""
+
+        payment_intent_id = _required_text(
+            payment_intent_id, field="PaymentIntent id", max_bytes=255
+        )
+        if not payment_intent_id.startswith("pi_"):
+            raise ValueError("PaymentIntent id must start with pi_")
+        payment_intent = _stripe_object_dict(
+            await asyncio.to_thread(
+                stripe.PaymentIntent.retrieve,
+                payment_intent_id,
+                **self._request_options,
+            )
+        )
+        if self._object_id(payment_intent.get("id")) != payment_intent_id:
+            raise RuntimeError("Stripe returned a different PaymentIntent identity")
+        livemode = payment_intent.get("livemode")
+        if not isinstance(livemode, bool) or livemode != self.secret_key.startswith("sk_live_"):
+            raise RuntimeError("Stripe PaymentIntent mode does not match the configured key")
+        return payment_intent
+
+    async def charge_object(self, charge_id: str) -> dict[str, Any]:
+        """Retrieve one Charge for refund/dispute reconciliation."""
+
+        charge_id = _required_text(charge_id, field="Charge id", max_bytes=255)
+        if not charge_id.startswith("ch_"):
+            raise ValueError("Charge id must start with ch_")
+        charge = _stripe_object_dict(
+            await asyncio.to_thread(
+                stripe.Charge.retrieve,
+                charge_id,
+                **self._request_options,
+            )
+        )
+        if self._object_id(charge.get("id")) != charge_id:
+            raise RuntimeError("Stripe returned a different Charge identity")
+        livemode = charge.get("livemode")
+        if not isinstance(livemode, bool) or livemode != self.secret_key.startswith("sk_live_"):
+            raise RuntimeError("Stripe Charge mode does not match the configured key")
+        return charge
+
     async def latest_paid_invoice_event(self, subscription_id: str) -> dict[str, Any] | None:
         invoices = await asyncio.to_thread(
             stripe.Invoice.list,
@@ -605,6 +697,93 @@ class StripeGateway:
             _required_https_url(getattr(session, "url", None), field="Checkout Session URL"),
         )
 
+    async def create_credit_pack_checkout_session(
+        self,
+        *,
+        order_id: str,
+        account_id: str,
+        customer_id: str | None,
+        customer_email: str | None,
+        lookup_key: str,
+        expected_currency: str,
+        expected_unit_amount: int,
+        pack_key: str,
+        pack_credits: str,
+        expires_days: int,
+        expires_at: datetime,
+    ) -> tuple[str, str]:
+        prices = await asyncio.to_thread(
+            stripe.Price.list,
+            lookup_keys=[lookup_key],
+            active=True,
+            limit=2,
+            expand=["data.currency_options", "data.product"],
+            **self._request_options,
+        )
+        if len(prices.data) != 1:
+            raise CheckoutCreationRejected(
+                f"expected exactly one active Stripe price for {lookup_key!r}"
+            )
+        price = _stripe_object_dict(prices.data[0])
+        if not catalog_one_time_price_matches(
+            price,
+            expected_currency=expected_currency,
+            expected_unit_amount=expected_unit_amount,
+            expected_product_line=self.product_line,
+            expected_pack_key=pack_key,
+            expected_lookup_key=lookup_key,
+        ):
+            raise CheckoutCreationRejected(f"Stripe price {lookup_key!r} drifted from the catalog")
+        metadata = {
+            "billing_kind": "credit_pack",
+            "pack_schema_version": "1",
+            "product_line": self.product_line,
+            "credit_pack_order_id": order_id,
+            "account_id": account_id,
+            "pack_key": pack_key,
+            "pack_credits": pack_credits,
+            "price_amount": str(expected_unit_amount),
+            "currency": expected_currency,
+            "expires_days": str(expires_days),
+            "lookup_key": lookup_key,
+        }
+        success_url = self._credit_pack_success_url(pack_key)
+        params: dict[str, Any] = {
+            "mode": "payment",
+            # The reference pack contract is intentionally card-only. Letting
+            # Dashboard automatic payment methods add asynchronous rails would
+            # advertise settlement/refund shapes this bounded template does not test.
+            "payment_method_types": ["card"],
+            "client_reference_id": account_id,
+            "line_items": [{"price": prices.data[0].id, "quantity": 1}],
+            "payment_intent_data": {"metadata": metadata},
+            "success_url": success_url,
+            "cancel_url": self.checkout_cancel_url,
+            "expires_at": int(expires_at.timestamp()),
+            "metadata": metadata,
+        }
+        if customer_id:
+            params["customer"] = customer_id
+        else:
+            params["customer_creation"] = "always"
+            if customer_email:
+                params["customer_email"] = customer_email
+
+        def _create() -> Any:
+            return stripe.checkout.Session.create(
+                **params,
+                idempotency_key=f"credit-pack:{order_id}",
+                **self._request_options,
+            )
+
+        session = await asyncio.to_thread(_create)
+        return (
+            _required_text(
+                getattr(session, "id", None), field="Checkout Session id", max_bytes=255
+            ),
+            _required_https_url(getattr(session, "url", None), field="Checkout Session URL"),
+        )
+
     def _checkout_success_url(self, plan_key: str, interval: str) -> str:
         split = urlsplit(self.checkout_success_url)
         query = dict(parse_qsl(split.query, keep_blank_values=True))
@@ -612,6 +791,19 @@ class StripeGateway:
             {
                 "expected_plan": plan_key,
                 "expected_interval": interval,
+                "checkout_session_id": "{CHECKOUT_SESSION_ID}",
+            }
+        )
+        return urlunsplit(
+            (split.scheme, split.netloc, split.path, urlencode(query, safe="{}"), split.fragment)
+        )
+
+    def _credit_pack_success_url(self, pack_key: str) -> str:
+        split = urlsplit(self.checkout_success_url)
+        query = dict(parse_qsl(split.query, keep_blank_values=True))
+        query.update(
+            {
+                "expected_credit_pack": pack_key,
                 "checkout_session_id": "{CHECKOUT_SESSION_ID}",
             }
         )
@@ -648,10 +840,20 @@ class StripeGateway:
             )
 
         session = await asyncio.to_thread(_create)
-        return (
-            _required_text(getattr(session, "id", None), field="Portal Session id", max_bytes=255),
-            _required_https_url(getattr(session, "url", None), field="Portal Session URL"),
-        )
+        session_raw = _stripe_object_dict(session)
+        session_id = _required_text(session_raw.get("id"), field="Portal Session id", max_bytes=255)
+        session_url = _required_https_url(session_raw.get("url"), field="Portal Session URL")
+        if (
+            not session_id.startswith("bps_")
+            or session_raw.get("object") != "billing_portal.session"
+            or self._object_id(session_raw.get("customer")) != customer_id
+            or self._object_id(session_raw.get("configuration")) != configuration_id
+            or session_raw.get("return_url") != self.portal_return_url
+            or type(session_raw.get("livemode")) is not bool
+            or bool(session_raw.get("livemode")) != self.secret_key.startswith("sk_live_")
+        ):
+            raise RuntimeError("Stripe returned a Portal Session outside the requested contract")
+        return session_id, session_url
 
     async def prepare_plan_change(
         self,

@@ -2,8 +2,13 @@
 
 ```text
 Host identity provider
-  │ verified stable subject through AuthAccountAdapter
+  │ verified stable subject through AuthAccountAdapter / JWT starters
   ▼
+FastAPI root
+  ├─ standalone create_app()
+  └─ host app + install_billing(BillingKernel, prefix)
+       │ native APIRouter + composed lifespan + route-scoped middleware
+       ▼
 FastAPI billing API ───────────────► Stripe request API
   │ catalog/account                  Checkout / Portal / invoice preview
   │ Checkout + Idempotency-Key       pending_if_incomplete / Schedule
@@ -26,6 +31,9 @@ Transactional event processor
   ├─ billing_accounts            locked entitlement projection
   ├─ stripe_invoice_state        cumulative refund/dispute facts
   ├─ credit_ledger/debits        balance audit and usage epochs
+  ├─ credit_pack_orders/lots     one-time cash and expiring funding snapshots
+  ├─ credit_debit_allocations    exact subscription/pack debit provenance
+  ├─ credit_pack_clawback_debts  spent pack funding withdrawn by cash events
   ├─ billing_plan_changes        durable intent/completion state
   ├─ billing_funding_allocations source → delta Invoice lineage
   ├─ billing_clawback_debts      uncollected current-epoch clawbacks
@@ -33,9 +41,16 @@ Transactional event processor
 
 Annual worker ── remote Subscription snapshot ──► same account/invoice locks
 Reconciler    ── Stripe truth after webhook loss ─► same invoice grant guard
+Pack reconciler ── exact Session → PaymentIntent → Charge ─► fenced Event projector
+                  (network outside transactions; token checked before inbox claim)
 
 Next.js reference UI
   └─ never grants access; polls GET /api/account for webhook projection
+
+Authenticated product workload
+  │ WorkloadIdentityAdapter + operation scope + WorkloadOwnerAuthorizer
+  ▼
+optional internal APIRouter ──► EntitlementService ──► credit/account rows
 ```
 
 ## Scope boundary
@@ -63,6 +78,57 @@ explicit token; it is not a deployable authentication scheme.
 Accounts are looked up or created from the verified subject. No route accepts an account
 ID from the browser.
 
+The optional authentication extra supplies a strict asymmetric JWT/JWKS verifier and
+two reference adapters. `PersonalJwtAuthAdapter` maps a verified UUID `sub` to one user
+owner. `TeamJwtAuthAdapter` treats the signed tenant UUID only as a selector, performs a
+live host membership lookup, permits viewers to read only catalog routes, and reserves
+account/recovery data and mutations for billing administrators. The configured billing
+prefix is explicit in `TeamBillingAuthorizationPolicy`; it is never inferred from an
+arbitrary request path.
+
+## FastAPI integration and service boundary
+
+`BillingKernel` validates settings and owns the database, Stripe gateway, catalog,
+authentication adapter, and one lifespan-scoped `BillingServices` graph. The services
+contain the Event processor, Checkout and plan-change coordinators, and
+`EntitlementService`, credit-pack Checkout coordinator, and credit-pack reconciler.
+Access through `kernel.services` fails outside the active
+lifespan, preventing use against an uninitialized or already closed pool.
+
+`create_app()` builds the standalone reference application and preserves its historical
+app-wide CORS, logging, state aliases, and route behavior. `create_billing_router()`
+builds a native `APIRouter`. `install_billing()` is the host integration contract: it
+includes that router in host OpenAPI, scopes browser CORS/Origin handling to public
+billing routes and response hardening to installed billing routes, and leaves unrelated
+host routes and global logging unchanged.
+
+Installation wraps the existing host lifespan rather than replacing it. The host enters
+first, billing enters second, and shutdown reverses that order. An injected pool already
+connected by the host remains host-owned; otherwise the kernel opens and closes its own
+pool. One `Database` object binds to one kernel, preventing one lifecycle owner from
+closing a pool used by another. Duplicate installation, a second kernel for the same
+`Database`, and concurrent activation of one kernel fail explicitly.
+
+The optional internal router calls the same `EntitlementService` through a lazy provider
+after lifespan startup. Workload authentication and an operation scope are necessary but
+not sufficient: `WorkloadOwnerAuthorizer` must also bind that principal and operation to
+the exact `owner_external_ref`. Both adapters default to reject-all. This prevents a
+global service scope from becoming cross-tenant credit authority.
+Routers passed explicitly through `internal_routers` receive no-store/nosniff hardening
+for success, validation, and not-found responses, but never inherit the browser
+CORS/Origin allowance applied to the public billing router. The hook is not a generic
+public-extension mechanism.
+
+The host must register Starlette `CORSMiddleware` before `install_billing` and leave the
+billing middleware outermost. With internal routers installed, lifespan startup rejects
+the inverse order rather than silently letting an outer CORS layer re-add browser headers.
+An arbitrary ASGI wrapper or reverse proxy outside FastAPI is not introspectable; keeping
+internal paths outside browser CORS remains an explicit host deployment contract.
+
+The service facade does not make a product Job and a credit operation one transaction.
+Job state, queue dispatch, outbox/saga repair, concurrency limits, API-key limits, and
+workload audit remain host-owned responsibilities.
+
 ## Why external Stripe reads happen first
 
 Network calls while holding row locks amplify latency and deadlock probability. The
@@ -71,7 +137,9 @@ InvoicePayment references, Subscription snapshots, and plan-change previews outs
 transactions. A short transaction snapshots or revalidates identity, funding lineage,
 and entitlement state before and after remote work.
 
-Checkout uses a durable client request key and claim token. Plan changes use durable
+Checkout uses a durable client request key, claim token, and immutable
+pre-existing-Customer-or-create snapshot; first-Customer replay omits email rather than
+retaining mutable login PII. Plan changes use durable
 intent, expiring leases, and derived Stripe idempotency keys. A crash after an unknown
 remote outcome is retried with the same identity instead of creating a second logical
 operation. Confirmation changes `previewed` to `applying` before remote work and stores
@@ -102,14 +170,27 @@ Paths that touch account and invoice state lock account first, then invoice.
 `001_v3_baseline.sql` directly creates the complete 0.3 schema for fresh installations:
 
 - `billing_accounts`: locally enforced plan, status, credit, expiry and annual state;
-- `stripe_webhook_events`: committed Event inbox with a redacted audit snapshot;
+- `stripe_webhook_events`: committed Event inbox with a minimal allowlisted audit snapshot;
 - `stripe_invoice_state`: immutable Invoice ownership and monotonic refund/dispute facts;
 - `credit_ledger` and `credit_debits`: business-idempotent funding and product usage;
+- `credit_pack_orders`: durable one-time Checkout request snapshot (including nullable
+  pre-existing Customer), PaymentIntent, and cash state;
+- `credit_funding_lots`: independently expiring one-time product-credit funding;
+- `credit_debit_allocations`: exact subscription/pack provenance for each product debit;
+- `credit_pack_clawback_debts`: spent pack funding still owed after a cash clawback;
 - `checkout_claims`: Checkout single-flight and replay identity;
 - `billing_plan_changes`: policy, preview, lease, settlement and recovery state;
 - `billing_funding_allocations`: source-to-delta funding lineage;
 - `billing_clawback_debts`: uncollected current-epoch clawbacks; and
 - `billing_incidents`: deduplicated fail-closed operational work with causal timestamps.
+
+The four pack-specific responsibilities are deliberately separate: an order coordinates
+remote payment/idempotency and cash state, a lot owns remaining/expiring funding, an
+allocation records which source one product debit consumed, and pack debt retains a cash
+clawback after those credits were spent. Combining any pair loses either remote-operation
+identity, independent expiry, source-safe Job refunds, or post-spend liability. This
+normalization is internal to the billing boundary; host entities integrate through the
+router, `EntitlementService`, and reconciler rather than those tables.
 
 Every credit quantity in these tables is an integer atom count. Column names retain the
 domain wording (`credits_balance`, `delta`, `entitlement_delta`) while schema comments
@@ -121,9 +202,15 @@ guards, reconciliation/annual indexes, explicit foreign-key delete actions, and
 `payload_sha256` rolling-compatibility column; signatures authenticate delivery, Event IDs
 identify deliveries, and database constraints provide business-effect idempotency.
 
-Together these ten correctness tables are one backup/restore unit. Restoring account
+Together these fourteen correctness tables are one backup/restore unit. Restoring account
 balances without their inbox, Invoice, allocation, debt, or intent identity can reopen a
 business effect.
+
+Pack provenance is database-enforced rather than merely checked by service code.
+Account-scoped composite foreign keys bind every lot to its order, every allocation to
+its debit and optional lot, and every pack debt or synthetic collection debit to its
+order. Deferred transaction-end constraints verify debit allocation totals and the
+order/lot cash, expiry, outstanding-allocation, and released-debt conservation equations.
 
 The 0.3 baseline is a one-time pre-release lineage reset and has no in-place upgrade path
 from the public v0.2.x tags. Recreate development, demo, and staging databases made by a
@@ -142,6 +229,7 @@ backward compatibility whenever rolling deployment is promised.
 - `customer.subscription.deleted`
 - `charge.refunded`
 - `charge.dispute.created`
+- `payment_intent.succeeded`
 
 Unlisted types are acknowledged and recorded as ignored. Configure production endpoints
 to send only this set.

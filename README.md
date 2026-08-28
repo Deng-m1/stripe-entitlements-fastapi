@@ -1,14 +1,14 @@
-# Stripe Subscription Billing & Entitlements for FastAPI
+# Stripe Billing, Entitlements & Credit Packs for FastAPI
 
 [![CI](https://github.com/Deng-m1/stripe-entitlements-fastapi/actions/workflows/ci.yml/badge.svg)](https://github.com/Deng-m1/stripe-entitlements-fastapi/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12%2B-3776AB.svg)](pyproject.toml)
 
-An open-source Stripe subscription billing and entitlement template for FastAPI,
-PostgreSQL, and Next.js. It implements two complete, selectable plan-change policies,
-three monthly/yearly tiers, annual savings display, Checkout, refunds, disputes, SCA
-recovery, Test Clock renewals, and webhook-authoritative credits under duplicate,
-delayed, concurrent, and out-of-order Events.
+An open-source Stripe billing, SaaS entitlements, and credit-ledger starter for FastAPI,
+PostgreSQL, and Next.js. It includes monthly/yearly subscriptions, exact fractional
+credits, one-time credit packs, two selectable upgrade policies, Checkout, refunds,
+disputes, SCA recovery, Test Clock renewals, and webhook-authoritative accounting under
+duplicate, delayed, concurrent, and out-of-order Events.
 
 > This is an independent community project, not an official Stripe product.
 > It is a reference implementation, not a universal SaaS billing framework and
@@ -18,6 +18,7 @@ delayed, concurrent, and out-of-order Events.
 
 - [Implemented scope](#what-is-completeand-what-is-not)
 - [Plan catalog and annual savings](#plan-catalog)
+- [One-time credit packs](#one-time-credit-packs)
 - [Two plan-change templates](#safe-stripe-plan-transitions-full-price-or-prorated-difference)
 - [Correctness and distributed deployment](#correctness-model)
 - [Quick start](#quick-start)
@@ -54,17 +55,27 @@ per intent. Shared scope:
 
 - one subscription item and one currency (USD);
 - three fixed plans, each available monthly or yearly;
+- three card-funded one-time USD credit packs with independent expiry and source-aware
+  refunds;
+- exact product credits down to `0.000001`, stored as integer atoms rather than floats;
 - yearly invoices fund up to 12 monthly credit grants rather than granting all
   credits at purchase;
 - Checkout creates the first paid subscription;
 - authenticated catalog, account, Checkout, Portal, preview, and confirm APIs;
+- standalone `create_app()` plus native `BillingKernel` / `install_billing` composition
+  for an existing FastAPI root;
+- strict personal/team JWT authentication starters, including catalog-only team viewers;
+- an in-process `EntitlementService` and optional owner-authorized internal workload API;
 - server-controlled plan transitions with Stripe invoice previews and
   Subscription Schedules;
 - a Next.js reference UI for pricing, account state, payment recovery, and
   webhook-backed success polling;
 - PostgreSQL event/business idempotency, row locks, durable plan-change intent,
   cross-Invoice funding allocation, refund/dispute convergence, and fail-closed
-  incidents.
+  incidents;
+- a runnable host-owned Job + billing outbox + dispatch outbox + fencing example;
+- persistent credit-pack reconciliation from exact Session, PaymentIntent, and Charge
+  identities after webhook loss.
 
 It does **not** implement multi-currency, seats or quantities, trials, coupons,
 tax calculation, metered billing, arbitrary mixed invoice items, revenue
@@ -113,6 +124,28 @@ support must clear first are documented in
 The API returns these as structured entitlements. Product code still has to
 enforce them; displaying an entitlement is not enforcement.
 
+## One-time credit packs
+
+The reference catalog also includes one-time packs. Packs add spendable product credits;
+they never add plan features, raise limits, or alter subscription tier direction.
+
+| Pack | Price | Credits | Default expiry |
+| --- | ---: | ---: | ---: |
+| Boost 100 | $15 | 100 | 365 days |
+| Boost 500 | $59 | 500 | 365 days |
+| Boost 2,000 | $199 | 2,000 | 365 days |
+
+Pack Checkout uses Stripe Hosted Checkout in `mode=payment` and explicitly restricts the
+reference contract to cards; Dashboard automatic payment methods cannot silently add an
+untested settlement rail. Only a signed, exact `payment_intent.succeeded` projection
+creates a funding lot; the browser return and `checkout.session.completed` do not grant
+credits. Product debits are allocated FEFO to their exact subscription or pack sources.
+Partial cash refunds, disputes, expiry, product refunds, and debt collected from later
+funding remain traceable and converge in either delivery order. See
+[Credit packs and multi-source funding](docs/CREDIT_PACKS.md).
+Host product code stays on the Checkout/router/`EntitlementService` facade; it does not
+need to query or coordinate the four internal pack accounting tables.
+
 ## Safe Stripe plan transitions: full price or prorated difference
 
 Abbreviations combine plan and interval: `SM` is Starter Monthly, `SY` is
@@ -151,7 +184,8 @@ behavior are in [Plan transition policies](docs/PLAN_TRANSITIONS.md).
 - Stripe signature verification authenticates the exact request body before parsing.
   Stripe Event IDs guard duplicate deliveries; `(stripe_invoice_id, grant_slot)`
   independently guards the same business grant through another Event or worker.
-  PostgreSQL retains a redacted Event snapshot, not the raw body or a payload digest.
+  PostgreSQL retains only a minimal allowlist of operational Event identifiers/state,
+  never recursive Stripe free text, the raw body, or a payload digest.
 - Funding attribution uses exact Customer/Subscription identity, Checkout claim/session
   identity, and server-retrieved Price-to-Product catalog identity. Stripe metadata such
   as `product_line` remains useful for operations but is not a duplicate authorization
@@ -161,12 +195,16 @@ behavior are in [Plan transition policies](docs/PLAN_TRANSITIONS.md).
 - `(event.created, event_rank)` prevents older/weaker subscription projections
   from overwriting newer state.
 - Refund/dispute facts persist even when they arrive before the paid grant.
+- Pack orders, funding lots, debit allocations, and durable clawback debt preserve the
+  exact source of one-time credits across expiry, product refunds, and cash refunds.
 - Delta allocations preserve source/target Invoice lineage across refunds and disputes.
 - If a current-epoch clawback is larger than the spendable balance,
   `billing_clawback_debts` retains the missing units and consumes later same-epoch
   usage refunds or delta grants before they become spendable.
 - Checkout and plan-change operations use durable, caller-replayable request
   identities and Stripe idempotency keys.
+- Credit-pack Checkout also snapshots its original Customer-or-create mode; a webhook
+  or changed login email cannot alter a same-key replay after an unknown remote result.
 - Confirm atomically moves a preview to `applying` and records `remote_started_at`
   before Stripe mutation. Unknown outcomes younger than 23 hours use only the same
   derived Stripe key; older ambiguity stops for operator proof.
@@ -190,6 +228,7 @@ Authenticated billing routes:
 | GET | `/api/catalog` | ordered prices and structured entitlements |
 | GET | `/api/account` | webhook-projected plan, credits, enforcement and pending state |
 | POST | `/api/checkout` | first paid subscription; requires `Idempotency-Key` |
+| POST | `/api/credit-packs/checkout` | one-time pack Checkout; requires `Idempotency-Key` |
 | POST | `/api/billing/portal` | safe Portal Session; requires `Idempotency-Key` |
 | POST | `/api/billing/change/preview` | durable preview; requires `Idempotency-Key` |
 | POST | `/api/billing/change/confirm` | confirm the opaque `preview_id` |
@@ -203,8 +242,20 @@ Authenticated billing routes:
 - an explicit demo token is configured.
 
 Replace it with verified session/OIDC/JWT authentication before deployment. The
-demo token is not production auth. Exact JSON shapes and frontend configuration
-are documented in [web/README.md](web/README.md).
+demo token is not production auth. The optional `auth` extra supplies a strict
+asymmetric JWT/JWKS verifier plus personal and team adapters. The team adapter proves
+live membership for the signed tenant selector; viewers may read only catalog routes,
+while account/recovery state and every mutation require `billing_admin`. When billing
+uses a route prefix, pass that same explicit prefix to
+`TeamBillingAuthorizationPolicy`; it never guesses path ownership. See the
+[adoption guide](docs/ADOPTION.md#connect-authentication-and-tenant-authorization) and
+the runnable [auth starters](examples/auth_starters/README.md).
+
+Server-to-server product enforcement is separate from browser billing. The optional
+internal router exposes entitlement check and owner-bound credit charge/refund routes.
+It defaults to reject-all workload authentication and reject-all owner authorization;
+an operation scope alone never permits a service to select every tenant. Exact JSON
+shapes and frontend configuration are documented in [web/README.md](web/README.md).
 
 ## Stripe API versions are two separate contracts
 
@@ -231,9 +282,30 @@ not infer request, Event API view, or endpoint payload versions from one another
 Requirements: Python 3.12+, `uv`, Docker, Node.js 22+, npm, Stripe CLI, and a
 Stripe test-mode account.
 
+The commands below assume an exact release-tag source checkout or the matching source
+distribution. The Wheel is intentionally the backend runtime boundary: it contains the
+Python package, catalog, and migrations, while the source distribution also contains the
+environment templates, operator scripts, Docker/Compose files, examples, tests, and
+Next.js reference UI.
+
+The version-tag workflow attaches the Wheel, source distribution, checksums, and immutable
+container digest to the matching GitHub Release. It also publishes
+`ghcr.io/deng-m1/stripe-entitlements-fastapi` with exact-version, minor-version, commit,
+and `latest` tags. Moving minor-version and `latest` tags only advance within their
+respective release channels; publishing an older patch does not roll them back. GitHub
+Release assets are not a claim that the package was published to PyPI; use the exact
+reviewed artifact or release tag documented for your deployment.
+
+The published container is currently native `linux/amd64`, not a multi-architecture
+manifest. ARM64 users should install the Wheel/source distribution or build and verify
+the pinned Dockerfile on their own platform.
+
 Version 0.3 requires a fresh database. If the PostgreSQL volume was initialized by a
 v0.2.x checkout, preserve any evidence you need and recreate that development volume;
 there is intentionally no in-place upgrade across the pre-release baseline reset.
+The `migrate` command is still required on a new installation because it initializes the
+fourteen-table schema; it does not imply that an unreleased product needs a historical
+data migration or v0.2 compatibility path.
 
 ```bash
 cp .env.example .env
@@ -242,19 +314,19 @@ chmod 600 .env
 docker compose up -d postgres
 uv sync --frozen
 uv run --env-file .env stripe-entitlements migrate
-uv run --env-file .env stripe-entitlements doctor
 ```
 
-`doctor` is read-only and does not call Stripe by default. It checks the local package,
-catalog, configuration, PostgreSQL schema and migration checksums without printing
-secrets or DSNs. Use `doctor --json` for automation. The explicit
-`doctor --stripe-network` mode adds read-only Stripe Account and Portal retrieval, but it
-still does not claim webhook endpoint or signed-payload evidence.
+`stripe-entitlements migrate` reads only `DATABASE_URL`; a schema-init Job does not need
+the Stripe API key, webhook secret, or browser configuration. The full `.env` command
+above is convenient for local setup, but production should inject a database-only secret
+into the migration Job and keep Stripe credentials on the API/workers that use them.
 
 Before bootstrap, replace `STRIPE_SECRET_KEY`, the local demo values, product line,
-lookup prefix, catalog path and transition policy in `.env`. Keep that file ignored and
-private; never commit credentials. The backend secret, later Stripe CLI login and
-browser publishable key must all belong to the same Stripe test account.
+lookup prefix, catalog path and transition policy in `.env`. The Portal ID and webhook
+secret remain placeholders only until the next steps produce their real test-mode values.
+Keep that file ignored and private; never commit credentials. The backend secret, later
+Stripe CLI login and browser publishable key must all belong to the same Stripe test
+account.
 
 Bootstrap or verify the dedicated test catalog and safe Portal configuration:
 
@@ -272,7 +344,7 @@ Start signed forwarding in a separate terminal:
 ```bash
 stripe login
 stripe listen \
-  --events checkout.session.completed,checkout.session.expired,invoice.paid,invoice.payment_failed,customer.subscription.updated,customer.subscription.deleted,charge.refunded,charge.dispute.created \
+  --events checkout.session.completed,checkout.session.expired,invoice.paid,invoice.payment_failed,customer.subscription.updated,customer.subscription.deleted,charge.refunded,charge.dispute.created,payment_intent.succeeded \
   --forward-to http://127.0.0.1:8000/webhooks/stripe
 ```
 
@@ -282,6 +354,19 @@ payload; it must not be copied from `STRIPE_API_VERSION`. Follow
 [the local discovery procedure](docs/ADOPTION.md#discover-a-local-stripe-cli-payload-version)
 when that contract is not yet known: start once with a candidate only for the diagnostic
 delivery, then update `.env` and restart before beginning Checkout.
+
+After the real Portal ID, signing secret, and signed-payload version are configured, run
+the read-only preflight:
+
+```bash
+uv run --env-file .env stripe-entitlements doctor
+```
+
+`doctor` does not call Stripe by default. It checks the local package, catalog,
+configuration, PostgreSQL schema, and migration checksums without printing secrets or
+DSNs. Use `doctor --json` for automation. The explicit `doctor --stripe-network` mode
+adds read-only Stripe Account, catalog, and Portal retrieval, but it still does not claim
+webhook endpoint or signed-payload evidence.
 
 Start or restart the API after the final webhook contract is known:
 
@@ -321,11 +406,29 @@ organization or tenant ID instead. Email and browser-supplied account IDs are ne
 ownership authority.
 
 The repository supplies the auth protocol, account resolver, billing HTTP APIs and
-atomic credit primitives. The host still owns JWT/session verification, tenant
-membership and billing-admin authorization, product-limit enforcement, and the durable
-workflow that coordinates a Job with a credit charge or refund. `CreditService` and a
-host Job insert are not one transaction, so production job admission needs an
-idempotent outbox/saga rather than a best-effort sequence.
+atomic credit primitives. It now also supplies personal/team JWT starters,
+`BillingKernel` / `BillingServices`, a native `APIRouter` installer, an
+`EntitlementService`, and an optional internal workload router. The host still owns
+issuer/session configuration, tenant membership data, workload-to-owner grants,
+product-limit enforcement, and the durable workflow that coordinates a Job with a
+credit charge or refund. `CreditService` and a host Job insert are not one transaction,
+so production job admission needs an idempotent outbox/saga rather than a best-effort
+sequence. A complete runnable implementation is in
+[`examples/job_outbox/`](examples/job_outbox/README.md).
+
+Use `create_app(..., auth_adapter=...)` for the standalone service. For an existing
+FastAPI root, construct `BillingKernel`, then call
+`install_billing(app, kernel, prefix="/stripe")` before startup. The installer composes
+the existing lifespan, reuses a host-connected pool without taking ownership, includes
+prefixed routes in host OpenAPI, scopes browser CORS/Origin handling to public billing
+routes, and scopes response hardening to installed billing routes. It does not alter
+unrelated host routes or global logging. See the
+[adoption guide](docs/ADOPTION.md#compose-the-fastapi-application) for complete runnable
+personal, team, composed-lifespan, and internal-router examples.
+
+Bind one `Database` object to one kernel; a second binding fails fast so one lifecycle
+cannot close another kernel's pool. Routers passed explicitly through `internal_routers`
+receive no-store/nosniff hardening but never inherit the public browser CORS permission.
 
 Product credits support six exact fractional digits without binary floating point. A
 Python integer passed to `CreditService` retains its historical meaning of whole credits;
@@ -382,50 +485,56 @@ privacy rules, and reproducible workflow.
 Evidence is split by execution layer; collecting a test or retaining an older run does
 not prove the current tree against Stripe's network.
 
-Local and networked 0.3 baseline-candidate evidence was rerun on 2026-08-28 from a
-working tree based on `main@4df7f73`; it is not evidence for that base commit and must be
-rebound to the exact final commit before release:
+The current 0.3 working-tree candidate passed 1,187 network-free backend tests against
+disposable PostgreSQL 17, 189 frontend tests, and all 10 opt-in Stripe test-mode cases.
+Those results are not yet bound to a final commit, container, signed browser transport,
+or production release; all applicable gates must be rebound to the release commit.
 
-- the local candidate passed 787 backend tests against disposable PostgreSQL 17; the
-  full collection contained 796 cases and 9 `real_stripe` cases were deselected;
-- the local candidate passed 155 frontend tests, lint, typecheck, and a production build;
+The artifact and network evidence below belongs to the earlier 2026-08-28 0.3
+baseline candidate based on `main@4df7f73`; it has not been rebound to the current
+phase-1 tree and must be rerun before release:
+
 - an independently installed candidate Wheel loaded its packaged catalog and complete
   schema baseline from an arbitrary working directory and migrated a fresh PostgreSQL 17
   database; the candidate Docker image applied the same baseline over an internal-only
   network, then ran as UID/GID 10001 with a read-only root while a host-side `/health`
   request returned `ok=true` and `database=true`;
-- the current candidate passed all 9 real Stripe cases against test mode, including strict
+- that candidate passed all 9 real Stripe cases against test mode, including strict
   run-owned cleanup, paid/refund projection, both upgrade policies, the four-case failed-
   payment matrix, annual Schedule construction, and the complete Test Clock renewal
   lifecycle;
-- `full_period_reset` and `prorated_delta` each passed the current production-build
-  real-browser lifecycle through explicit Stripe CLI signed forwarding: decline,
-  Checkout 3DS, Starter/300 projection, upgrade SCA, Pro/1,000 projection, seven related
-  Events, zero unrelated Events, exact three-essential-Event binding, and strict cleanup;
+- before the credit-pack browser lane was added, `full_period_reset` and
+  `prorated_delta` each passed the subscription/upgrade production-build lifecycle
+  through explicit Stripe CLI signed forwarding: decline, Checkout 3DS, Starter/300
+  projection, upgrade SCA, Pro/1,000 projection, seven related Events, zero unrelated
+  Events, exact three-essential-Event binding, and strict cleanup;
 - the final 48.800-second public demo remains the separately reviewed `0.2.0` visual
   artifact: 1,464 decoded frames, no long black segment, zero forbidden-term OCR matches,
   15/15 semantic scene checks, and 1080p/30 fps H.264 with 48 kHz stereo AAC at -20.0
   LUFS. It is not relabeled as proof of the changed `0.2.2` code;
 - no live-production webhook payload verification is claimed.
 
+Two later 2026-08-28 temporary-endpoint working-tree runs completed the expanded
+subscription + credit-pack + Portal + product-Job browser lifecycle for both policies.
+Each bound the current five essential Events, found zero unrelated Events, observed 11
+account-related Events, and ended at Pro/1,020 after strict run-owned cleanup. Those
+artifacts predate the final hardening changes and do not embed a final Git commit, so they
+are regression evidence—not release-commit proof—and must be rerun after the final commit.
+
 CLI signed forwarding proves the raw-signature/application/database path but does not
 prove temporary Webhook Endpoint metadata or endpoint-specific version pinning. The
-latest separate endpoint-mode evidence remains the 2026-08-02 dual-policy run: both
-policies used isolated temporary Dahlia endpoints, reached Pro/1,000, bound the same
-three essential Events, found zero unrelated Events, and completed strict cleanup while
-the independent Event API view reported Clover.
-The 2026-08-28 endpoint retry stopped before account creation or Checkout because the
-account-less Quick Tunnel hostname remained DNS `NXDOMAIN`; cleanup recovery verified
-the temporary endpoint was closed. The successful current-browser claims therefore name
-Stripe CLI transport and do not claim fresh endpoint-metadata evidence.
+2026-08-02 subscription-only dual-policy endpoint runs remain historical Dahlia/Clover
+version evidence. An earlier 2026-08-28 retry stopped before account creation because its
+Quick Tunnel hostname remained DNS `NXDOMAIN`; a later pair of expanded endpoint runs did
+complete as described above. None is substituted for a final-commit rerun.
 
 Historical pre-hardening evidence from earlier on 2026-08-01 was 239 local/backend
 tests, 7 real Stripe test-mode tests, 60 frontend tests, and 2 browser policy runs. It is
-useful regression history only, not current-tree network evidence. Those historical
-browser runs happened to observe five signed account-related Events per run; the current
-gate instead requires exactly three identity-bound essential Events—the run's Checkout,
-initial paid Invoice, and settlement paid Invoice—and validates every additional
-account-matched Event without requiring an incidental total of five.
+useful regression history only, not current-tree network evidence. The current expanded
+gate requires exactly five identity-bound essential Events: subscription Checkout,
+initial and settlement paid Invoices, credit-pack Checkout, and the pack's authoritative
+`payment_intent.succeeded`. It validates every additional account-matched Event without
+fixing the incidental total Event count.
 
 Default CI:
 
@@ -449,13 +558,15 @@ transactions, locks, constraints, duplicate/out-of-order events, refunds,
 annual-worker concurrency, Checkout, plan-change leases, API responses, and
 fail-closed paths.
 
-The opt-in `real_stripe` suite rejects live keys. Its current nine-case inventory is
+The opt-in `real_stripe` suite rejects live keys. Its current ten-case inventory is
 designed to verify:
 
 - creation of isolated real test-mode Product/Price/Customer/Subscription
   objects;
 - a real paid monthly invoice projected to 300 credits;
 - a real $9.50 half refund converging to 150 credits;
+- a real one-time pack PaymentIntent, exact metadata/Customer/Charge lineage, partial and
+  full cash clawback, product refund interaction, and strict run-owned cleanup;
 - outbound Dahlia requests for a real mid-cycle Starter Monthly → Pro Monthly
   change, charged as a new $49 full-price period with no old-invoice proration,
   then projected from its separately versioned paid Event to Pro/1,000 credits;
@@ -474,9 +585,9 @@ designed to verify:
   run-marked inventory error;
 - direct Event polling and PostgreSQL projection for those networked API cases.
 
-All nine assertions passed on the 0.3 baseline candidate on 2026-08-28. Future
-releases must rerun them with an isolated test account rather than treating this result
-as permanent proof.
+The nine pre-pack assertions passed on the earlier 0.3 baseline candidate on 2026-08-28.
+The added credit-pack case and every changed assertion still require a run on the final
+release commit with an isolated test account; the older result is not permanent proof.
 
 The Test Clock and plan-change cases do not prove signed endpoint delivery. The
 separate opt-in browser runner creates a temporary test endpoint and exercises a
@@ -486,17 +597,15 @@ lifecycle. Run it once per transition policy. Use
 `scripts/run_browser_e2e.sh` for browser/transport evidence; a skipped or partially
 completed run is not evidence.
 
-The current browser verifier binds its final result to one account, Checkout Session,
-initial Invoice, settlement Invoice, and their three essential signed Events. It also
-requires no unresolved incident for that identity and verifies one 700-credit delta
-allocation or no allocation according to policy. The older five-Event observation is
-not a fixed assertion. Both 0.3 candidate policies passed on 2026-08-28 through Stripe CLI
-signed forwarding; each run observed seven account-related Events, zero unrelated
-Events, exactly three essential Events, and a Clover signed payload/Event API view. CLI
-forwarding does not prove temporary endpoint metadata. The latest separate temporary-
-endpoint evidence remains the 2026-08-02 dual-policy run with signed Dahlia payloads and
-an independent Clover Event API view. The incidental count of seven is not an invariant,
-and no live-production payload is claimed.
+The current browser verifier binds its final result to one account, two Checkout
+Sessions, the initial and settlement Invoices, the pack PaymentIntent/Charge/lot, and
+exactly five essential signed Events. It also requires no unresolved incident for those
+identities, verifies one 700-credit delta allocation or no allocation according to
+policy, completes the hosted Portal round trip, and proves the Job charge/replay/refund
+equations. The earlier pre-pack Stripe CLI runs bound three essential Events and remain
+subscription/upgrade history only. The later expanded endpoint artifacts bound five,
+but still predate the final commit. Incidental totals such as seven or 11 are not an
+invariant, and no live-production payload is claimed.
 
 Manual test-mode observations from 2026-07-31 additionally covered:
 
@@ -513,10 +622,14 @@ customer, Event, Invoice, or secret identifiers are committed. See
 ## SQL migrations and production cutover
 
 `stripe-entitlements migrate` applies the complete `001_v3_baseline.sql` to a fresh
-PostgreSQL database. It directly creates all ten correctness tables, final constraints,
+PostgreSQL database. It directly creates all fourteen correctness tables, final constraints,
 partial uniqueness guards, coordination indexes, immutable Invoice ownership, and causal
 incident timestamps. There are no historical backfills, FK rebuilds, or deprecated audit-
 digest compatibility columns in a fresh installation.
+
+The migration process loads only `DATABASE_URL`. This permits a least-privilege schema
+init Job with no Stripe key or webhook secret; normal API and worker processes still
+require their complete runtime settings.
 
 This is an intentional pre-1.0 lineage reset. Version 0.3 cannot upgrade a database
 initialized by a public v0.2.x tag: recreate old development, demo, and staging databases.
@@ -526,8 +639,8 @@ is immutable and future schema changes must be appended as `002_...sql` and late
 
 The runner serializes application, verifies every bundled checksum, and allows later rows
 for future backward-compatible rolling deploys. Apply every migration required by the
-target version before routing traffic to it. Back up all ten correctness tables together
-and test point-in-time restore.
+target version before routing traffic to it. Back up all fourteen correctness tables
+together and test point-in-time restore.
 
 Production is a deliberate separate cutover:
 
@@ -549,8 +662,12 @@ Use the [release checklist](.github/RELEASE_CHECKLIST.md) and
 
 ## Repository map
 
-- `src/stripe_entitlements/`: FastAPI, processor, gateway, workers, auth and
-  plan-change coordinator;
+- `src/stripe_entitlements/`: standalone/composable FastAPI integration, billing and
+  entitlement services, processor, gateway, workers, auth and plan-change coordinator;
+- `examples/auth_starters/`: runnable personal/team JWT entrypoints and team membership
+  schema;
+- `examples/job_outbox/`: runnable Job, billing outbox, queue outbox, retry, and fencing
+  workflow with a bounded network-free PostgreSQL demo;
 - `migrations/`: ordered PostgreSQL schema;
 - `plans.toml`: stable plan identity, prices and entitlements;
 - `scripts/bootstrap_stripe.py`: catalog and safe Portal bootstrap/verification;
@@ -607,11 +724,27 @@ strings plus atom strings, and PostgreSQL stores only integer atoms. Python, Pos
 TOML and JavaScript floating-point values are deliberately rejected at authoritative
 boundaries. See [Exact fractional product credits](docs/CREDIT_PRECISION.md).
 
+### Does it support one-time credit packs?
+
+Yes. The reference implements fixed-price, card-funded USD packs, Hosted Checkout, exact
+funding lots, FEFO consumption, independent expiry, partial/full cash refunds, disputes,
+product-operation refunds, cross-epoch debt, and missed-webhook reconciliation. Packs do
+not grant subscription features or limits. Applications may add an active-subscription
+purchase policy at their own admission boundary; additional payment methods require an
+explicitly tested settlement/refund policy rather than a Dashboard-only toggle.
+
 ### Can multiple API and worker instances share it?
 
 Yes, when they share one PostgreSQL primary and identical configuration. Correctness
 uses database locks, constraints, leases, and idempotency rather than process memory.
 PostgreSQL is still a stateful dependency that needs HA, backups, and tested restore.
+
+### Can I install it into an existing FastAPI application?
+
+Yes. `BillingKernel` owns the validated dependency graph and `install_billing` adds a
+native, optionally prefixed router while composing the host lifespan. Public billing
+middleware remains route-scoped, and a host-connected `Database` pool stays host-owned.
+Use `create_app` when billing is the standalone root instead.
 
 For public-site metadata, canonical configuration, social previews, structured data,
 and indexing checks, see the [SEO runbook](docs/SEO.md).

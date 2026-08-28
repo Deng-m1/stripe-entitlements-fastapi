@@ -69,6 +69,12 @@ def test_credit_amount_enforces_postgresql_bigint_atom_boundary() -> None:
         credit_atoms("9223372036855")
 
 
+def test_credit_amount_serializes_aggregates_spanning_multiple_bigint_rows() -> None:
+    aggregate = MAX_CREDIT_ATOMS * 3
+    assert CreditAmount.from_atoms(aggregate).atoms == aggregate
+    assert credit_decimal(aggregate) == "27670116110564.327421"
+
+
 def test_credit_scale_is_an_explicit_protocol_constant() -> None:
     assert CREDIT_SCALE == 1_000_000
 

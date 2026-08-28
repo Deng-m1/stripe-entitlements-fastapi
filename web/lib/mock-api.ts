@@ -9,6 +9,7 @@ import type {
 } from "@/lib/types";
 import {
   CREDIT_SCALE,
+  addCreditDecimals,
   creditAmountFromDecimal,
   creditAmountFromEntitlement,
 } from "@/lib/credit-amount";
@@ -52,10 +53,15 @@ export function createMockBillingApi(
     credits: {
       balance: initialBalance.decimal,
       balance_atoms: initialBalance.atoms,
+      subscription_balance: initialBalance.decimal,
+      subscription_balance_atoms: initialBalance.atoms,
+      purchased_balance: "0",
+      purchased_balance_atoms: "0",
       grant_amount: starterGrant.decimal,
       grant_amount_atoms: starterGrant.atoms,
       scale: CREDIT_SCALE,
       next_grant_at: futureIso(21),
+      credit_packs: [],
     },
     entitlements: entitlementsFor("starter"),
     entitlements_enforceable: true,
@@ -136,6 +142,10 @@ export function createMockBillingApi(
     async createCheckout(input) {
       const target = plan(input.plan_key);
       const targetCredits = planCreditAmount(target);
+      const total = addCreditDecimals(
+        targetCredits.decimal,
+        account.credits.purchased_balance,
+      );
       pendingProjection = {
         ...account,
         plan_key: target.key,
@@ -143,8 +153,11 @@ export function createMockBillingApi(
         subscription_status: "active",
         current_period_end: futureIso(input.interval === "year" ? 365 : 30),
         credits: {
-          balance: targetCredits.decimal,
-          balance_atoms: targetCredits.atoms,
+          ...account.credits,
+          balance: total.decimal,
+          balance_atoms: total.atoms,
+          subscription_balance: targetCredits.decimal,
+          subscription_balance_atoms: targetCredits.atoms,
           grant_amount: targetCredits.decimal,
           grant_amount_atoms: targetCredits.atoms,
           scale: targetCredits.scale,
@@ -163,8 +176,55 @@ export function createMockBillingApi(
         url: successUrl.toString(),
       };
     },
+    async createCreditPackCheckout(input) {
+      const pack = catalog.credit_packs.find((item) => item.key === input.pack_key);
+      if (!pack) throw new Error(`Unknown demo credit pack: ${input.pack_key}`);
+      const purchased = addCreditDecimals(
+        account.credits.purchased_balance,
+        pack.credits,
+      );
+      const total = addCreditDecimals(
+        account.credits.subscription_balance,
+        purchased.decimal,
+      );
+      pendingProjection = {
+        ...account,
+        credits: {
+          ...account.credits,
+          balance: total.decimal,
+          balance_atoms: total.atoms,
+          purchased_balance: purchased.decimal,
+          purchased_balance_atoms: purchased.atoms,
+          credit_packs: [
+            ...account.credits.credit_packs,
+            {
+              lot_id: `demo-lot-${pack.key}`,
+              pack_key: pack.key,
+              checkout_session_id: `cs_test_demo_${pack.key}`,
+              remaining: pack.credits,
+              remaining_atoms: pack.credits_atoms,
+              expires_at: futureIso(pack.expires_days),
+            },
+          ],
+        },
+      };
+      projectionPollsRemaining = 1;
+      const successUrl = new URL(input.success_url);
+      successUrl.searchParams.set("expected_credit_pack", pack.key);
+      successUrl.searchParams.set(
+        "checkout_session_id",
+        `cs_test_demo_${pack.key}`,
+      );
+      return {
+        session_id: `cs_test_demo_${pack.key}`,
+        url: successUrl.toString(),
+      };
+    },
     async createPortal(returnUrl) {
-      return { url: `${returnUrl}?portal=demo` };
+      return {
+        session_id: "bps_demo_reference",
+        url: `${returnUrl}?portal=demo`,
+      };
     },
     async previewPlanChange(input) {
       const result = preview(input);
@@ -177,6 +237,10 @@ export function createMockBillingApi(
       const target = plan(result.target_plan_key);
       const targetCredits = planCreditAmount(target);
       if (result.timing === "immediate") {
+        const total = addCreditDecimals(
+          targetCredits.decimal,
+          account.credits.purchased_balance,
+        );
         pendingProjection = {
           ...account,
           plan_key: target.key,
@@ -187,6 +251,10 @@ export function createMockBillingApi(
           entitlements_enforceable: true,
           credits: {
             ...account.credits,
+            balance: total.decimal,
+            balance_atoms: total.atoms,
+            subscription_balance: targetCredits.decimal,
+            subscription_balance_atoms: targetCredits.atoms,
             grant_amount: targetCredits.decimal,
             grant_amount_atoms: targetCredits.atoms,
           },
@@ -237,10 +305,15 @@ export function demoAccount(
     credits: {
       balance: selectedCredits.decimal,
       balance_atoms: selectedCredits.atoms,
+      subscription_balance: selectedCredits.decimal,
+      subscription_balance_atoms: selectedCredits.atoms,
+      purchased_balance: "0",
+      purchased_balance_atoms: "0",
       grant_amount: selectedCredits.decimal,
       grant_amount_atoms: selectedCredits.atoms,
       scale: selectedCredits.scale,
       next_grant_at: futureIso(21),
+      credit_packs: [],
     },
     entitlements: selected.entitlements,
     entitlements_enforceable: true,

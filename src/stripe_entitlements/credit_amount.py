@@ -62,10 +62,10 @@ def credit_atoms(value: Any, *, field: str = "credit amount", allow_zero: bool =
 
 
 def credit_decimal(atoms: int, *, field: str = "credit atoms") -> str:
-    """Serialize non-negative atoms as one canonical, exponent-free decimal string."""
+    """Serialize a non-negative atom aggregate as canonical exponent-free decimal."""
 
-    if type(atoms) is not int or atoms < 0 or atoms > MAX_CREDIT_ATOMS:
-        raise ValueError(f"{field} must be a non-negative PostgreSQL bigint integer")
+    if type(atoms) is not int or atoms < 0:
+        raise ValueError(f"{field} must be a non-negative integer")
     whole, fractional = divmod(atoms, CREDIT_SCALE)
     if not fractional:
         return str(whole)
@@ -91,13 +91,13 @@ def checked_add_atoms(left: int, right: int, *, field: str = "credit balance") -
 
 @dataclass(frozen=True, slots=True, order=True)
 class CreditAmount:
-    """An exact, non-negative product-credit quantity stored as integer atoms."""
+    """An exact non-negative quantity; aggregates may span multiple bigint rows."""
 
     atoms: int
 
     def __post_init__(self) -> None:
-        if type(self.atoms) is not int or self.atoms < 0 or self.atoms > MAX_CREDIT_ATOMS:
-            raise ValueError("credit atoms must be a non-negative PostgreSQL bigint integer")
+        if type(self.atoms) is not int or self.atoms < 0:
+            raise ValueError("credit atoms must be a non-negative integer")
 
     @classmethod
     def parse(

@@ -1,5 +1,9 @@
 # Wave1 无密钥预检报告（LOCAL_STRIPE_PRECHECK）
 
+> 历史工件：本文件绑定 2026-08-26 的 pre-credit-pack 测试树；其中 9-case/733-test
+> 计数不得用于当前 10-case 套件。当前命令和成功判据见
+> [LOCAL_STRIPE_REAL_REGRESSION.md](LOCAL_STRIPE_REAL_REGRESSION.md)。
+
 - 日期：2026-08-26（UTC）
 - 分支：`cursor/stripe-promo-ui-expand-7789`（基于 commit `220a734`）
 - 说明：`docs/plans/LOCAL_STRIPE_REAL_REGRESSION.md` 不存在，故按预检清单执行并记录于本文件。

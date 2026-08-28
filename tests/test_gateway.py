@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from scripts.bootstrap_stripe import _mode, _safe_portal, ensure_price
+from scripts.bootstrap_stripe import _mode, _safe_portal, ensure_pack_price, ensure_price
 from stripe_entitlements.checkout import CheckoutCreationRejected
 from stripe_entitlements.plan_changes import PlanChangeContext
 from stripe_entitlements.stripe_gateway import StripeGateway
@@ -37,6 +38,18 @@ def _safe_portal_payload(
             "subscription_update": {"enabled": False},
             "subscription_cancel": {"enabled": True, "mode": "at_period_end"},
         },
+    }
+
+
+def _safe_portal_session_payload() -> dict[str, object]:
+    return {
+        "id": "bps_test",
+        "object": "billing_portal.session",
+        "customer": "cus_test",
+        "configuration": "bpc_test",
+        "return_url": "http://localhost:3000/account",
+        "livemode": False,
+        "url": "https://billing.stripe.test/session",
     }
 
 
@@ -72,6 +85,13 @@ def _single_invoice_payment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "stripe_entitlements.stripe_gateway.stripe.InvoicePayment.list",
         list_invoice_payments,
+    )
+    monkeypatch.setattr(
+        "stripe_entitlements.stripe_gateway.stripe.PaymentIntent.retrieve",
+        lambda payment_intent_id, **kwargs: StripeObject(
+            id=payment_intent_id,
+            metadata={},
+        ),
     )
 
 
@@ -788,9 +808,13 @@ async def test_checkout_uses_pinned_version_and_server_built_success_query(
     assert session_id == "cs_test"
     assert session_url.endswith("#stripe-hosted-state")
     success_url = str(captured["success_url"])
-    assert "expected_plan=starter" in success_url
-    assert "expected_interval=month" in success_url
-    assert "checkout_session_id={CHECKOUT_SESSION_ID}" in success_url
+    parsed_success_url = urlsplit(success_url)
+    assert parsed_success_url.fragment == ""
+    assert parse_qs(parsed_success_url.query) == {
+        "expected_plan": ["starter"],
+        "expected_interval": ["month"],
+        "checkout_session_id": ["{CHECKOUT_SESSION_ID}"],
+    }
     assert captured["stripe_version"] == "2026-06-24.dahlia"
     assert captured["subscription_data"]["metadata"]["claim_token"] == "claim-1"
     assert captured["metadata"]["product_line"] == "example-entitlements"
@@ -1015,6 +1039,162 @@ def test_bootstrap_replaces_price_outside_runtime_policy(monkeypatch, catalog) -
     assert deactivated == ["price_metered"]
 
 
+def test_bootstrap_replaces_drifted_credit_pack_price(monkeypatch, catalog) -> None:  # type: ignore[no-untyped-def]
+    pack = catalog.require_credit_pack("boost-100")
+    product = StripeObject(
+        id="prod_pack_boost_100",
+        metadata={"product_line": "example-entitlements", "credit_pack": pack.key},
+    )
+    drifted = StripeObject(
+        id="price_pack_recurring_drift",
+        lookup_key="ent_pack_boost-100",
+        product={"id": product.id, "active": True, "metadata": product.metadata},
+        active=True,
+        type="recurring",
+        currency="usd",
+        unit_amount=1500,
+        recurring={"interval": "month"},
+        billing_scheme="per_unit",
+        tax_behavior="unspecified",
+        tiers_mode=None,
+        transform_quantity=None,
+        custom_unit_amount=None,
+        currency_options=None,
+        metadata=product.metadata,
+    )
+    created: dict[str, object] = {}
+    deactivated: list[str] = []
+    monkeypatch.setattr(
+        "scripts.bootstrap_stripe.stripe.Price.list",
+        lambda **kwargs: SimpleNamespace(data=[drifted]),
+    )
+    monkeypatch.setattr(
+        "scripts.bootstrap_stripe.stripe.Price.create",
+        lambda **kwargs: created.update(kwargs) or StripeObject(id="price_pack_replacement"),
+    )
+    monkeypatch.setattr(
+        "scripts.bootstrap_stripe.stripe.Price.modify",
+        lambda price_id, **kwargs: deactivated.append(price_id) or StripeObject(id=price_id),
+    )
+
+    replacement = ensure_pack_price("sk_test_dummy", catalog, product, pack)
+
+    assert replacement.id == "price_pack_replacement"
+    assert created["lookup_key"] == "ent_pack_boost-100"
+    assert created["unit_amount"] == 1500
+    assert "recurring" not in created
+    assert deactivated == ["price_pack_recurring_drift"]
+
+
+async def test_credit_pack_checkout_uses_strict_one_time_price_and_payment_mode(
+    monkeypatch,
+) -> None:
+    price = StripeObject(
+        id="price_pack_boost_100",
+        lookup_key="ent_pack_boost-100",
+        product={
+            "id": "prod_pack_boost_100",
+            "active": True,
+            "metadata": {
+                "product_line": "example-entitlements",
+                "credit_pack": "boost-100",
+            },
+        },
+        metadata={
+            "product_line": "example-entitlements",
+            "credit_pack": "boost-100",
+        },
+        active=True,
+        type="one_time",
+        currency="usd",
+        unit_amount=1500,
+        recurring=None,
+        billing_scheme="per_unit",
+        tax_behavior="unspecified",
+        tiers_mode=None,
+        transform_quantity=None,
+        custom_unit_amount=None,
+        currency_options=None,
+    )
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "stripe_entitlements.stripe_gateway.stripe.Price.list",
+        lambda **kwargs: SimpleNamespace(data=[price]),
+    )
+
+    def create_session(**kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return StripeObject(
+            id="cs_test_pack_checkout",
+            url="https://checkout.stripe.com/c/pay/cs_test_pack_checkout",
+        )
+
+    monkeypatch.setattr(
+        "stripe_entitlements.stripe_gateway.stripe.checkout.Session.create",
+        create_session,
+    )
+    gateway = StripeGateway(
+        "sk_test_dummy",
+        "whsec_test",
+        checkout_success_url="https://app.example.test/billing/success",
+        checkout_cancel_url="https://app.example.test/pricing",
+    )
+
+    result = await gateway.create_credit_pack_checkout_session(
+        order_id="00000000-0000-0000-0000-000000000111",
+        account_id="00000000-0000-0000-0000-000000000222",
+        customer_id=None,
+        customer_email="buyer@example.test",
+        lookup_key="ent_pack_boost-100",
+        expected_currency="usd",
+        expected_unit_amount=1500,
+        pack_key="boost-100",
+        pack_credits="100",
+        expires_days=365,
+        expires_at=datetime(2026, 8, 29, tzinfo=UTC),
+    )
+
+    assert result[0] == "cs_test_pack_checkout"
+    assert captured["mode"] == "payment"
+    assert captured["payment_method_types"] == ["card"]
+    assert captured["customer_creation"] == "always"
+    assert captured["customer_email"] == "buyer@example.test"
+    assert captured["line_items"] == [{"price": price.id, "quantity": 1}]
+    assert captured["idempotency_key"] == ("credit-pack:00000000-0000-0000-0000-000000000111")
+    metadata = captured["payment_intent_data"]["metadata"]  # type: ignore[index]
+    assert metadata["billing_kind"] == "credit_pack"
+    assert metadata["pack_credits"] == "100"
+    assert metadata == captured["metadata"]
+    assert metadata["price_amount"] == "1500"
+    assert metadata["currency"] == "usd"
+    assert metadata["expires_days"] == "365"
+    assert metadata["lookup_key"] == "ent_pack_boost-100"
+    parsed_success_url = urlsplit(str(captured["success_url"]))
+    assert parsed_success_url.fragment == ""
+    assert parse_qs(parsed_success_url.query) == {
+        "expected_credit_pack": ["boost-100"],
+        "checkout_session_id": ["{CHECKOUT_SESSION_ID}"],
+    }
+
+
+@pytest.mark.parametrize(
+    "checkout_success_url",
+    [
+        "https://app.example.test/billing/success?campaign=launch",
+        "https://app.example.test/billing/success#done",
+    ],
+)
+def test_gateway_rejects_ambiguous_checkout_success_base_url(
+    checkout_success_url: str,
+) -> None:
+    with pytest.raises(ValueError, match="query or fragment"):
+        StripeGateway(
+            "sk_test_dummy",
+            "whsec_test",
+            checkout_success_url=checkout_success_url,
+        )
+
+
 async def test_runtime_portal_rejects_dashboard_policy_drift(monkeypatch) -> None:
     gateway = StripeGateway("sk_test_dummy", "whsec_test", portal_configuration_id="bpc_test")
     unsafe = StripeObject(
@@ -1034,15 +1214,22 @@ async def test_runtime_portal_rejects_dashboard_policy_drift(monkeypatch) -> Non
 
 
 @pytest.mark.parametrize(
-    ("session_id", "session_url"),
+    "mutation",
     [
-        (None, "https://billing.stripe.test/session"),
-        ("bps_test", None),
-        ("bps_test", "http://billing.stripe.test/session"),
+        {"id": None},
+        {"id": "session_without_bps_prefix"},
+        {"object": "checkout.session"},
+        {"customer": "cus_other"},
+        {"configuration": "bpc_other"},
+        {"return_url": "https://attacker.example/return"},
+        {"livemode": True},
+        {"livemode": "false"},
+        {"url": None},
+        {"url": "http://billing.stripe.test/session"},
     ],
 )
 async def test_portal_rejects_invalid_stripe_session_identity(
-    monkeypatch, session_id: object, session_url: object
+    monkeypatch: pytest.MonkeyPatch, mutation: dict[str, object]
 ) -> None:
     gateway = StripeGateway("sk_test_dummy", "whsec_test", portal_configuration_id="bpc_test")
     safe = StripeObject(**_safe_portal_payload())
@@ -1050,12 +1237,50 @@ async def test_portal_rejects_invalid_stripe_session_identity(
         "stripe_entitlements.stripe_gateway.stripe.billing_portal.Configuration.retrieve",
         lambda *args, **kwargs: safe,
     )
+    payload = _safe_portal_session_payload()
+    payload.update(mutation)
     monkeypatch.setattr(
         "stripe_entitlements.stripe_gateway.stripe.billing_portal.Session.create",
-        lambda **kwargs: SimpleNamespace(id=session_id, url=session_url),
+        lambda **kwargs: StripeObject(**payload),
     )
     with pytest.raises(RuntimeError, match="Stripe returned"):
         await gateway.create_portal_session(customer_id="cus_test", idempotency_key="portal:1")
+
+
+async def test_portal_accepts_only_the_exact_customer_configuration_and_return_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway = StripeGateway("sk_test_dummy", "whsec_test", portal_configuration_id="bpc_test")
+    monkeypatch.setattr(
+        "stripe_entitlements.stripe_gateway.stripe.billing_portal.Configuration.retrieve",
+        lambda *args, **kwargs: StripeObject(**_safe_portal_payload()),
+    )
+    create_calls: list[dict[str, object]] = []
+
+    def create_session(**kwargs: object) -> StripeObject:
+        create_calls.append(kwargs)
+        return StripeObject(**_safe_portal_session_payload())
+
+    monkeypatch.setattr(
+        "stripe_entitlements.stripe_gateway.stripe.billing_portal.Session.create",
+        create_session,
+    )
+
+    result = await gateway.create_portal_session(
+        customer_id="cus_test", idempotency_key="portal:account:request"
+    )
+
+    assert result == ("bps_test", "https://billing.stripe.test/session")
+    assert create_calls == [
+        {
+            "customer": "cus_test",
+            "configuration": "bpc_test",
+            "return_url": "http://localhost:3000/account",
+            "idempotency_key": "portal:account:request",
+            "api_key": "sk_test_dummy",
+            "stripe_version": "2026-06-24.dahlia",
+        }
+    ]
 
 
 async def test_latest_paid_invoice_event_validates_identity_and_uses_paid_timestamp(

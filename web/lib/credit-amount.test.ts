@@ -61,8 +61,21 @@ describe("exact credit amounts", () => {
     ["01", "1000000", CREDIT_SCALE],
     ["1.0", "1000000", CREDIT_SCALE],
     ["0.0000001", "0", CREDIT_SCALE],
-    ["9223372036854.775808", "9223372036854775808", CREDIT_SCALE],
   ])("rejects an invalid or lossy wire tuple", (decimal, atoms, scale) => {
     expect(() => parseExactCreditAmount(decimal, atoms, scale)).toThrow();
+  });
+
+  it("accepts an aggregate backed by multiple signed-bigint funding rows", () => {
+    expect(
+      parseExactCreditAmount(
+        "18446744073709.551614",
+        "18446744073709551614",
+        CREDIT_SCALE,
+      ),
+    ).toEqual({
+      decimal: "18446744073709.551614",
+      atoms: "18446744073709551614",
+      scale: CREDIT_SCALE,
+    });
   });
 });

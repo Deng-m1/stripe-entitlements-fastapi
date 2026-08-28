@@ -10,6 +10,8 @@ import type { AccountResponse, BillingApi, BillingInterval } from "@/lib/types";
 interface SuccessScreenProps {
   expectedPlan?: string;
   expectedInterval?: BillingInterval;
+  expectedCreditPack?: string;
+  expectedCheckoutSessionId?: string;
   api?: BillingApi;
   pollIntervalMs?: number;
   maxAttempts?: number;
@@ -18,6 +20,8 @@ interface SuccessScreenProps {
 export function SuccessScreen({
   expectedPlan,
   expectedInterval,
+  expectedCreditPack,
+  expectedCheckoutSessionId,
   api = getBillingApi(),
   pollIntervalMs = 1500,
   maxAttempts = 12,
@@ -42,20 +46,34 @@ export function SuccessScreen({
         if (cancelled) return;
         setAccount(current);
         setLastError(null);
-        const matchesPlan = current.plan_key === expectedPlan;
-        const matchesInterval = current.plan_interval === expectedInterval;
-        if (
-          matchesPlan &&
-          matchesInterval &&
-          current.subscription_status === "active" &&
-          current.entitlements_enforceable
-        ) {
-          completeIdempotentIntent(
-            `checkout:${expectedPlan}:${expectedInterval}`,
-          );
-          completeIdempotentIntent(
-            `preview:${expectedPlan}:${expectedInterval}`,
-          );
+        const packConfirmed = Boolean(
+          expectedCreditPack &&
+            expectedCheckoutSessionId &&
+            current.credits.credit_packs.some(
+              (lot) =>
+                lot.pack_key === expectedCreditPack &&
+                lot.checkout_session_id === expectedCheckoutSessionId,
+            ),
+        );
+        const subscriptionConfirmed = Boolean(
+          expectedPlan &&
+            expectedInterval &&
+            current.plan_key === expectedPlan &&
+            current.plan_interval === expectedInterval &&
+            current.subscription_status === "active" &&
+            current.entitlements_enforceable,
+        );
+        if (packConfirmed || subscriptionConfirmed) {
+          if (packConfirmed) {
+            completeIdempotentIntent(`credit-pack:${expectedCreditPack}`);
+          } else {
+            completeIdempotentIntent(
+              `checkout:${expectedPlan}:${expectedInterval}`,
+            );
+            completeIdempotentIntent(
+              `preview:${expectedPlan}:${expectedInterval}`,
+            );
+          }
           setState("confirmed");
           return;
         }
@@ -73,18 +91,37 @@ export function SuccessScreen({
     }
 
     async function validateAndPoll() {
-      if (
-        !expectedPlan ||
-        !expectedInterval ||
-        !/^[a-z][a-z0-9_-]{0,63}$/.test(expectedPlan)
-      ) {
+      const planTargetValid = Boolean(
+        expectedPlan &&
+          expectedInterval &&
+          !expectedCreditPack &&
+          (!expectedCheckoutSessionId ||
+            /^cs_[A-Za-z0-9_]+$/.test(expectedCheckoutSessionId)) &&
+          /^[a-z][a-z0-9_-]{0,63}$/.test(expectedPlan),
+      );
+      const packTargetValid = Boolean(
+        expectedCreditPack &&
+          expectedCheckoutSessionId &&
+          !expectedPlan &&
+          !expectedInterval &&
+          /^[a-z][a-z0-9-]{0,63}$/.test(expectedCreditPack) &&
+          /^cs_[A-Za-z0-9_]+$/.test(expectedCheckoutSessionId),
+      );
+      if (!planTargetValid && !packTargetValid) {
         setState("invalid");
         return;
       }
       try {
         const catalog = await api.getCatalog();
         if (cancelled) return;
-        if (!catalog.plans.some((plan) => plan.key === expectedPlan)) {
+        if (
+          (planTargetValid &&
+            !catalog.plans.some((plan) => plan.key === expectedPlan)) ||
+          (packTargetValid &&
+            !catalog.credit_packs.some(
+              (pack) => pack.key === expectedCreditPack,
+            ))
+        ) {
           setState("invalid");
           return;
         }
@@ -106,7 +143,16 @@ export function SuccessScreen({
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [api, expectedInterval, expectedPlan, maxAttempts, pollIntervalMs, pollRun]);
+  }, [
+    api,
+    expectedCheckoutSessionId,
+    expectedCreditPack,
+    expectedInterval,
+    expectedPlan,
+    maxAttempts,
+    pollIntervalMs,
+    pollRun,
+  ]);
 
   function restartPolling() {
     setState("validating");
@@ -146,26 +192,35 @@ export function SuccessScreen({
             Webhook projection applied
           </li>
           <li className={state === "confirmed" ? "done" : ""}>
-            Entitlements enforceable
+            {expectedCreditPack ? "Purchased credits available" : "Entitlements enforceable"}
           </li>
         </ol>
       ) : null}
       {state === "confirmed" ? (
-        <p>
-          The account API now reports {account?.plan_key}/{account?.plan_interval} as
-          active. The success redirect itself was not treated as proof of entitlement.
-        </p>
+        expectedCreditPack ? (
+          <p>
+            The account API now reports the {expectedCreditPack} funding lot for this
+            exact Checkout Session. The return redirect itself was not treated as proof
+            of payment.
+          </p>
+        ) : (
+          <p>
+            The account API now reports {account?.plan_key}/{account?.plan_interval} as
+            active. The success redirect itself was not treated as proof of entitlement.
+          </p>
+        )
       ) : state === "invalid" ? (
         <p>
-          The return URL is missing a valid catalog plan and interval. Review the
-          account state directly; this page will not infer a successful purchase.
+          The return URL must identify exactly one valid catalog plan/interval or one
+          credit pack and Checkout Session. Review the account state directly; this page
+          will not infer a successful purchase.
         </p>
       ) : state === "timed_out" ? (
         <p>
           {maxAttempts} polls finished without a webhook-projected{" "}
-          {expectedPlan}/{expectedInterval} account. No entitlement is assumed from
-          the redirect; Stripe may still be processing. Checking again is safe and
-          repeatable.
+          {expectedCreditPack ?? `${expectedPlan}/${expectedInterval}`} result. No
+          entitlement or purchased balance is assumed from the redirect; Stripe may
+          still be processing. Checking again is safe and repeatable.
         </p>
       ) : (
         <p>
@@ -189,6 +244,14 @@ export function SuccessScreen({
             <dt>Credit balance</dt>
             <dd>{formatCreditDecimal(account.credits.balance)} credits</dd>
           </div>
+          {expectedCreditPack ? (
+            <div>
+              <dt>Purchased balance</dt>
+              <dd>
+                {formatCreditDecimal(account.credits.purchased_balance)} credits
+              </dd>
+            </div>
+          ) : null}
         </dl>
       ) : null}
       {lastError ? <p className="inline-error" role="alert">{lastError}</p> : null}

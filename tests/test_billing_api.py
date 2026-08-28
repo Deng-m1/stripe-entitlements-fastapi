@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -10,6 +11,7 @@ import pytest
 from stripe_entitlements.app import create_app
 from stripe_entitlements.auth import AuthenticatedIdentity, AuthenticationError
 from stripe_entitlements.config import Settings
+from stripe_entitlements.credits import CreditService
 from stripe_entitlements.database import Database
 from stripe_entitlements.plan_changes import (
     PlanChangeContext,
@@ -52,6 +54,7 @@ class FakeBillingGateway:
     def __init__(self) -> None:
         self.secret_key = "sk_test_fake_billing_gateway"
         self.checkout_kwargs = None
+        self.pack_checkout_kwargs = None
         self.portal_keys: list[str] = []
         self.apply_calls = 0
         self.last_apply_kwargs = None
@@ -59,6 +62,13 @@ class FakeBillingGateway:
     async def create_checkout_session(self, **kwargs):  # type: ignore[no-untyped-def]
         self.checkout_kwargs = kwargs
         return "cs_api", "https://checkout.test/api"
+
+    async def create_credit_pack_checkout_session(
+        self,
+        **kwargs,  # type: ignore[no-untyped-def]
+    ) -> tuple[str, str]:
+        self.pack_checkout_kwargs = kwargs
+        return "cs_pack_api", "https://checkout.test/pack"
 
     async def create_portal_session(
         self, *, customer_id: str, idempotency_key: str
@@ -165,6 +175,27 @@ def test_cors_origin_with_path_fails_at_startup() -> None:
         update={"frontend_origins": "http://localhost:3000/not-an-origin"}
     )
     with pytest.raises(ValueError, match="bare HTTP"):
+        create_app(
+            settings,
+            database=Database(TEST_DSN),
+            gateway=FakeBillingGateway(),  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    "checkout_success_url",
+    [
+        "http://localhost:3000/billing/success?campaign=launch",
+        "http://localhost:3000/billing/success#done",
+    ],
+)
+def test_checkout_success_url_base_rejects_query_and_fragment_at_startup(
+    checkout_success_url: str,
+) -> None:
+    # model_copy deliberately bypasses Pydantic validation and proves the runtime
+    # kernel independently enforces the same integration contract.
+    settings = _settings().model_copy(update={"checkout_success_url": checkout_success_url})
+    with pytest.raises(ValueError, match="query or fragment"):
         create_app(
             settings,
             database=Database(TEST_DSN),
@@ -324,6 +355,10 @@ async def test_default_auth_is_fail_closed(postgres_container: None) -> None:
         ("delete\x7f", None),
         ("zero\u200bwidth", None),
         ("x" * 513, None),
+        ("00000000-0000-4000-8000-000000000001", None),
+        ("cus_authenticated_owner", None),
+        ("sub_authenticated_owner", None),
+        ("acct_authenticated_owner", None),
         ("valid-subject", "x" * 321),
         ("valid-subject", " padded@example.test "),
         ("valid-subject", "missing-at.example.test"),
@@ -351,6 +386,90 @@ async def test_invalid_authenticated_identity_is_rejected_before_account_write(
             account_count = await conn.fetchval("select count(*) from billing_accounts")
     assert response.status_code == 401
     assert account_count == 0
+
+
+@pytest.mark.parametrize("invalid_subscription_state", ["expired", "revoked", "past_due"])
+async def test_account_and_charge_report_only_currently_spendable_funding(
+    invalid_subscription_state: str,
+    postgres_container: None,
+) -> None:
+    database = Database(TEST_DSN)
+    app = create_app(
+        _settings(),
+        database=database,
+        gateway=FakeBillingGateway(),  # type: ignore[arg-type]
+        auth_adapter=StaticAuth(),
+    )
+    async with app.router.lifespan_context(app):
+        account = await database.account_for_external_ref("api-user")
+        kernel = app.state.stripe_entitlements
+        pack = kernel.catalog.require_credit_pack("boost-100")
+        reservation = await kernel.require_services().credit_packs.reserve(
+            str(account["id"]),
+            pack,
+            f"account-spendability-{invalid_subscription_state}",
+        )
+        async with database.require_pool().acquire() as conn, conn.transaction():
+            database_now = await conn.fetchval("select clock_timestamp()")
+            credit_expires_at = database_now + timedelta(hours=1)
+            if invalid_subscription_state == "expired":
+                credit_expires_at = database_now - timedelta(seconds=1)
+            await conn.execute(
+                """update billing_accounts
+                      set plan_key='starter',plan_interval='month',
+                          subscription_status=$2,entitlement_revoked=$3,
+                          credits_balance=300000000,credit_expires_at=$4
+                    where id=$1""",
+                account["id"],
+                "past_due" if invalid_subscription_state == "past_due" else "active",
+                invalid_subscription_state == "revoked",
+                credit_expires_at,
+            )
+            await conn.execute(
+                """update credit_pack_orders
+                      set checkout_status='completed',payment_status='paid',
+                          stripe_checkout_session_id=$2,stripe_payment_intent_id=$3,
+                          stripe_charge_id=$4,amount_paid=price_amount,paid_at=$5
+                    where id=$1::uuid""",
+                reservation.order_id,
+                f"cs_{reservation.order_id}",
+                f"pi_{reservation.order_id}",
+                f"ch_{reservation.order_id}",
+                database_now,
+            )
+            await conn.execute(
+                """insert into credit_funding_lots(
+                       id,order_id,account_id,original_credits,remaining_credits,expires_at)
+                     values($1,$2::uuid,$3,$4,$4,$5)""",
+                uuid.uuid4(),
+                reservation.order_id,
+                account["id"],
+                100_000_000,
+                database_now + timedelta(days=30),
+            )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            before = await client.get("/api/account", headers={"Authorization": "Bearer ignored"})
+            charged = await CreditService(database.require_pool()).charge(
+                str(account["id"]), "25", f"pack-job-{invalid_subscription_state}"
+            )
+            after = await client.get("/api/account", headers={"Authorization": "Bearer ignored"})
+
+    assert before.status_code == 200
+    assert before.json()["entitlements_enforceable"] is False
+    assert before.json()["credits"]["subscription_balance"] == "0"
+    assert before.json()["credits"]["subscription_balance_atoms"] == "0"
+    assert before.json()["credits"]["purchased_balance"] == "100"
+    assert before.json()["credits"]["purchased_balance_atoms"] == "100000000"
+    assert before.json()["credits"]["balance"] == "100"
+    assert before.json()["credits"]["balance_atoms"] == "100000000"
+    assert len(before.json()["credits"]["credit_packs"]) == 1
+    assert (charged.outcome, charged.balance.atoms) == ("charged", 75_000_000)
+    assert after.json()["credits"]["subscription_balance"] == "0"
+    assert after.json()["credits"]["purchased_balance"] == "75"
+    assert after.json()["credits"]["balance"] == "75"
 
 
 async def test_checkout_test_mode_requirement_rejects_live_before_account_write(
@@ -512,6 +631,8 @@ async def test_account_entitlements_fail_closed_without_database_clock(
             response = await client.get("/api/account", headers={"Authorization": "Bearer ignored"})
     assert response.status_code == 200
     assert response.json()["entitlements_enforceable"] is False
+    assert response.json()["credits"]["subscription_balance"] == "0"
+    assert response.json()["credits"]["balance"] == "0"
 
 
 async def test_http_contract_catalog_account_checkout_and_portal(
@@ -546,6 +667,28 @@ async def test_http_contract_catalog_account_checkout_and_portal(
                     "cancel_url": "http://localhost:3000/pricing",
                 },
             )
+            # The fake gateway does not emit Checkout/customer webhooks. Project the
+            # one fact this combined contract test needs before starting a second
+            # purchase type; cross-type first-customer single-flight has its own
+            # concurrency tests and must not be bypassed in production code.
+            local = await database.account_for_external_ref("api-user")
+            async with database.require_pool().acquire() as conn:
+                await conn.execute(
+                    "update billing_accounts set stripe_customer_id='cus_api' where id=$1",
+                    local["id"],
+                )
+                await conn.execute("delete from checkout_claims where account_id=$1", local["id"])
+            pack_checkout = await client.post(
+                "/api/credit-packs/checkout",
+                headers={**headers, "Idempotency-Key": "pack-request-1"},
+                json={
+                    "pack_key": "boost-100",
+                    "success_url": (
+                        "http://localhost:3000/billing/success?expected_credit_pack=boost-100"
+                    ),
+                    "cancel_url": "http://localhost:3000/pricing",
+                },
+            )
             invalid_redirect = await client.post(
                 "/api/checkout",
                 headers={**headers, "Idempotency-Key": "request-2"},
@@ -556,12 +699,6 @@ async def test_http_contract_catalog_account_checkout_and_portal(
                     "cancel_url": "http://localhost:3000/pricing",
                 },
             )
-            local = await database.account_for_external_ref("api-user")
-            async with database.require_pool().acquire() as conn:
-                await conn.execute(
-                    "update billing_accounts set stripe_customer_id='cus_api' where id=$1",
-                    local["id"],
-                )
             portal = await client.post(
                 "/api/billing/portal",
                 headers={**headers, "Idempotency-Key": "portal-1"},
@@ -575,6 +712,17 @@ async def test_http_contract_catalog_account_checkout_and_portal(
     }
     assert catalog.json()["transition_policy"] == "full_period_reset"
     assert catalog.status_code == 200
+    assert catalog.json()["credit_packs"][0] == {
+        "key": "boost-100",
+        "name": "Boost 100",
+        "description": "A small one-time balance for occasional extra jobs.",
+        "display_order": 10,
+        "credits": "100",
+        "credits_atoms": "100000000",
+        "credit_scale": 1_000_000,
+        "price": {"currency": "usd", "unit_amount": 1500},
+        "expires_days": 365,
+    }
     first = catalog.json()["plans"][0]
     assert set(first) >= {"name", "description", "display_order", "prices", "entitlements"}
     assert first["prices"]["month"]["unit_amount"] == 1900
@@ -594,19 +742,33 @@ async def test_http_contract_catalog_account_checkout_and_portal(
     assert account.json()["credits"] == {
         "balance": "0",
         "balance_atoms": "0",
+        "subscription_balance": "0",
+        "subscription_balance_atoms": "0",
+        "purchased_balance": "0",
+        "purchased_balance_atoms": "0",
         "grant_amount": "0",
         "grant_amount_atoms": "0",
         "scale": 1_000_000,
         "next_grant_at": None,
+        "credit_packs": [],
     }
-    for response in (catalog, account, checkout, invalid_redirect, portal):
+    for response in (catalog, account, checkout, pack_checkout, invalid_redirect, portal):
         assert response.headers["cache-control"] == "no-store"
         assert response.headers["pragma"] == "no-cache"
         assert response.headers["x-content-type-options"] == "nosniff"
     assert checkout.json() == {"url": "https://checkout.test/api"}
+    assert pack_checkout.json() == {
+        "session_id": "cs_pack_api",
+        "url": "https://checkout.test/pack",
+    }
+    assert gateway.pack_checkout_kwargs["pack_key"] == "boost-100"
+    assert gateway.pack_checkout_kwargs["expected_unit_amount"] == 1500
     assert gateway.checkout_kwargs["plan_key"] == "starter"
     assert invalid_redirect.status_code == 400
-    assert portal.json() == {"url": "https://billing.stripe.test/session"}
+    assert portal.json() == {
+        "session_id": "bps_api",
+        "url": "https://billing.stripe.test/session",
+    }
     assert gateway.portal_keys == [f"portal:{local['id']}:portal-1"]
 
 

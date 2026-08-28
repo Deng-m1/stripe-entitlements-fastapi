@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (0.3.0)
+## 0.3.0 - 2026-08-28
 
 - Add exact fractional product credits with a fixed protocol of one million integer
   atoms per credit. Catalog decimal strings, Python `CreditAmount`, PostgreSQL balances,
@@ -10,8 +10,70 @@
   package, catalog, configuration, PostgreSQL schema and migration checks. Optional
   Stripe Account/Portal retrieval requires explicit `--stripe-network` opt-in and does
   not claim webhook endpoint or signed-delivery evidence.
-- Align source and distribution version metadata at `0.3.0`, constrain source-distribution
-  contents, and verify installed Wheel/sdist access to packaged catalog and migrations.
+- Let `stripe-entitlements migrate` load only `DATABASE_URL`, so a least-privilege schema
+  init Job never needs Stripe API or webhook credentials.
+- Align source and distribution version metadata at `0.3.0`. Keep the Wheel limited to
+  the backend runtime, catalog, and migrations; make the source distribution a complete
+  reproducible template with environment files, scripts, Docker/Compose, examples, tests,
+  and the Next.js UI; ship the PEP 561 `py.typed` marker and verify both artifact
+  boundaries in CI.
+- Add `BillingKernel` / `BillingServices`, a native billing `APIRouter`, and
+  `install_billing` for existing FastAPI roots. Installation composes the host lifespan,
+  preserves database-pool ownership, publishes prefixed OpenAPI routes, scopes billing
+  middleware to billing routes, hardens internal routes without granting browser CORS,
+  prevents a `Database` object from being owned by multiple kernels, and leaves host
+  logging and unrelated routes unchanged.
+- Add strict asymmetric JWT/JWKS personal and team authentication starters. Team tenant
+  claims remain selectors backed by live membership; an explicit prefix-aware capability
+  policy permits viewers to read only catalog routes and reserves account/recovery state
+  and mutations for billing administrators.
+- Add `EntitlementService` and an optional internal check/charge/refund router. Workload
+  authentication, operation scope, and a separate workload-to-owner authorization check
+  all fail closed by default, preventing a global service scope from becoming cross-owner
+  credit authority.
+- Add fixed-price card-funded one-time credit packs with Hosted Checkout, signed
+  `payment_intent.succeeded` grant authority, independently expiring funding lots, FEFO
+  multi-source consumption, exact debit allocations, partial/full cash refunds,
+  disputes, product-operation refunds, and durable cross-epoch clawback debt. The
+  reference explicitly selects `card` instead of inheriting untested automatic payment
+  methods from Dashboard configuration.
+- Add a fenced credit-pack reconciler that retrieves one persisted Session,
+  PaymentIntent, and Charge outside PostgreSQL transactions, then reuses the normal
+  transactional Event projector. A Checkout create with no durable `cs_` remains
+  recoverable only by the original caller replaying the same idempotency key.
+- Snapshot the pack Checkout's pre-existing-Customer-or-create request mode before the
+  Stripe call. Same-key recovery no longer changes parameters when an early webhook
+  binds the Customer/Session or the host login email changes, and it persists a missing
+  Session URL without downgrading an already completed order.
+- Apply the same immutable Customer/create-mode replay contract to subscription Checkout;
+  first-Customer requests omit email instead of persisting mutable login PII solely for
+  Stripe idempotency recovery.
+- Record webhook `processed_at` with wall-clock completion time rather than PostgreSQL's
+  transaction-start `now()`, so audit chronology cannot place a funding lot after the
+  Event that already finished creating it.
+- Replace recursive webhook audit redaction with a minimal operational allowlist, so
+  extensible Stripe tax/custom/free-text fields cannot be retained accidentally.
+- Classify subscription and credit-pack Checkout Sessions separately during browser-E2E
+  cleanup, so a successful run with one of each closes both instead of treating the
+  second run-owned Session as an ambiguous duplicate.
+- Add three reference pack tiers to the catalog and Next.js pricing/account/success UI.
+  Browser return never grants a pack; success polling requires the exact Checkout
+  Session's webhook-projected funding lot.
+- Add a runnable host-owned Job, billing outbox, dispatch outbox, queue inbox, lease, and
+  fencing example covering unknown charge responses, at-least-once publication,
+  execution reclaim, terminal failure, and source-safe refunds. A bounded PostgreSQL demo
+  uses an explicitly non-production local billing adapter to exercise the full workflow
+  without Stripe network calls and removes only its run-owned rows.
+- Bind the Job example's redundant owner/Job/attempt/credit/dispatch identities with
+  composite foreign keys, preventing repair scripts or future writers from cross-wiring
+  one Job's paid claim to another Job's payload.
+- Record an earlier phase-1 working-tree run of 1,110 network-free backend tests and 180
+  frontend tests. Final credit-pack contract hardening was applied after that run, so the
+  counts are regression history, are not bound to the current tree or a final commit, and
+  do not refresh package, container, real Stripe, browser, or production evidence.
+- Record the final working-tree candidate rerun: 1,187 network-free PostgreSQL tests, 189
+  frontend tests, and all 10 Stripe test-mode cases passed with strict run-owned cleanup.
+  Final-commit browser, container, and live-production evidence remain separate gates.
 
 - Replace the pre-release `001`-through-`006` upgrade lineage with one final-state
   `001_v3_baseline.sql` for fresh installations. The baseline directly declares all

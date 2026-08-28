@@ -2,9 +2,9 @@
 
 GitHub description:
 
-> Open-source Stripe subscription billing and entitlements template for FastAPI,
-> PostgreSQL, and Next.js with two complete full-period/prorated upgrade policies,
-> race-safe webhooks, annual grants, refunds, SCA, and Test Clock gates.
+> Open-source Stripe billing, SaaS entitlements, fractional credits, and one-time credit
+> packs for FastAPI, PostgreSQL, and Next.js, with race-safe webhooks, refunds, SCA,
+> annual grants, and full-period/prorated upgrade policies.
 
 Suggested topics:
 
@@ -19,20 +19,21 @@ Suggested topics:
 - `concurrency`
 - `nextjs`
 - `python`
-- `payments`
 - `saas`
 - `stripe-webhooks`
 - `subscription-management`
 - `stripe-proration`
-- `payment-integration`
 - `stripe-checkout`
 - `stripe-test-clock`
+- `credit-packs`
+- `credit-ledger`
+- `saas-starter`
 
 Suggested repository settings:
 
 - default branch: `main`;
 - squash merge with Conventional Commit title;
-- require both `Backend` and `Web` CI jobs;
+- require `Backend`, `Container`, and `Web` CI jobs;
 - enable Dependabot and private vulnerability reporting;
 - disable force-push/deletion on `main`;
 - require one approving review and resolved conversations;
@@ -45,6 +46,6 @@ Example authenticated administrator command:
 
 ```bash
 gh repo edit Deng-m1/stripe-entitlements-fastapi \\
-  --description "Open-source Stripe billing and entitlements for FastAPI/PostgreSQL with two complete full-period/prorated upgrade policies and race-safe webhooks." \\
-  --add-topic stripe,fastapi,postgresql,subscriptions,billing,entitlements,webhooks,idempotency,concurrency,nextjs,python,payments,saas,stripe-webhooks,subscription-management,stripe-proration,payment-integration,stripe-checkout,stripe-test-clock
+  --description "Open-source Stripe billing, SaaS entitlements, fractional credits, and one-time credit packs for FastAPI, PostgreSQL, and Next.js, with race-safe webhooks and upgrades." \\
+  --add-topic stripe,fastapi,postgresql,subscriptions,billing,entitlements,webhooks,idempotency,concurrency,nextjs,python,saas,stripe-webhooks,subscription-management,stripe-proration,stripe-checkout,stripe-test-clock,credit-packs,credit-ledger,saas-starter
 ```

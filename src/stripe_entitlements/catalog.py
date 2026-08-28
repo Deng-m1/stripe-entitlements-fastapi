@@ -28,6 +28,20 @@ class Plan:
     limits: dict[str, int]
 
 
+@dataclass(frozen=True, slots=True)
+class CreditPack:
+    """One server-owned, one-time Stripe Price mapped to exact product credits."""
+
+    key: str
+    name: str
+    description: str
+    currency: str
+    rank: int
+    credits: CreditAmount
+    price_usd: int
+    expires_days: int
+
+
 def _required_string(value: Any, *, field: str, max_bytes: int) -> str:
     if (
         type(value) is not str
@@ -83,7 +97,13 @@ def _parse_limits(value: Any, *, plan_key: str) -> dict[str, int]:
 
 
 class PlanCatalog:
-    def __init__(self, plans: dict[str, Plan], lookup_prefix: str = "ent") -> None:
+    def __init__(
+        self,
+        plans: dict[str, Plan],
+        lookup_prefix: str = "ent",
+        *,
+        credit_packs: dict[str, CreditPack] | None = None,
+    ) -> None:
         if not plans:
             raise ValueError("at least one plan is required")
         if _KEY.fullmatch(lookup_prefix) is None:
@@ -129,9 +149,7 @@ class PlanCatalog:
                 or value > JSON_SAFE_INTEGER_MAX
                 for name, value in plan.limits.items()
             ):
-                raise ValueError(
-                    "every plan requires explicit valid non-negative JSON-safe limits"
-                )
+                raise ValueError("every plan requires explicit valid non-negative JSON-safe limits")
         ordered = sorted(plans.values(), key=lambda plan: plan.rank)
         expected_limit_keys = set(ordered[0].limits)
         previous = ordered[0]
@@ -145,7 +163,35 @@ class PlanCatalog:
             if any(plan.limits[key] < previous.limits[key] for key in expected_limit_keys):
                 raise ValueError("higher-ranked plans cannot reduce lower-tier limits")
             previous = plan
+        packs = credit_packs or {}
+        pack_ranks = [pack.rank for pack in packs.values()]
+        if len(pack_ranks) != len(set(pack_ranks)):
+            raise ValueError("credit-pack ranks must be unique")
+        for key, pack in packs.items():
+            if key != pack.key or _KEY.fullmatch(key) is None:
+                raise ValueError(
+                    "credit-pack keys must match their mapping key and use lowercase slugs"
+                )
+            _required_string(pack.name, field=f"credit_packs.{key}.name", max_bytes=120)
+            _required_string(
+                pack.description, field=f"credit_packs.{key}.description", max_bytes=500
+            )
+            if pack.currency != "usd":
+                raise ValueError("the reference credit-pack catalog supports USD only")
+            if not isinstance(pack.credits, CreditAmount) or pack.credits.atoms <= 0:
+                raise ValueError(f"credit_packs.{key}.credits must be positive and exact")
+            _required_integer(
+                pack.price_usd,
+                field=f"credit_packs.{key}.price_usd",
+                maximum=CATALOG_PRICE_MAJOR_UNIT_MAX,
+            )
+            _required_integer(
+                pack.expires_days,
+                field=f"credit_packs.{key}.expires_days",
+                maximum=3650,
+            )
         self.plans = plans
+        self.credit_packs = packs
         self.lookup_prefix = lookup_prefix
 
     @classmethod
@@ -198,7 +244,54 @@ class PlanCatalog:
                 )
             except KeyError as exc:
                 raise ValueError(f"plans.{key} is missing required field {exc.args[0]!r}") from exc
-        return cls(plans, lookup_prefix)
+        raw_packs = raw.get("credit_packs", {})
+        if not isinstance(raw_packs, Mapping):
+            raise ValueError("credit_packs must be a table")
+        packs: dict[str, CreditPack] = {}
+        for raw_key, raw_value in raw_packs.items():
+            key = _required_string(raw_key, field="credit-pack key", max_bytes=32)
+            if not isinstance(raw_value, Mapping):
+                raise ValueError(f"credit_packs.{key} must be a table")
+            try:
+                packs[key] = CreditPack(
+                    key=key,
+                    name=_required_string(
+                        raw_value["name"], field=f"credit_packs.{key}.name", max_bytes=120
+                    ),
+                    description=_required_string(
+                        raw_value["description"],
+                        field=f"credit_packs.{key}.description",
+                        max_bytes=500,
+                    ),
+                    currency=_required_string(
+                        raw_value["currency"],
+                        field=f"credit_packs.{key}.currency",
+                        max_bytes=3,
+                    ),
+                    rank=_required_integer(
+                        raw_value["rank"],
+                        field=f"credit_packs.{key}.rank",
+                        maximum=JSON_SAFE_INTEGER_MAX,
+                    ),
+                    credits=CreditAmount.parse(
+                        raw_value["credits"],
+                        field=f"credit_packs.{key}.credits",
+                        allow_zero=False,
+                    ),
+                    price_usd=_required_integer(
+                        raw_value["price_usd"], field=f"credit_packs.{key}.price_usd"
+                    ),
+                    expires_days=_required_integer(
+                        raw_value["expires_days"],
+                        field=f"credit_packs.{key}.expires_days",
+                        maximum=3650,
+                    ),
+                )
+            except KeyError as exc:
+                raise ValueError(
+                    f"credit_packs.{key} is missing required field {exc.args[0]!r}"
+                ) from exc
+        return cls(plans, lookup_prefix, credit_packs=packs)
 
     def ordered(self) -> tuple[Plan, ...]:
         return tuple(sorted(self.plans.values(), key=lambda plan: plan.rank))
@@ -208,6 +301,20 @@ class PlanCatalog:
             return self.plans[plan]
         except KeyError as exc:
             raise ValueError(f"unknown plan {plan!r}") from exc
+
+    def ordered_credit_packs(self) -> tuple[CreditPack, ...]:
+        return tuple(sorted(self.credit_packs.values(), key=lambda pack: pack.rank))
+
+    def require_credit_pack(self, key: str) -> CreditPack:
+        try:
+            return self.credit_packs[key]
+        except KeyError as exc:
+            raise ValueError(f"unknown credit pack {key!r}") from exc
+
+    def credit_pack_lookup_key(self, key: str) -> str:
+        if key not in self.credit_packs:
+            raise ValueError(f"unknown credit pack {key!r}")
+        return f"{self.lookup_prefix}_pack_{key}"
 
     def lookup_key(self, plan: str, interval: str) -> str:
         if plan not in self.plans or interval not in {"month", "year"}:

@@ -32,7 +32,7 @@ export function createSocialImage(): ImageResponse {
           textTransform: "uppercase",
         }}
       >
-        Open-source Stripe subscription billing
+        Open-source Stripe billing + entitlements
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 26 }}>
         <div
@@ -58,8 +58,8 @@ export function createSocialImage(): ImageResponse {
             maxWidth: 980,
           }}
         >
-          A Stripe billing reference for FastAPI, PostgreSQL, and Next.js — real
-          webhook and Test Clock gates
+          Subscriptions, exact fractional credits, one-time credit packs, and
+          race-safe webhooks for FastAPI + PostgreSQL
         </div>
       </div>
       <div style={{ alignItems: "center", display: "flex", gap: 16 }}>

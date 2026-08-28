@@ -1,13 +1,10 @@
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 from urllib.parse import parse_qsl, urlsplit
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -15,28 +12,30 @@ from .auth import (
     AuthAccountAdapter,
     AuthenticatedIdentity,
     AuthenticationError,
-    DemoBearerAuthAdapter,
-    RejectAllAuthAdapter,
 )
-from .catalog import PlanCatalog
 from .checkout import (
     CheckoutActiveSubscriptionError,
     CheckoutBusyError,
-    CheckoutCoordinator,
     CheckoutCreationRejected,
 )
-from .config import Settings, get_settings
+from .config import Settings
 from .credit_amount import CREDIT_SCALE, credit_decimal
+from .credit_packs import CreditPackBusyError, CreditPackConflictError
 from .database import Database
+from .integration import _install_standalone_billing, normalize_billing_prefix
+from .kernel import BillingKernel
+from .owner_reference import InvalidOwnerReferenceError, validate_owner_external_ref
 from .plan_changes import (
     PlanChangeBusyError,
     PlanChangeConflictError,
-    PlanChangeCoordinator,
     PlanChangeResult,
     PlanChangeUnavailableError,
 )
-from .processor import EventProcessor
 from .stripe_gateway import StripeGateway
+from .subscription_state import (
+    spendable_subscription_atoms,
+    subscription_credits_are_spendable,
+)
 
 
 class _StrictRequest(BaseModel):
@@ -63,6 +62,12 @@ class PlanChangeConfirmRequest(_StrictRequest):
     preview_id: UUID
 
 
+class CreditPackCheckoutRequest(_StrictRequest):
+    pack_key: Annotated[str, Field(min_length=1, max_length=64)]
+    success_url: Annotated[str, Field(min_length=1, max_length=2048)]
+    cancel_url: Annotated[str, Field(min_length=1, max_length=2048)]
+
+
 _FEATURE_LABELS = {
     "pdf_to_ppt": "PDF to PowerPoint",
     "image_to_ppt": "Image to PowerPoint",
@@ -80,174 +85,32 @@ _LIMIT_PRESENTATION = {
 }
 
 
-def create_app(
-    settings: Settings | None = None,
+def create_billing_router(
+    kernel: BillingKernel,
     *,
-    database: Database | None = None,
-    gateway: StripeGateway | None = None,
-    auth_adapter: AuthAccountAdapter | None = None,
-) -> FastAPI:
-    settings = settings or get_settings()
-    database = database or Database(settings.database_url)
-    gateway = gateway or StripeGateway(
-        settings.stripe_secret_key,
-        settings.stripe_webhook_secret,
-        settings.product_line,
-        api_version=settings.stripe_api_version,
-        portal_configuration_id=settings.stripe_portal_configuration_id,
-        checkout_success_url=settings.checkout_success_url,
-        checkout_cancel_url=settings.checkout_cancel_url,
-        portal_return_url=settings.portal_return_url,
-    )
-    gateway_secret_key = getattr(gateway, "secret_key", "")
-    if not isinstance(gateway_secret_key, str) or not gateway_secret_key.startswith(
-        ("sk_test_", "sk_live_")
-    ):
-        raise ValueError("billing gateway must expose an sk_test_ or sk_live_ secret key")
-    if not settings.stripe_secret_key.startswith(("sk_test_", "sk_live_")):
-        raise ValueError("configured Stripe key must be an sk_test_ or sk_live_ secret key")
-    settings_test_mode = settings.stripe_secret_key.startswith("sk_test_")
-    gateway_test_mode = gateway_secret_key.startswith("sk_test_")
-    if settings_test_mode != gateway_test_mode:
-        raise ValueError("settings and billing gateway Stripe modes do not match")
-    if not settings.stripe_webhook_secret.startswith("whsec_"):
-        raise ValueError("Stripe webhook secret must start with whsec_")
-    origins = [origin.strip().rstrip("/") for origin in settings.frontend_origins.split(",")]
-    origins = [origin for origin in origins if origin]
-    if "*" in origins:
-        raise ValueError("credentialed billing CORS cannot allow a wildcard origin")
-    for origin in origins:
-        parsed_origin = urlsplit(origin)
-        if (
-            parsed_origin.scheme not in {"http", "https"}
-            or not parsed_origin.netloc
-            or parsed_origin.username is not None
-            or parsed_origin.password is not None
-            or parsed_origin.path not in {"", "/"}
-            or parsed_origin.query
-            or parsed_origin.fragment
-        ):
-            raise ValueError("FRONTEND_ORIGINS entries must be bare HTTP(S) origins")
-    if not gateway_test_mode:
-        public_urls = {
-            "CHECKOUT_SUCCESS_URL": settings.checkout_success_url,
-            "CHECKOUT_CANCEL_URL": settings.checkout_cancel_url,
-            "PORTAL_RETURN_URL": settings.portal_return_url,
-            **{f"FRONTEND_ORIGINS[{index}]": origin for index, origin in enumerate(origins)},
-        }
-        for field, value in public_urls.items():
-            parsed = urlsplit(value)
-            if (
-                parsed.scheme != "https"
-                or not parsed.netloc
-                or parsed.username is not None
-                or parsed.password is not None
-                or parsed.fragment
-            ):
-                raise ValueError(f"{field} must be an origin-safe HTTPS URL in live mode")
-    if auth_adapter is None:
-        if (
-            settings.app_env == "development"
-            and settings.stripe_secret_key.startswith("sk_test_")
-            and settings.demo_bearer_token
-        ):
-            auth_adapter = DemoBearerAuthAdapter(
-                settings.demo_bearer_token,
-                settings.demo_bearer_subject,
-                settings.demo_bearer_email,
-            )
-        else:
-            auth_adapter = RejectAllAuthAdapter()
-    catalog = PlanCatalog.from_toml(settings.plan_catalog_path, settings.lookup_prefix)
+    prefix: str = "",
+) -> APIRouter:
+    """Create the native FastAPI router for one validated billing kernel."""
 
-    @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        logging.basicConfig(level=settings.log_level)
-        connected_here = database.pool is None
-        if connected_here:
-            await database.connect()
-        try:
-            app.state.database = database
-            app.state.gateway = gateway
-            app.state.processor = EventProcessor(
-                database.require_pool(),
-                catalog,
-                settings.product_line,
-                expected_livemode=not gateway_test_mode,
-                expected_api_version=settings.stripe_webhook_api_version,
-            )
-            app.state.checkout = CheckoutCoordinator(database.require_pool())
-            app.state.plan_changes = PlanChangeCoordinator(
-                database.require_pool(),
-                catalog,
-                gateway,
-                transition_policy=settings.billing_transition_policy,
-            )
-            yield
-        finally:
-            if connected_here:
-                await database.close()
-
-    app = FastAPI(
-        title="Stripe Entitlements Reference",
-        version="0.3.0",
-        lifespan=lifespan,
-    )
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=origins,
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=[
-            "Authorization",
-            "Content-Type",
-            "Idempotency-Key",
-            "X-Stripe-Mode-Requirement",
-        ],
-    )
-
-    protected_origins = frozenset(origins)
-
-    def harden_billing_response(path: str, response: Response) -> Response:
-        if path.startswith(("/api/", "/billing/", "/webhooks/")):
-            response.headers["Cache-Control"] = "no-store"
-            response.headers["Pragma"] = "no-cache"
-            response.headers["X-Content-Type-Options"] = "nosniff"
-        return response
-
-    @app.middleware("http")
-    async def billing_response_headers(
-        request: Request,
-        call_next: Callable[[Request], Awaitable[Response]],
-    ) -> Response:
-        path = request.url.path
-        origin = request.headers.get("Origin")
-        if (
-            request.method in {"POST", "PUT", "PATCH", "DELETE"}
-            and path.startswith(("/api/", "/billing/"))
-            and origin is not None
-            and origin not in protected_origins
-        ):
-            return harden_billing_response(
-                path,
-                JSONResponse({"error": "request origin is not allowed"}, status_code=403),
-            )
-        response = await call_next(request)
-        return harden_billing_response(path, response)
+    settings = kernel.settings
+    database = kernel.database
+    gateway = kernel.gateway
+    auth_adapter = kernel.auth_adapter
+    catalog = kernel.catalog
+    gateway_test_mode = kernel.stripe_test_mode
+    router = APIRouter(prefix=normalize_billing_prefix(prefix))
 
     async def current_identity(request: Request) -> AuthenticatedIdentity:
         try:
             identity = await auth_adapter.authenticate(request)
         except AuthenticationError as exc:
             raise HTTPException(401, "authentication failed") from exc
-        external_ref = identity.external_ref
-        if (
-            not external_ref
-            or external_ref != external_ref.strip()
-            or len(external_ref.encode("utf-8")) > 512
-            or any(not character.isprintable() for character in external_ref)
-        ):
-            raise HTTPException(401, "authenticated identity has an invalid stable subject")
+        try:
+            validate_owner_external_ref(identity.external_ref)
+        except InvalidOwnerReferenceError:
+            raise HTTPException(
+                401, "authenticated identity has an invalid stable subject"
+            ) from None
         if identity.email is not None and (
             identity.email != identity.email.strip()
             or len(identity.email.encode("utf-8")) > 320
@@ -316,7 +179,26 @@ def create_app(
                 "payment_url": pending["recovery_url"],
                 "transition_policy": pending["transition_policy"],
             }
-        balance_atoms = int(account["credits_balance"])
+        async with database.require_pool().acquire() as conn:
+            pack_as_of = (
+                database_now
+                if isinstance(database_now, datetime)
+                else await conn.fetchval("select clock_timestamp()")
+            )
+            pack_rows = await conn.fetch(
+                """select l.id,l.remaining_credits,l.expires_at,o.pack_key,
+                          o.stripe_checkout_session_id
+                     from credit_funding_lots l
+                     join credit_pack_orders o on o.id=l.order_id
+                    where l.account_id=$1 and l.status='active'
+                      and l.remaining_credits > 0 and l.expires_at > $2
+                    order by l.expires_at,l.id""",
+                account["id"],
+                pack_as_of,
+            )
+        purchased_atoms = sum(int(row["remaining_credits"]) for row in pack_rows)
+        subscription_atoms = spendable_subscription_atoms(account, as_of=database_now)
+        balance_atoms = subscription_atoms + purchased_atoms
         grant_atoms = plan.monthly_credits.atoms if plan else 0
         return {
             "account_id": str(account["id"]),
@@ -335,6 +217,10 @@ def create_app(
             "credits": {
                 "balance": credit_decimal(balance_atoms),
                 "balance_atoms": str(balance_atoms),
+                "subscription_balance": credit_decimal(subscription_atoms),
+                "subscription_balance_atoms": str(subscription_atoms),
+                "purchased_balance": credit_decimal(purchased_atoms),
+                "purchased_balance_atoms": str(purchased_atoms),
                 "grant_amount": credit_decimal(grant_atoms),
                 "grant_amount_atoms": str(grant_atoms),
                 "scale": CREDIT_SCALE,
@@ -343,14 +229,21 @@ def create_app(
                     if account["credit_expires_at"]
                     else None
                 ),
+                "credit_packs": [
+                    {
+                        "lot_id": str(row["id"]),
+                        "pack_key": row["pack_key"],
+                        "checkout_session_id": row["stripe_checkout_session_id"],
+                        "remaining": credit_decimal(int(row["remaining_credits"])),
+                        "remaining_atoms": str(row["remaining_credits"]),
+                        "expires_at": row["expires_at"].isoformat(),
+                    }
+                    for row in pack_rows
+                ],
             },
             "entitlements": entitlement_rows(str(account["plan_key"])),
             "entitlements_enforceable": bool(
-                account["subscription_status"] == "active"
-                and not account["entitlement_revoked"]
-                and account["credit_expires_at"]
-                and isinstance(database_now, datetime)
-                and account["credit_expires_at"] > database_now
+                plan is not None and subscription_credits_are_spendable(account, as_of=database_now)
             ),
             "pending_change": pending_change,
             "pending_cancellation": (
@@ -402,6 +295,21 @@ def create_app(
         ):
             raise HTTPException(400, "success_url query does not match the Checkout target")
 
+    def require_credit_pack_success_url(value: str, *, pack_key: str) -> None:
+        supplied = urlsplit(value)
+        expected = urlsplit(settings.checkout_success_url)
+        if (supplied.scheme, supplied.netloc, supplied.path) != (
+            expected.scheme,
+            expected.netloc,
+            expected.path,
+        ) or supplied.fragment:
+            raise HTTPException(400, "success_url must match the server allowlisted URL")
+        query_pairs = parse_qsl(supplied.query, keep_blank_values=True)
+        if len({key for key, _ in query_pairs}) != len(query_pairs):
+            raise HTTPException(400, "success_url query contains duplicate keys")
+        if dict(query_pairs) not in ({}, {"expected_credit_pack": pack_key}):
+            raise HTTPException(400, "success_url query does not match the credit pack")
+
     def plan_change_error(exc: Exception) -> HTTPException:
         if isinstance(exc, (PlanChangeBusyError, CheckoutBusyError)):
             return HTTPException(409, str(exc))
@@ -411,7 +319,7 @@ def create_app(
             return HTTPException(409, str(exc))
         return HTTPException(502, "Stripe plan change failed; retry the same request")
 
-    @app.get("/health")
+    @router.get("/health")
     async def health(response: Response) -> dict[str, object]:
         response.headers["Cache-Control"] = "no-store"
         async with database.require_pool().acquire() as conn:
@@ -432,8 +340,8 @@ def create_app(
             "transition_policy": settings.billing_transition_policy,
         }
 
-    @app.get("/api/catalog")
-    @app.get("/billing/catalog", include_in_schema=False)
+    @router.get("/api/catalog")
+    @router.get("/billing/catalog", include_in_schema=False)
     async def billing_catalog(identity: Identity) -> dict[str, object]:
         del identity
         return {
@@ -460,15 +368,32 @@ def create_app(
                 }
                 for plan in catalog.ordered()
             ],
+            "credit_packs": [
+                {
+                    "key": pack.key,
+                    "name": pack.name,
+                    "description": pack.description,
+                    "display_order": pack.rank,
+                    "credits": str(pack.credits),
+                    "credits_atoms": str(pack.credits.atoms),
+                    "credit_scale": CREDIT_SCALE,
+                    "price": {
+                        "currency": pack.currency,
+                        "unit_amount": pack.price_usd * 100,
+                    },
+                    "expires_days": pack.expires_days,
+                }
+                for pack in catalog.ordered_credit_packs()
+            ],
         }
 
-    @app.get("/api/account")
-    @app.get("/billing/account", include_in_schema=False)
+    @router.get("/api/account")
+    @router.get("/billing/account", include_in_schema=False)
     async def get_billing_account(account: Account) -> dict[str, Any]:
         return await account_response(account)
 
-    @app.post("/api/checkout")
-    @app.post("/billing/checkout", include_in_schema=False)
+    @router.post("/api/checkout")
+    @router.post("/billing/checkout", include_in_schema=False)
     async def create_checkout(
         body: CheckoutRequest,
         identity: Identity,
@@ -490,7 +415,7 @@ def create_app(
             raise HTTPException(400, str(exc)) from exc
         account = await database.account_for_external_ref(identity.external_ref)
         try:
-            session_id, url = await app.state.checkout.create(
+            session_id, url = await kernel.require_services().checkout.create(
                 gateway,
                 account_id=str(account["id"]),
                 customer_id=account["stripe_customer_id"],
@@ -517,8 +442,49 @@ def create_app(
         del session_id
         return {"url": url}
 
-    @app.post("/api/billing/portal")
-    @app.post("/billing/portal", include_in_schema=False)
+    @router.post("/api/credit-packs/checkout")
+    async def create_credit_pack_checkout(
+        body: CreditPackCheckoutRequest,
+        identity: Identity,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        stripe_mode_requirement: Literal["test"] | None = Header(
+            default=None, alias="X-Stripe-Mode-Requirement"
+        ),
+    ) -> dict[str, str]:
+        if stripe_mode_requirement == "test" and not gateway_test_mode:
+            raise HTTPException(409, "billing backend is not in the required Stripe test mode")
+        request_key = require_idempotency(idempotency_key)
+        try:
+            catalog.require_credit_pack(body.pack_key)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        require_credit_pack_success_url(body.success_url, pack_key=body.pack_key)
+        require_configured_url(body.cancel_url, settings.checkout_cancel_url, "cancel_url")
+        account = await database.account_for_external_ref(identity.external_ref)
+        try:
+            session_id, url = await kernel.require_services().credit_packs.create(
+                gateway,
+                account_id=str(account["id"]),
+                customer_id=account["stripe_customer_id"],
+                customer_email=identity.email,
+                pack_key=body.pack_key,
+                request_key=request_key,
+            )
+        except (
+            CreditPackBusyError,
+            CreditPackConflictError,
+            CheckoutCreationRejected,
+        ) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                502,
+                "Stripe credit-pack Checkout is temporarily unavailable; retry the same request",
+            ) from exc
+        return {"session_id": session_id, "url": url}
+
+    @router.post("/api/billing/portal")
+    @router.post("/billing/portal", include_in_schema=False)
     async def create_portal(
         body: PortalRequest,
         identity: Identity,
@@ -530,16 +496,16 @@ def create_app(
         if account is None or not account["stripe_customer_id"]:
             raise HTTPException(409, "account has no Stripe customer")
         try:
-            _, url = await gateway.create_portal_session(
+            session_id, url = await gateway.create_portal_session(
                 customer_id=str(account["stripe_customer_id"]),
                 idempotency_key=f"portal:{account['id']}:{request_key}",
             )
         except Exception as exc:
             raise HTTPException(502, "Stripe Portal is temporarily unavailable") from exc
-        return {"url": url}
+        return {"session_id": session_id, "url": url}
 
-    @app.post("/api/billing/change/preview")
-    @app.post("/billing/plan-change/preview", include_in_schema=False)
+    @router.post("/api/billing/change/preview")
+    @router.post("/billing/plan-change/preview", include_in_schema=False)
     async def preview_plan_change(
         body: PlanChangePreviewRequest,
         identity: Identity,
@@ -554,7 +520,7 @@ def create_app(
         if account is None:
             raise HTTPException(409, "an active paid subscription is required")
         try:
-            result: PlanChangeResult = await app.state.plan_changes.preview_remote(
+            result: PlanChangeResult = await kernel.require_services().plan_changes.preview_remote(
                 str(account["id"]),
                 body.plan_key,
                 body.interval,
@@ -613,8 +579,8 @@ def create_app(
             * 100,
         }
 
-    @app.post("/api/billing/change/confirm")
-    @app.post("/billing/plan-change/confirm", include_in_schema=False)
+    @router.post("/api/billing/change/confirm")
+    @router.post("/billing/plan-change/confirm", include_in_schema=False)
     async def confirm_plan_change(
         body: PlanChangeConfirmRequest,
         identity: Identity,
@@ -623,7 +589,7 @@ def create_app(
         if account is None:
             raise HTTPException(409, "plan-change preview not found")
         try:
-            result: PlanChangeResult = await app.state.plan_changes.confirm(
+            result: PlanChangeResult = await kernel.require_services().plan_changes.confirm(
                 str(account["id"]), str(body.preview_id)
             )
         except Exception as exc:
@@ -651,7 +617,7 @@ def create_app(
                 payload["account"] = await account_response(refreshed)
         return payload
 
-    @app.post("/webhooks/stripe")
+    @router.post("/webhooks/stripe")
     async def stripe_webhook(
         request: Request,
         stripe_signature: str = Header(default="", alias="Stripe-Signature"),
@@ -678,7 +644,7 @@ def create_app(
             del exc
             return JSONResponse({"error": "invalid Stripe signature"}, 400)
         try:
-            processor = app.state.processor
+            processor = kernel.require_services().processor
             if await processor.has_committed_event(event.get("id")):
                 result = await processor.process(event)
             else:
@@ -699,4 +665,24 @@ def create_app(
             }
         )
 
+    return router
+
+
+def create_app(
+    settings: Settings | None = None,
+    *,
+    database: Database | None = None,
+    gateway: StripeGateway | None = None,
+    auth_adapter: AuthAccountAdapter | None = None,
+) -> FastAPI:
+    """Create the standalone reference app using the same composable installer."""
+
+    kernel = BillingKernel(
+        settings,
+        database=database,
+        gateway=gateway,
+        auth_adapter=auth_adapter,
+    )
+    app = FastAPI(title="Stripe Entitlements Reference", version="0.3.0")
+    _install_standalone_billing(app, kernel)
     return app

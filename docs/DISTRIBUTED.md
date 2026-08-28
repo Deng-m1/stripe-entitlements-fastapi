@@ -32,6 +32,23 @@ atomically consume later usage refunds or delta grants.
 `stripe_invoice_state.closure_applied` independently prevents distinct refund/dispute
 Event IDs from reapplying one terminal funding closure.
 
+The same guarantees apply when routes are installed into a host FastAPI application or
+called through the optional internal workload router. `BillingKernel` and its service
+graph are process-local wiring; all committed entitlement and credit coordination still
+uses the shared PostgreSQL primary. Install one kernel once per FastAPI application.
+Duplicate installation and concurrent activation of the same kernel fail rather than
+opening a second service graph.
+
+One `Database` object may bind to only one `BillingKernel`. A second binding fails at
+construction so an earlier lifecycle owner cannot close a pool still used by another
+kernel. Separate process/app owners may use separate `Database` objects with the same
+DSN; PostgreSQL, not those objects, remains their shared coordination layer.
+
+`install_billing` composes an existing host lifespan with billing startup. The host
+enters first, so a host-connected injected `Database` pool remains host-owned; billing
+shuts down before the host closes that pool. This is resource ownership, not distributed
+coordination: replicas must never share an in-memory kernel or pool across processes.
+
 ## Remaining single points and external dependencies
 
 - PostgreSQL is the only writable truth and coordination point. Use managed HA,
@@ -40,12 +57,21 @@ Event IDs from reapplying one terminal funding closure.
   webhook processing returns 500 on transient internal failures so Stripe retries.
 - The host identity provider and `AuthAccountAdapter` are availability/security
   dependencies for billing APIs.
+- JWT starter deployments depend on their configured HTTPS JWKS provider and the host's
+  revocation/session policy. Team deployments additionally depend on a live membership
+  lookup for every protected request.
+- Internal-router deployments depend on both workload credential verification and the
+  host-owned workload-to-owner authorization store. A valid operation scope alone is
+  deliberately insufficient authority for another tenant.
 - DNS, load balancers and API regions can delay requests/webhooks. Delayed Events are
   safe, but product state can be stale until retry or reconciliation.
 - Annual grants require a scheduler. Multiple schedulers are safe; no scheduler means
   delayed slots, not duplicate slots.
 - PostgreSQL and Stripe are not one atomic transaction. Durable intent, idempotency and
   reconciliation reduce the failure surface but do not create distributed ACID.
+- A host Job database/queue and billing are also not one atomic transaction. The host
+  must provide an idempotent outbox/saga, leases, fencing, and repair; the service facade
+  does not turn that workflow into distributed ACID.
 
 ## Isolation and lock order
 
@@ -53,6 +79,11 @@ The implementation uses PostgreSQL `READ COMMITTED` plus explicit row locks and 
 constraints. Serializable isolation is not required. All processor paths that touch both
 account and invoice state lock account first, then invoice. Plan-change reservation locks
 the account before inspecting pending intents.
+
+Pack funding and Checkout claim expiry use a `clock_timestamp()` cutoff sampled after
+the account lock. PostgreSQL `now()` is fixed at transaction start, so using it after a
+lock wait could otherwise spend or restore already-expired funding, retain a stale busy
+claim, or shorten a newly created claim's TTL.
 
 PostgreSQL can still report a deadlock under unrelated application locks. Let the
 transaction fail and retry the same Event or request identity; do not catch a deadlock and
@@ -68,7 +99,7 @@ point a v0.2.x process at a 0.3 database or a 0.3 process at a v0.2.x database.
 Apply the bundled baseline before sending traffic to code that uses authenticated billing
 APIs. For the first deployment and every later schema change:
 
-1. back up all ten correctness tables;
+1. back up all fourteen correctness tables;
 2. apply every migration bundled with the target version once;
 3. deploy API/worker replicas with identical catalog and runtime policy settings;
 4. verify health, catalog and one authenticated account;
@@ -85,6 +116,9 @@ changes backward-compatible until old replicas are gone.
 
 - All replicas use compatible migrations and the same `plans.toml`, transition policy,
   request API version, webhook Event snapshot version, and product-line prefix.
+- All API replicas use the same billable-owner encoding, JWT issuer/audience contract,
+  explicit billing prefix, team capability policy, and workload-to-owner authorization
+  rules.
 - Do not cache Portal configuration safety indefinitely; runtime Portal creation verifies
   that plan changes remain disabled and cancellation remains period-end.
 - Keep worker clocks synchronized; PostgreSQL timestamps remain authoritative.

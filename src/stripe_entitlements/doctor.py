@@ -15,8 +15,15 @@ import stripe
 
 from . import __version__
 from .catalog import PlanCatalog
-from .config import Settings, get_settings
+from .config import (
+    Settings,
+    checkout_success_base_url_is_safe,
+    get_settings,
+    public_http_url_is_structurally_safe,
+)
 from .database import Database
+from .portal_policy import portal_configuration_is_safe
+from .price_policy import catalog_one_time_price_matches, catalog_price_matches
 from .resources import default_migration_directory
 
 DoctorStatus = Literal["pass", "warning", "fail", "skipped"]
@@ -80,12 +87,7 @@ def _migration_digests(directory: Path) -> dict[str, str]:
 
 def _origin(value: str) -> tuple[str, str] | None:
     parsed = urlsplit(value)
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.netloc
-        or parsed.username is not None
-        or parsed.password is not None
-    ):
+    if not public_http_url_is_structurally_safe(value):
         return None
     return parsed.scheme, parsed.netloc.casefold()
 
@@ -189,7 +191,10 @@ def _configuration_checks(settings: Settings) -> list[DoctorCheck]:
         for origin in settings.frontend_origins.split(",")
         if origin.strip()
     )
-    url_contract_valid = all(_origin(value) is not None for value in urls)
+    url_contract_valid = bool(
+        all(public_http_url_is_structurally_safe(value) for value in urls)
+        and checkout_success_base_url_is_safe(settings.checkout_success_url)
+    )
     cors_valid = bool(origins) and "*" not in origins
     for value in origins:
         parsed = urlsplit(value)
@@ -236,7 +241,22 @@ def _value(obj: Any, field: str) -> Any:
     return getattr(obj, field, None)
 
 
-async def _stripe_network_checks(settings: Settings, *, enabled: bool) -> list[DoctorCheck]:
+def _stripe_mapping(value: Any) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        return value
+    converter = getattr(value, "to_dict_recursive", None)
+    converted = converter() if callable(converter) else getattr(value, "__dict__", None)
+    if not isinstance(converted, Mapping):
+        raise RuntimeError("Stripe returned a non-object catalog entry")
+    return converted
+
+
+async def _stripe_network_checks(
+    settings: Settings,
+    catalog: PlanCatalog | None,
+    *,
+    enabled: bool,
+) -> list[DoctorCheck]:
     if not enabled:
         return [
             DoctorCheck(
@@ -248,6 +268,11 @@ async def _stripe_network_checks(settings: Settings, *, enabled: bool) -> list[D
                 "stripe.webhook_endpoint",
                 "skipped",
                 "no endpoint ID is configured; version configuration is not delivery evidence",
+            ),
+            DoctorCheck(
+                "stripe.network.catalog",
+                "skipped",
+                "not requested; Stripe catalog inventory was not read",
             ),
         ]
     if _is_placeholder(settings.stripe_secret_key):
@@ -261,6 +286,11 @@ async def _stripe_network_checks(settings: Settings, *, enabled: bool) -> list[D
                 "stripe.webhook_endpoint",
                 "skipped",
                 "no endpoint ID is configured; version configuration is not delivery evidence",
+            ),
+            DoctorCheck(
+                "stripe.network.catalog",
+                "skipped",
+                "catalog inventory verification refused for a placeholder key",
             ),
         ]
     checks: list[DoctorCheck] = []
@@ -286,6 +316,96 @@ async def _stripe_network_checks(settings: Settings, *, enabled: bool) -> list[D
             DoctorCheck("stripe.network.account", "pass", "read-only account retrieval succeeded")
         )
 
+    if catalog is None:
+        checks.append(
+            DoctorCheck(
+                "stripe.network.catalog",
+                "skipped",
+                "local catalog validation failed, so remote inventory was not checked",
+            )
+        )
+    else:
+
+        def verify_catalog_inventory() -> tuple[int, int]:
+            recurring_count = 0
+            pack_count = 0
+            request_options: dict[str, Any] = {
+                "api_key": settings.stripe_secret_key,
+                "stripe_version": settings.stripe_api_version,
+            }
+            for plan in catalog.ordered():
+                for interval, major_amount in (
+                    ("month", plan.month_usd),
+                    ("year", plan.year_usd),
+                ):
+                    lookup_key = catalog.lookup_key(plan.key, interval)
+                    prices = stripe.Price.list(
+                        lookup_keys=[lookup_key],
+                        active=True,
+                        limit=2,
+                        expand=["data.currency_options", "data.product"],
+                        **request_options,
+                    )
+                    data = _value(prices, "data")
+                    if not isinstance(data, list) or len(data) != 1:
+                        raise RuntimeError("Stripe recurring catalog cardinality drift")
+                    price = _stripe_mapping(data[0])
+                    if not catalog_price_matches(
+                        price,
+                        expected_currency=plan.currency,
+                        expected_unit_amount=major_amount * 100,
+                        expected_interval=interval,
+                        expected_product_line=settings.product_line,
+                        expected_plan_key=plan.key,
+                        expected_lookup_key=lookup_key,
+                    ):
+                        raise RuntimeError("Stripe recurring catalog contract drift")
+                    recurring_count += 1
+            for pack in catalog.ordered_credit_packs():
+                lookup_key = catalog.credit_pack_lookup_key(pack.key)
+                prices = stripe.Price.list(
+                    lookup_keys=[lookup_key],
+                    active=True,
+                    limit=2,
+                    expand=["data.currency_options", "data.product"],
+                    **request_options,
+                )
+                data = _value(prices, "data")
+                if not isinstance(data, list) or len(data) != 1:
+                    raise RuntimeError("Stripe credit-pack catalog cardinality drift")
+                price = _stripe_mapping(data[0])
+                if not catalog_one_time_price_matches(
+                    price,
+                    expected_currency=pack.currency,
+                    expected_unit_amount=pack.price_usd * 100,
+                    expected_product_line=settings.product_line,
+                    expected_pack_key=pack.key,
+                    expected_lookup_key=lookup_key,
+                ):
+                    raise RuntimeError("Stripe credit-pack catalog contract drift")
+                pack_count += 1
+            return recurring_count, pack_count
+
+        try:
+            recurring_count, pack_count = await asyncio.to_thread(verify_catalog_inventory)
+        except Exception as exc:
+            checks.append(
+                DoctorCheck(
+                    "stripe.network.catalog",
+                    "fail",
+                    f"read-only Stripe catalog verification failed ({type(exc).__name__})",
+                )
+            )
+        else:
+            checks.append(
+                DoctorCheck(
+                    "stripe.network.catalog",
+                    "pass",
+                    f"{recurring_count} recurring and {pack_count} one-time "
+                    "Price contract(s) match",
+                )
+            )
+
     portal_id = settings.stripe_portal_configuration_id
     if portal_id is None or _is_placeholder(portal_id):
         checks.append(
@@ -306,16 +426,15 @@ async def _stripe_network_checks(settings: Settings, *, enabled: bool) -> list[D
 
         try:
             portal = await asyncio.to_thread(retrieve_portal)
-            active = _value(portal, "active")
-            livemode = _value(portal, "livemode")
+            portal_raw = _stripe_mapping(portal)
             expected_livemode = settings.stripe_secret_key.startswith("sk_live_")
-            metadata = _value(portal, "metadata")
-            product_line = _value(metadata, "product_line")
             valid = bool(
-                _value(portal, "id") == portal_id
-                and active is True
-                and livemode is expected_livemode
-                and product_line == settings.product_line
+                portal_raw.get("id") == portal_id
+                and portal_configuration_is_safe(
+                    portal_raw,
+                    expected_livemode=expected_livemode,
+                    expected_product_line=settings.product_line,
+                )
             )
         except Exception as exc:
             checks.append(
@@ -331,9 +450,11 @@ async def _stripe_network_checks(settings: Settings, *, enabled: bool) -> list[D
                     "stripe.network.portal",
                     "pass" if valid else "fail",
                     (
-                        "Portal identity, mode, active state and product line match"
+                        "Portal identity and mode match; subscription updates are disabled "
+                        "and cancellation is limited to period end"
                         if valid
-                        else "Portal identity, mode, active state or product line does not match"
+                        else "Portal identity or safety policy does not match; subscription "
+                        "updates must be disabled and cancellation must be limited to period end"
                     ),
                 )
             )
@@ -441,6 +562,7 @@ async def run_doctor(
     checks.append(DoctorCheck("config.load", "pass", "typed configuration loaded"))
     checks.extend(_configuration_checks(settings))
 
+    catalog: PlanCatalog | None = None
     try:
         catalog = PlanCatalog.from_toml(settings.plan_catalog_path, settings.lookup_prefix)
     except Exception as exc:
@@ -556,5 +678,5 @@ async def run_doctor(
     if connected:
         await database.close()
 
-    checks.extend(await _stripe_network_checks(settings, enabled=stripe_network))
+    checks.extend(await _stripe_network_checks(settings, catalog, enabled=stripe_network))
     return DoctorReport(__version__, tuple(checks))

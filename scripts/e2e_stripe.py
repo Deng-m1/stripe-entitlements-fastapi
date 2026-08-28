@@ -8,12 +8,17 @@ import os
 import stat
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import asyncpg
+import httpx
 import stripe
+from fastapi import FastAPI, Request, Response
 
 from stripe_entitlements.credit_amount import CreditAmount
 
@@ -26,6 +31,7 @@ SUPPORTED_EVENTS = (
     "customer.subscription.deleted",
     "charge.refunded",
     "charge.dispute.created",
+    "payment_intent.succeeded",
 )
 E2E_PRODUCT_LINE = "example-entitlements"
 _MANIFEST_STRING_FIELDS = (
@@ -37,8 +43,22 @@ _MANIFEST_STRING_FIELDS = (
     "checkout_session_id",
     "stripe_customer_id",
     "stripe_subscription_id",
+    "credit_pack_order_id",
+    "credit_pack_checkout_session_id",
+    "credit_pack_payment_intent_id",
+    "credit_pack_charge_id",
 )
 _MANIFEST_FIELDS = frozenset((*_MANIFEST_STRING_FIELDS, "database_state_available"))
+_GATE_IDENTITY_FIELDS = frozenset(
+    ("stripe_event_id", "account_id", "credit_pack_order_id", "pack_key")
+)
+_GATE_FILE_NAMES = {
+    "account": "account.json",
+    "armed": "armed.json",
+    "captured": "captured.json",
+    "released": "released.json",
+    "forwarded": "forwarded.json",
+}
 
 
 def _exact_credit_amount(value: object, *, field: str) -> CreditAmount:
@@ -86,6 +106,39 @@ def _browser_credit_expectations(
             None,
         )
     raise ValueError("unknown browser E2E transition policy")
+
+
+def _verify_browser_job_debits(
+    job_rows: list[Any],
+    *,
+    success_key: str,
+    success_credits: CreditAmount,
+    refunded_key: str,
+    refunded_credits: CreditAmount,
+) -> None:
+    jobs = {str(row["idempotency_key"]): row for row in job_rows}
+    if set(jobs) != {success_key, refunded_key}:
+        raise RuntimeError("browser product Jobs did not create exactly two owner-bound debits")
+    successful_job = jobs[success_key]
+    refunded_job = jobs[refunded_key]
+    if (
+        int(successful_job["amount"]) != success_credits.atoms
+        or int(successful_job["restored_credits"]) != 0
+        or successful_job["refunded_at"] is not None
+        or int(successful_job["allocated_credits"]) != success_credits.atoms
+        or int(successful_job["allocation_refunds"]) != 0
+        or list(successful_job["source_types"]) != ["subscription"]
+    ):
+        raise RuntimeError("successful browser product Job debit or provenance is invalid")
+    if (
+        int(refunded_job["amount"]) != refunded_credits.atoms
+        or int(refunded_job["restored_credits"]) != refunded_credits.atoms
+        or refunded_job["refunded_at"] is None
+        or int(refunded_job["allocated_credits"]) != refunded_credits.atoms
+        or int(refunded_job["allocation_refunds"]) != refunded_credits.atoms
+        or list(refunded_job["source_types"]) != ["subscription"]
+    ):
+        raise RuntimeError("failed browser product Job did not converge through exact refund")
 
 
 def _test_key() -> str:
@@ -184,6 +237,225 @@ def _assert_customer_deleted(customer_id: str) -> None:
         raise RuntimeError("run-owned Customer remained present after cleanup")
 
 
+def _owned_pack_metadata_snapshot(
+    metadata: object,
+    *,
+    account_id: str,
+    order_id: str,
+) -> tuple[str, str, int, str]:
+    if not isinstance(metadata, dict):
+        raise RuntimeError("credit-pack Stripe metadata is missing")
+    required = {
+        "billing_kind",
+        "pack_schema_version",
+        "product_line",
+        "credit_pack_order_id",
+        "account_id",
+        "pack_key",
+        "pack_credits",
+        "price_amount",
+        "currency",
+        "expires_days",
+        "lookup_key",
+    }
+    if not required.issubset(metadata):
+        raise RuntimeError("credit-pack Stripe metadata snapshot is incomplete")
+    price_text = metadata.get("price_amount")
+    expires_text = metadata.get("expires_days")
+    currency = metadata.get("currency")
+    pack_key = metadata.get("pack_key")
+    lookup_key = metadata.get("lookup_key")
+    pack_credits = metadata.get("pack_credits")
+    if (
+        metadata.get("billing_kind") != "credit_pack"
+        or metadata.get("pack_schema_version") != "1"
+        or metadata.get("product_line") != E2E_PRODUCT_LINE
+        or metadata.get("account_id") != account_id
+        or metadata.get("credit_pack_order_id") != order_id
+        or not isinstance(pack_key, str)
+        or not isinstance(lookup_key, str)
+        or lookup_key != f"ent_pack_{pack_key}"
+        or not isinstance(pack_credits, str)
+        or not isinstance(price_text, str)
+        or not price_text.isascii()
+        or not price_text.isdecimal()
+        or price_text.startswith("0")
+        or not isinstance(expires_text, str)
+        or not expires_text.isascii()
+        or not expires_text.isdecimal()
+        or expires_text.startswith("0")
+        or not isinstance(currency, str)
+        or len(currency) != 3
+        or not currency.isascii()
+        or not currency.islower()
+    ):
+        raise RuntimeError("credit-pack Stripe metadata snapshot is conflicting")
+    try:
+        exact_pack_credits = _exact_credit_amount(
+            pack_credits,
+            field="credit-pack Stripe metadata credits",
+        )
+    except ValueError as exc:
+        raise RuntimeError("credit-pack Stripe metadata credits are invalid") from exc
+    if str(exact_pack_credits) != pack_credits:
+        raise RuntimeError("credit-pack Stripe metadata credits are not canonical")
+    price_amount = int(price_text)
+    expires_days = int(expires_text)
+    if price_amount <= 0 or not 1 <= expires_days <= 3650:
+        raise RuntimeError("credit-pack Stripe metadata snapshot is outside safe bounds")
+    return price_text, currency, price_amount, lookup_key
+
+
+def _close_run_owned_pack_payment(
+    *,
+    account_id: str,
+    order_id: str = "",
+    session_id: str = "",
+    payment_intent_id: str = "",
+    charge_id: str = "",
+    customer_id: str = "",
+) -> dict[str, str]:
+    """Close/refund one positively identified browser-E2E pack payment.
+
+    Only non-secret object IDs cross this boundary. Mutable operations happen after
+    Session, PaymentIntent, Charge, account, order, Customer, mode, and metadata agree.
+    """
+
+    resolved = {
+        "order_id": order_id,
+        "session_id": session_id,
+        "payment_intent_id": payment_intent_id,
+        "charge_id": charge_id,
+        "customer_id": customer_id,
+        "price_amount": "",
+        "currency": "",
+        "lookup_key": "",
+    }
+    if session_id:
+        session = _retrieve_optional(stripe.checkout.Session.retrieve, session_id)
+        if session is not None:
+            raw = _dict(session)
+            metadata = raw.get("metadata") or {}
+            remote_order_id = str(metadata.get("credit_pack_order_id") or "")
+            remote_payment_intent_id = _object_id(raw.get("payment_intent")) or ""
+            remote_customer_id = _object_id(raw.get("customer")) or ""
+            if (
+                bool(raw.get("livemode"))
+                or raw.get("mode") != "payment"
+                or str(raw.get("client_reference_id")) != account_id
+                or metadata.get("billing_kind") != "credit_pack"
+                or metadata.get("pack_schema_version") != "1"
+                or metadata.get("product_line") != E2E_PRODUCT_LINE
+                or str(metadata.get("account_id")) != account_id
+                or not remote_order_id
+                or (order_id and remote_order_id != order_id)
+                or (payment_intent_id and remote_payment_intent_id != payment_intent_id)
+                or (customer_id and remote_customer_id != customer_id)
+            ):
+                raise RuntimeError("refusing to clean up an unowned credit-pack Session")
+            price_text, currency, _, lookup_key = _owned_pack_metadata_snapshot(
+                metadata,
+                account_id=account_id,
+                order_id=remote_order_id,
+            )
+            resolved.update(
+                order_id=remote_order_id,
+                payment_intent_id=remote_payment_intent_id,
+                customer_id=remote_customer_id,
+                price_amount=price_text,
+                currency=currency,
+                lookup_key=lookup_key,
+            )
+            if raw.get("status") == "open":
+                expired = _dict(session.expire(**_options()))
+                if expired.get("status") != "expired":
+                    raise RuntimeError("run-owned credit-pack Session did not expire")
+            _assert_checkout_session_closed(session_id, account_id)
+
+    if resolved["payment_intent_id"]:
+        intent = _retrieve_optional(
+            stripe.PaymentIntent.retrieve,
+            resolved["payment_intent_id"],
+        )
+        if intent is None:
+            raise RuntimeError("run-owned credit-pack PaymentIntent disappeared")
+        raw_intent = _dict(intent)
+        metadata = raw_intent.get("metadata") or {}
+        remote_charge_id = _object_id(raw_intent.get("latest_charge")) or ""
+        remote_customer_id = _object_id(raw_intent.get("customer")) or ""
+        if (
+            bool(raw_intent.get("livemode"))
+            or not remote_customer_id
+            or (resolved["customer_id"] and remote_customer_id != resolved["customer_id"])
+            or (charge_id and remote_charge_id != charge_id)
+        ):
+            raise RuntimeError("refusing to clean up an unowned credit-pack PaymentIntent")
+        price_text, currency, price_amount, lookup_key = _owned_pack_metadata_snapshot(
+            metadata,
+            account_id=account_id,
+            order_id=resolved["order_id"],
+        )
+        if (
+            (resolved["price_amount"] and resolved["price_amount"] != price_text)
+            or (resolved["currency"] and resolved["currency"] != currency)
+            or (resolved["lookup_key"] and resolved["lookup_key"] != lookup_key)
+            or raw_intent.get("status") != "succeeded"
+            or raw_intent.get("amount") != price_amount
+            or raw_intent.get("amount_received") != price_amount
+            or raw_intent.get("currency") != currency
+        ):
+            raise RuntimeError("credit-pack PaymentIntent differs from its metadata snapshot")
+        resolved.update(
+            charge_id=remote_charge_id,
+            customer_id=remote_customer_id,
+            price_amount=price_text,
+            currency=currency,
+            lookup_key=lookup_key,
+        )
+
+    if resolved["charge_id"]:
+        if not resolved["payment_intent_id"] or not resolved["order_id"]:
+            raise RuntimeError("credit-pack Charge cleanup lacks verified payment lineage")
+        charge = _retrieve_optional(stripe.Charge.retrieve, resolved["charge_id"])
+        if charge is None:
+            raise RuntimeError("run-owned credit-pack Charge disappeared")
+        raw_charge = _dict(charge)
+        amount = raw_charge.get("amount")
+        amount_refunded = raw_charge.get("amount_refunded")
+        if (
+            bool(raw_charge.get("livemode"))
+            or _object_id(raw_charge.get("payment_intent")) != resolved["payment_intent_id"]
+            or _object_id(raw_charge.get("customer")) != resolved["customer_id"]
+            or type(amount) is not int
+            or type(amount_refunded) is not int
+            or amount != int(resolved["price_amount"])
+            or raw_charge.get("currency") != resolved["currency"]
+            or amount <= 0
+            or amount_refunded < 0
+            or amount_refunded > amount
+        ):
+            raise RuntimeError("refusing to refund an unowned credit-pack Charge")
+        if amount_refunded < amount:
+            stripe.Refund.create(
+                charge=resolved["charge_id"],
+                amount=amount - amount_refunded,
+                metadata={
+                    "automated_test": "true",
+                    "credit_pack_order_id": resolved["order_id"],
+                },
+                idempotency_key=f"browser-pack-cleanup:{resolved['order_id']}",
+                **_options(),
+            )
+        final_charge = _dict(stripe.Charge.retrieve(resolved["charge_id"], **_options()))
+        if (
+            _object_id(final_charge.get("payment_intent")) != resolved["payment_intent_id"]
+            or final_charge.get("amount_refunded") != final_charge.get("amount")
+            or not bool(final_charge.get("refunded"))
+        ):
+            raise RuntimeError("run-owned credit-pack Charge retained refundable inventory")
+    return resolved
+
+
 def _require_isolated_event_inbox(total_events: int, run_events: int) -> int:
     unrelated_events = total_events - run_events
     if unrelated_events != 0:
@@ -192,6 +464,25 @@ def _require_isolated_event_inbox(total_events: int, run_events: int) -> int:
             f"{unrelated_events} Event(s) outside this isolated run"
         )
     return unrelated_events
+
+
+def _owned_checkout_kind(raw: dict[str, Any], account_id: str) -> str | None:
+    """Classify only an exact run-owned subscription or credit-pack Session."""
+
+    metadata = raw.get("metadata") or {}
+    if (
+        bool(raw.get("livemode"))
+        or str(raw.get("client_reference_id")) != account_id
+        or not isinstance(metadata, dict)
+        or str(metadata.get("account_id")) != account_id
+    ):
+        return None
+    billing_kind = metadata.get("billing_kind")
+    if billing_kind == "credit_pack":
+        return "credit_pack"
+    if billing_kind is None:
+        return "subscription"
+    return None
 
 
 def _load_cleanup_manifest(output: Path) -> dict[str, Any]:
@@ -250,6 +541,359 @@ def _write_private_json_atomic(output: Path, payload: dict[str, Any]) -> None:
             temporary.unlink()
         except FileNotFoundError:
             pass
+
+
+def create_auth_fixture(args: argparse.Namespace) -> None:
+    """Create short-lived local IdP credentials without persisting the private key."""
+
+    try:
+        parsed_personal_subject = uuid.UUID(args.personal_subject)
+        parsed_workload_subject = uuid.UUID(args.workload_subject)
+    except (AttributeError, ValueError) as exc:
+        raise ValueError("browser E2E JWT subjects must be canonical UUIDs") from exc
+    if (
+        parsed_personal_subject.int == 0
+        or parsed_workload_subject.int == 0
+        or str(parsed_personal_subject) != args.personal_subject
+        or str(parsed_workload_subject) != args.workload_subject
+    ):
+        raise ValueError("browser E2E JWT subjects must be canonical nonzero UUIDs")
+    personal_subject = str(parsed_personal_subject)
+    workload_subject = str(parsed_workload_subject)
+    for field, value in (
+        ("issuer", args.issuer),
+        ("personal audience", args.personal_audience),
+        ("workload audience", args.workload_audience),
+    ):
+        if (
+            type(value) is not str
+            or not value
+            or value != value.strip()
+            or len(value.encode("utf-8")) > 2048
+            or any(not character.isprintable() for character in value)
+        ):
+            raise ValueError(f"browser E2E JWT {field} is invalid")
+    parsed_issuer = urlsplit(args.issuer)
+    if (
+        parsed_issuer.scheme != "https"
+        or not parsed_issuer.netloc
+        or parsed_issuer.username is not None
+        or parsed_issuer.password is not None
+        or parsed_issuer.fragment
+    ):
+        raise ValueError("browser E2E JWT issuer must be an HTTPS URL")
+    if (
+        type(args.email) is not str
+        or args.email.count("@") != 1
+        or args.email != args.email.strip()
+        or len(args.email.encode("utf-8")) > 320
+        or any(character.isspace() for character in args.email)
+    ):
+        raise ValueError("browser E2E Personal JWT email is invalid")
+
+    # These are dev dependencies used only by this opt-in runner. Import lazily so
+    # cleanup/recovery commands remain usable from the package's minimal runtime extra.
+    import jwt
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    key_id = f"browser-e2e-{uuid.uuid4()}"
+    public_jwk = jwt.algorithms.RSAAlgorithm.to_jwk(private_key.public_key(), as_dict=True)
+    public_jwk.update({"alg": "RS256", "kid": key_id, "use": "sig"})
+    now = datetime.now(UTC)
+    common_claims = {
+        "iss": args.issuer,
+        "nbf": int((now - timedelta(seconds=30)).timestamp()),
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(hours=2)).timestamp()),
+    }
+    personal_token = jwt.encode(
+        {
+            **common_claims,
+            "aud": args.personal_audience,
+            "sub": personal_subject,
+            "email": args.email,
+            "email_verified": True,
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": key_id, "typ": "JWT"},
+    )
+    workload_token = jwt.encode(
+        {
+            **common_claims,
+            "aud": args.workload_audience,
+            "sub": workload_subject,
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": key_id, "typ": "JWT"},
+    )
+    _write_private_json_atomic(Path(args.jwks_output), {"keys": [public_jwk]})
+    _write_private_json_atomic(
+        Path(args.token_output),
+        {
+            "personal_subject": personal_subject,
+            "personal_token": personal_token,
+            "workload_subject": workload_subject,
+            "workload_token": workload_token,
+        },
+    )
+    print("created ephemeral signed Personal JWT and workload JWT fixture")
+
+
+def _private_gate_directory(raw_path: str, *, create: bool = False) -> Path:
+    if not raw_path:
+        raise RuntimeError("credit-pack webhook gate state directory is required")
+    path = Path(raw_path).resolve()
+    if create:
+        path.mkdir(mode=0o700, parents=False, exist_ok=True)
+    try:
+        state = path.lstat()
+    except FileNotFoundError as exc:
+        raise RuntimeError("credit-pack webhook gate state directory does not exist") from exc
+    if not stat.S_ISDIR(state.st_mode) or stat.S_IMODE(state.st_mode) & 0o077:
+        raise RuntimeError("credit-pack webhook gate state directory must be private")
+    return path
+
+
+def _load_private_gate_json(path: Path, *, allowed_fields: frozenset[str]) -> dict[str, str]:
+    try:
+        state = path.lstat()
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"credit-pack webhook gate state {path.name!r} is missing") from exc
+    if not stat.S_ISREG(state.st_mode) or stat.S_IMODE(state.st_mode) & 0o077:
+        raise RuntimeError("credit-pack webhook gate state file must be private and regular")
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("credit-pack webhook gate state is invalid JSON") from exc
+    if not isinstance(raw, dict) or set(raw) != allowed_fields:
+        raise RuntimeError("credit-pack webhook gate state has an invalid field contract")
+    if any(not isinstance(value, str) or not value for value in raw.values()):
+        raise RuntimeError("credit-pack webhook gate state values must be non-empty strings")
+    return {str(key): str(value) for key, value in raw.items()}
+
+
+def _pack_gate_identity(payload: object, expected_account_id: str) -> dict[str, str] | None:
+    """Return only non-sensitive correlation IDs for this run's pack payment Event."""
+
+    if not isinstance(payload, dict) or payload.get("type") != "payment_intent.succeeded":
+        return None
+    if bool(payload.get("livemode")):
+        return None
+    event_id = payload.get("id")
+    data = payload.get("data")
+    obj = data.get("object") if isinstance(data, dict) else None
+    metadata = obj.get("metadata") if isinstance(obj, dict) else None
+    if (
+        not isinstance(event_id, str)
+        or not event_id.startswith("evt_")
+        or not isinstance(metadata, dict)
+        or metadata.get("billing_kind") != "credit_pack"
+        or metadata.get("pack_schema_version") != "1"
+        or metadata.get("account_id") != expected_account_id
+        or obj.get("status") != "succeeded"
+    ):
+        return None
+    order_id = metadata.get("credit_pack_order_id")
+    pack_key = metadata.get("pack_key")
+    try:
+        normalized_order = str(uuid.UUID(str(order_id)))
+        normalized_account = str(uuid.UUID(expected_account_id))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if (
+        not isinstance(pack_key, str)
+        or not pack_key
+        or len(pack_key.encode("utf-8")) > 64
+        or any(
+            not (character.islower() or character.isdigit() or character == "-")
+            for character in pack_key
+        )
+    ):
+        return None
+    return {
+        "stripe_event_id": event_id,
+        "account_id": normalized_account,
+        "credit_pack_order_id": normalized_order,
+        "pack_key": pack_key,
+    }
+
+
+def arm_credit_pack_gate(args: argparse.Namespace) -> None:
+    state_dir = _private_gate_directory(args.state_dir, create=True)
+    try:
+        account_id = str(uuid.UUID(args.account_id))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("credit-pack webhook gate account id must be a UUID") from exc
+    for key in ("captured", "released", "forwarded"):
+        path = state_dir / _GATE_FILE_NAMES[key]
+        if path.exists() or path.is_symlink():
+            raise RuntimeError("credit-pack webhook gate state is not a fresh run directory")
+    _write_private_json_atomic(state_dir / _GATE_FILE_NAMES["account"], {"account_id": account_id})
+    _write_private_json_atomic(
+        state_dir / _GATE_FILE_NAMES["armed"],
+        {"account_id": account_id, "state": "armed"},
+    )
+    print("armed the run-owned credit-pack webhook barrier")
+
+
+def release_credit_pack_gate(args: argparse.Namespace) -> None:
+    state_dir = _private_gate_directory(args.state_dir)
+    account = _load_private_gate_json(
+        state_dir / _GATE_FILE_NAMES["account"],
+        allowed_fields=frozenset(("account_id",)),
+    )
+    captured = _load_private_gate_json(
+        state_dir / _GATE_FILE_NAMES["captured"],
+        allowed_fields=_GATE_IDENTITY_FIELDS,
+    )
+    if captured["account_id"] != account["account_id"]:
+        raise RuntimeError("captured credit-pack webhook belongs to another account")
+    _write_private_json_atomic(
+        state_dir / _GATE_FILE_NAMES["released"],
+        {"account_id": account["account_id"], "stripe_event_id": captured["stripe_event_id"]},
+    )
+    print("released the run-owned credit-pack webhook barrier")
+
+
+async def wait_credit_pack_gate(args: argparse.Namespace) -> None:
+    if args.timeout_seconds < 1 or args.timeout_seconds > 120:
+        raise ValueError("credit-pack webhook gate timeout must be between 1 and 120 seconds")
+    state_dir = _private_gate_directory(args.state_dir)
+    account = _load_private_gate_json(
+        state_dir / _GATE_FILE_NAMES["account"],
+        allowed_fields=frozenset(("account_id",)),
+    )
+    target = state_dir / _GATE_FILE_NAMES[args.phase]
+    deadline = time.monotonic() + args.timeout_seconds
+    while time.monotonic() < deadline:
+        if target.exists():
+            identity = _load_private_gate_json(target, allowed_fields=_GATE_IDENTITY_FIELDS)
+            if identity["account_id"] != account["account_id"]:
+                raise RuntimeError("credit-pack webhook gate phase belongs to another account")
+            print(f"verified run-owned credit-pack webhook gate phase: {args.phase}")
+            return
+        await asyncio.sleep(0.05)
+    raise RuntimeError(f"credit-pack webhook gate did not reach {args.phase!r} before timeout")
+
+
+def create_webhook_gate() -> FastAPI:
+    """Create a loopback proxy that pauses only the run's pack PI Event in memory."""
+
+    state_dir = _private_gate_directory(os.environ.get("E2E_WEBHOOK_GATE_STATE_DIR", ""))
+    backend_url = os.environ.get("E2E_WEBHOOK_GATE_BACKEND_URL", "")
+    ca_file = os.environ.get("E2E_WEBHOOK_GATE_CA_FILE", "")
+    try:
+        backend = httpx.URL(backend_url)
+    except Exception as exc:
+        raise RuntimeError("credit-pack webhook gate backend URL is invalid") from exc
+    if (
+        backend.scheme != "https"
+        or backend.host not in {"127.0.0.1", "localhost", "::1"}
+        or backend.path != "/webhooks/stripe"
+        or backend.query
+    ):
+        raise RuntimeError("credit-pack webhook gate backend must be the loopback HTTPS webhook")
+    ca_path = Path(ca_file).resolve()
+    if not ca_path.is_file():
+        raise RuntimeError("credit-pack webhook gate CA file is missing")
+
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    @app.get("/health")
+    async def gate_health() -> dict[str, bool]:
+        return {"ok": True}
+
+    @app.get("/ready")
+    async def gate_ready() -> Response:
+        health_url = backend.copy_with(path="/health", query=None)
+        try:
+            async with httpx.AsyncClient(verify=str(ca_path), timeout=5) as client:
+                upstream = await client.get(str(health_url))
+        except httpx.HTTPError:
+            return Response(status_code=503)
+        if upstream.status_code < 200 or upstream.status_code >= 300:
+            return Response(status_code=503)
+        return Response(content=b'{"ok":true}', media_type="application/json")
+
+    @app.post("/webhooks/stripe")
+    async def gate_webhook(request: Request) -> Response:
+        signature = request.headers.get("stripe-signature", "")
+        content_type = request.headers.get("content-type", "")
+        if not signature or not content_type.startswith("application/json"):
+            return Response(status_code=400)
+        body = await request.body()
+        if len(body) > 2 * 1024 * 1024:
+            return Response(status_code=413)
+        try:
+            payload = json.loads(body)
+        except (UnicodeError, json.JSONDecodeError):
+            return Response(status_code=400)
+        try:
+            account = _load_private_gate_json(
+                state_dir / _GATE_FILE_NAMES["account"],
+                allowed_fields=frozenset(("account_id",)),
+            )
+        except RuntimeError:
+            account = {}
+        identity = _pack_gate_identity(payload, account.get("account_id", ""))
+        if identity is not None and (state_dir / _GATE_FILE_NAMES["armed"]).exists():
+            capture_path = state_dir / _GATE_FILE_NAMES["captured"]
+            if capture_path.exists():
+                existing = _load_private_gate_json(
+                    capture_path,
+                    allowed_fields=_GATE_IDENTITY_FIELDS,
+                )
+                if existing != identity:
+                    return Response(status_code=409)
+            else:
+                _write_private_json_atomic(capture_path, identity)
+            release_path = state_dir / _GATE_FILE_NAMES["released"]
+            deadline = time.monotonic() + 12
+            while (  # noqa: ASYNC110 - release is a cross-process filesystem signal.
+                not release_path.exists() and time.monotonic() < deadline
+            ):
+                await asyncio.sleep(0.05)
+            if not release_path.exists():
+                # No payload is persisted. Stripe will retry this genuine Event after
+                # the browser-side barrier is released.
+                return Response(status_code=503)
+            released = _load_private_gate_json(
+                release_path,
+                allowed_fields=frozenset(("account_id", "stripe_event_id")),
+            )
+            if (
+                released["account_id"] != identity["account_id"]
+                or released["stripe_event_id"] != identity["stripe_event_id"]
+            ):
+                return Response(status_code=409)
+        try:
+            async with httpx.AsyncClient(verify=str(ca_path), timeout=30) as client:
+                upstream = await client.post(
+                    str(backend),
+                    content=body,
+                    headers={
+                        "content-type": content_type,
+                        "stripe-signature": signature,
+                    },
+                )
+        except httpx.HTTPError:
+            return Response(status_code=502)
+        if identity is not None and 200 <= upstream.status_code < 300:
+            _write_private_json_atomic(
+                state_dir / _GATE_FILE_NAMES["forwarded"],
+                identity,
+            )
+        response_content_type = upstream.headers.get("content-type", "application/json")
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=response_content_type.split(";", 1)[0],
+        )
+
+    return app
 
 
 def _merge_manifest_identities(manifest: dict[str, Any], values: dict[str, Any]) -> None:
@@ -371,6 +1015,10 @@ async def write_cleanup_manifest(args: argparse.Namespace) -> None:
         "checkout_session_id": None,
         "stripe_customer_id": None,
         "stripe_subscription_id": None,
+        "credit_pack_order_id": None,
+        "credit_pack_checkout_session_id": None,
+        "credit_pack_payment_intent_id": None,
+        "credit_pack_charge_id": None,
         "database_state_available": False,
     }
     defaults.update(manifest)
@@ -383,9 +1031,19 @@ async def write_cleanup_manifest(args: argparse.Namespace) -> None:
         try:
             row = await conn.fetchrow(
                 """select a.id,a.stripe_customer_id,a.stripe_subscription_id,
-                          c.session_id
+                          c.session_id,p.id as credit_pack_order_id,
+                          p.stripe_checkout_session_id as credit_pack_checkout_session_id,
+                          p.stripe_payment_intent_id as credit_pack_payment_intent_id,
+                          p.stripe_charge_id as credit_pack_charge_id
                      from billing_accounts a
                      left join checkout_claims c on c.account_id=a.id
+                     left join lateral (
+                       select id,stripe_checkout_session_id,stripe_payment_intent_id,
+                              stripe_charge_id
+                         from credit_pack_orders
+                        where account_id=a.id
+                        order by created_at desc,id desc limit 1
+                     ) p on true
                     where a.external_ref=$1""",
                 args.external_ref,
             )
@@ -396,6 +1054,10 @@ async def write_cleanup_manifest(args: argparse.Namespace) -> None:
                     "checkout_session_id": row["session_id"],
                     "stripe_customer_id": row["stripe_customer_id"],
                     "stripe_subscription_id": row["stripe_subscription_id"],
+                    "credit_pack_order_id": row.get("credit_pack_order_id"),
+                    "credit_pack_checkout_session_id": row.get("credit_pack_checkout_session_id"),
+                    "credit_pack_payment_intent_id": row.get("credit_pack_payment_intent_id"),
+                    "credit_pack_charge_id": row.get("credit_pack_charge_id"),
                 }
                 _merge_manifest_identities(manifest, database_identity)
         finally:
@@ -410,6 +1072,30 @@ async def verify_database(args: argparse.Namespace) -> None:
         args.expected_credits,
         args.transition_policy,
     )
+    pack_credits = _exact_credit_amount(
+        args.expected_pack_credits,
+        field="expected browser E2E credit-pack credits",
+    )
+    success_job_credits = _exact_credit_amount(
+        args.expected_success_job_credits,
+        field="expected successful product Job credits",
+    )
+    refunded_job_credits = _exact_credit_amount(
+        args.expected_refunded_job_credits,
+        field="expected refunded product Job credits",
+    )
+    funded_total_atoms = (
+        _exact_credit_amount("1000", field="Pro E2E credits").atoms + pack_credits.atoms
+    )
+    if credit_expectations.balance.atoms != funded_total_atoms - success_job_credits.atoms:
+        raise ValueError(
+            "expected final credits must equal Pro plus pack funding minus the successful Job"
+        )
+    subscription_balance_atoms = credit_expectations.balance.atoms - pack_credits.atoms
+    if subscription_balance_atoms <= 0:
+        raise ValueError("expected total credits must exceed expected credit-pack credits")
+    if args.expected_pack_price < 1:
+        raise ValueError("expected credit-pack price must be positive minor units")
     conn = await asyncpg.connect(args.database_url)
     try:
         account = await conn.fetchrow(
@@ -425,7 +1111,7 @@ async def verify_database(args: argparse.Namespace) -> None:
             args.expected_plan,
             "month",
             "active",
-            credit_expectations.balance.atoms,
+            subscription_balance_atoms,
             False,
         )
         projection = tuple(account)[3:]
@@ -522,11 +1208,116 @@ async def verify_database(args: argparse.Namespace) -> None:
         elif allocations:
             raise RuntimeError("full-period browser run unexpectedly created a delta allocation")
 
+        pack_rows = await conn.fetch(
+            """select o.id,o.account_id,o.pack_key,o.pack_credits,o.price_amount,
+                      o.currency,o.expires_days,o.price_lookup_key,
+                      o.checkout_status,o.payment_status,
+                      o.stripe_checkout_session_id,o.stripe_payment_intent_id,
+                      o.stripe_charge_id,o.stripe_customer_id,o.amount_paid,
+                      o.amount_refunded,o.refunded_credits,
+                      l.id as lot_id,l.order_id as lot_order_id,
+                      l.account_id as lot_account_id,l.original_credits,
+                      l.remaining_credits,l.expired_credits,
+                      l.cash_clawed_back_credits,l.status as lot_status,
+                      l.expires_at > now() as lot_unexpired,l.created_at as lot_created_at
+                 from credit_pack_orders o
+                 join credit_funding_lots l on l.order_id=o.id
+                where o.account_id=$1::uuid
+                order by o.created_at,o.id""",
+            account_id,
+        )
+        if len(pack_rows) != 1:
+            raise RuntimeError("browser E2E must project exactly one credit-pack order and lot")
+        pack_row = pack_rows[0]
+        pack_order_id = str(pack_row["id"])
+        pack_session_id = str(pack_row["stripe_checkout_session_id"] or "")
+        pack_payment_intent_id = str(pack_row["stripe_payment_intent_id"] or "")
+        pack_charge_id = str(pack_row["stripe_charge_id"] or "")
+        expected_pack_projection = (
+            account_id,
+            args.expected_pack,
+            pack_credits.atoms,
+            args.expected_pack_price,
+            args.expected_pack_currency,
+            args.expected_pack_expires_days,
+            args.expected_pack_lookup_key,
+            "completed",
+            "paid",
+        )
+        actual_pack_projection = (
+            str(pack_row["account_id"]),
+            pack_row["pack_key"],
+            int(pack_row["pack_credits"]),
+            int(pack_row["price_amount"]),
+            pack_row["currency"],
+            int(pack_row["expires_days"]),
+            pack_row["price_lookup_key"],
+            pack_row["checkout_status"],
+            pack_row["payment_status"],
+        )
+        if actual_pack_projection != expected_pack_projection:
+            raise RuntimeError("credit-pack order differs from the exact browser purchase")
+        if (
+            not pack_session_id.startswith("cs_test_")
+            or not pack_payment_intent_id.startswith("pi_")
+            or not pack_charge_id.startswith("ch_")
+            or pack_row["stripe_customer_id"] != customer_id
+            or int(pack_row["amount_paid"] or 0) != args.expected_pack_price
+            or int(pack_row["amount_refunded"]) != 0
+            or int(pack_row["refunded_credits"]) != 0
+            or str(pack_row["lot_order_id"]) != pack_order_id
+            or str(pack_row["lot_account_id"]) != account_id
+            or int(pack_row["original_credits"]) != pack_credits.atoms
+            or int(pack_row["remaining_credits"]) != pack_credits.atoms
+            or int(pack_row["expired_credits"]) != 0
+            or int(pack_row["cash_clawed_back_credits"]) != 0
+            or pack_row["lot_status"] != "active"
+            or not bool(pack_row["lot_unexpired"])
+        ):
+            raise RuntimeError("credit-pack lot or Stripe lineage is incomplete")
+
+        job_rows = await conn.fetch(
+            """select d.idempotency_key,d.amount,d.restored_credits,d.refunded_at,
+                      coalesce(sum(a.amount),0)::bigint as allocated_credits,
+                      coalesce(sum(a.refunded_amount),0)::bigint as allocation_refunds,
+                      coalesce(array_agg(distinct a.source_type)
+                        filter (where a.source_type is not null),'{}'::text[]) as source_types
+                 from credit_debits d
+                 left join credit_debit_allocations a
+                   on a.debit_idempotency_key=d.idempotency_key
+                where d.account_id=$1::uuid and d.kind='usage'
+                group by d.idempotency_key,d.amount,d.restored_credits,d.refunded_at
+                order by d.idempotency_key""",
+            account_id,
+        )
+        _verify_browser_job_debits(
+            job_rows,
+            success_key=args.expected_success_job_key,
+            success_credits=success_job_credits,
+            refunded_key=args.expected_refunded_job_key,
+            refunded_credits=refunded_job_credits,
+        )
+
         events = await conn.fetch(
-            """select id,event_type,outcome,payload->>'id' as payload_id,
+            """select id,event_type,outcome,reason,processed_at,
+                      payload->>'id' as payload_id,
                       payload->>'api_version' as api_version,livemode,
                       payload#>>'{data,object,id}' as object_id,
-                      payload#>>'{data,object,client_reference_id}' as client_reference_id
+                      payload#>>'{data,object,client_reference_id}' as client_reference_id,
+                      payload#>>'{data,object,metadata,billing_kind}' as billing_kind,
+                      payload#>>'{data,object,metadata,credit_pack_order_id}' as pack_order_id,
+                      payload#>>'{data,object,metadata,pack_key}' as pack_key,
+                      payload#>>'{data,object,metadata,pack_credits}' as pack_credits,
+                      payload#>>'{data,object,metadata,price_amount}' as pack_price_amount,
+                      payload#>>'{data,object,metadata,currency}' as pack_currency,
+                      payload#>>'{data,object,metadata,expires_days}' as pack_expires_days,
+                      payload#>>'{data,object,metadata,lookup_key}' as pack_lookup_key,
+                      payload#>>'{data,object,amount_received}' as amount_received,
+                      payload#>>'{data,object,currency}' as currency,
+                      payload#>>'{data,object,status}' as object_status,
+                      payload#>>'{data,object,customer}' as object_customer,
+                      payload#>>'{data,object,latest_charge}' as latest_charge,
+                      payload#>>'{data,object,payment_intent}' as checkout_payment_intent
                  from stripe_webhook_events
                 where event_type=any($1::text[])
                   and (
@@ -553,6 +1344,24 @@ async def verify_database(args: argparse.Namespace) -> None:
             for row in events
             if row["event_type"] == "checkout.session.completed"
             and row["client_reference_id"] == account_id
+            and row["billing_kind"] != "credit_pack"
+            and row["outcome"] == "handled"
+        ]
+        pack_checkout_events = [
+            row
+            for row in events
+            if row["event_type"] == "checkout.session.completed"
+            and row["object_id"] == pack_session_id
+            and row["client_reference_id"] == account_id
+            and row["billing_kind"] == "credit_pack"
+            and row["outcome"] == "handled"
+        ]
+        pack_payment_events = [
+            row
+            for row in events
+            if row["event_type"] == "payment_intent.succeeded"
+            and row["object_id"] == pack_payment_intent_id
+            and row["billing_kind"] == "credit_pack"
             and row["outcome"] == "handled"
         ]
         initial_paid_events = [
@@ -570,14 +1379,51 @@ async def verify_database(args: argparse.Namespace) -> None:
             and row["outcome"] == "handled"
         ]
         if not (
-            len(checkout_events) == len(initial_paid_events) == len(settlement_paid_events) == 1
+            len(checkout_events)
+            == len(initial_paid_events)
+            == len(settlement_paid_events)
+            == len(pack_checkout_events)
+            == len(pack_payment_events)
+            == 1
         ):
             raise RuntimeError(
-                "this E2E subject must have one Checkout and two distinct handled paid Events"
+                "this E2E subject must have one subscription Checkout, two paid Invoices, "
+                "one pack Checkout, and one authoritative pack PaymentIntent Event"
             )
         checkout_session_id = str(checkout_events[0]["object_id"] or "")
         if not checkout_session_id.startswith("cs_test_"):
             raise RuntimeError("handled Checkout Event is not bound to a test Session")
+        pack_checkout = pack_checkout_events[0]
+        pack_payment = pack_payment_events[0]
+        if (
+            pack_checkout["pack_order_id"] != pack_order_id
+            or pack_checkout["pack_key"] != args.expected_pack
+            or pack_checkout["pack_credits"] != str(pack_credits)
+            or pack_checkout["pack_price_amount"] != str(args.expected_pack_price)
+            or pack_checkout["pack_currency"] != args.expected_pack_currency
+            or pack_checkout["pack_expires_days"] != str(args.expected_pack_expires_days)
+            or pack_checkout["pack_lookup_key"] != args.expected_pack_lookup_key
+            or pack_checkout["checkout_payment_intent"] != pack_payment_intent_id
+            or pack_checkout["reason"]
+            != "credit-pack Checkout recorded; payment webhook remains authoritative"
+            or pack_payment["pack_order_id"] != pack_order_id
+            or pack_payment["pack_key"] != args.expected_pack
+            or pack_payment["pack_credits"] != str(pack_credits)
+            or pack_payment["pack_price_amount"] != str(args.expected_pack_price)
+            or pack_payment["pack_currency"] != args.expected_pack_currency
+            or pack_payment["pack_expires_days"] != str(args.expected_pack_expires_days)
+            or pack_payment["pack_lookup_key"] != args.expected_pack_lookup_key
+            or pack_payment["amount_received"] != str(args.expected_pack_price)
+            or pack_payment["currency"] != args.expected_pack_currency
+            or pack_payment["object_status"] != "succeeded"
+            or pack_payment["object_customer"] != customer_id
+            or pack_payment["latest_charge"] != pack_charge_id
+            or pack_payment["reason"] != "credit-pack funding granted"
+            or pack_row["lot_created_at"] > pack_payment["processed_at"]
+        ):
+            raise RuntimeError(
+                "credit-pack Checkout/PaymentIntent/lot lineage is not exact and authoritative"
+            )
         if initial_grants[0]["stripe_event_id"] != initial_paid_events[0]["id"]:
             raise RuntimeError("initial grant is not bound to its paid Event")
         if settlement_grants[0]["stripe_event_id"] != settlement_paid_events[0]["id"]:
@@ -592,6 +1438,8 @@ async def verify_database(args: argparse.Namespace) -> None:
             str(checkout_events[0]["id"]),
             str(initial_paid_events[0]["id"]),
             str(settlement_paid_events[0]["id"]),
+            str(pack_checkout["id"]),
+            str(pack_payment["id"]),
         ]
         unresolved = await conn.fetchval(
             """select count(*) from billing_incidents
@@ -632,8 +1480,10 @@ async def verify_database(args: argparse.Namespace) -> None:
         print(
             "verified signed webhook projection: "
             f"plan={args.expected_plan}/month credits={credit_expectations.balance} "
+            f"pack={args.expected_pack}/{pack_credits} pack_session_verified=true "
+            f"job_charge={success_job_credits} job_refund={refunded_job_credits} "
             f"policy={args.transition_policy} account_events={len(events)} "
-            f"unrelated_events={unrelated_events} essential_events=3 "
+            f"unrelated_events={unrelated_events} essential_events=5 "
             f"signed_delivery_transport={args.delivery_transport} "
             f"signed_payload_api_version={args.event_api_version} "
             "stripe_event_api_view_versions="
@@ -817,9 +1667,19 @@ async def cleanup_account(args: argparse.Namespace) -> None:
     try:
         row = await conn.fetchrow(
             """select a.id,a.stripe_customer_id,a.stripe_subscription_id,
-                      c.session_id
+                      c.session_id,p.id as credit_pack_order_id,
+                      p.stripe_checkout_session_id as credit_pack_checkout_session_id,
+                      p.stripe_payment_intent_id as credit_pack_payment_intent_id,
+                      p.stripe_charge_id as credit_pack_charge_id
                  from billing_accounts a
                  left join checkout_claims c on c.account_id=a.id
+                 left join lateral (
+                   select id,stripe_checkout_session_id,stripe_payment_intent_id,
+                          stripe_charge_id
+                     from credit_pack_orders
+                    where account_id=a.id
+                    order by created_at desc,id desc limit 1
+                 ) p on true
                 where a.external_ref=$1""",
             args.external_ref,
         )
@@ -827,26 +1687,78 @@ async def cleanup_account(args: argparse.Namespace) -> None:
         await conn.close()
     if row is None:
         return
+    account_id = str(row["id"])
     session_id = row["session_id"]
     subscription_id = row["stripe_subscription_id"]
     customer_id = row["stripe_customer_id"]
     owned_customer_id: str | None = None
-    if not session_id:
-        sessions = await asyncio.to_thread(
+    listed_sessions: list[Any] | None = None
+    pack_order_id = str(row["credit_pack_order_id"] or "")
+    pack_session_id = str(row["credit_pack_checkout_session_id"] or "")
+    if pack_order_id and not pack_session_id:
+        # Stripe may have committed Session creation before the application could
+        # attach its ID. Discover only the exact account/order metadata snapshot;
+        # complete auto-pagination keeps normal cleanup as strong as manifest recovery.
+        listed_sessions = await asyncio.to_thread(
             _all_list_items,
             stripe.checkout.Session.list,
             limit=100,
             **_options(),
         )
+        matching_pack_sessions: list[str] = []
+        for candidate in listed_sessions:
+            raw = _dict(candidate)
+            metadata = raw.get("metadata") or {}
+            candidate_id = _object_id(raw.get("id"))
+            if (
+                candidate_id
+                and _owned_checkout_kind(raw, account_id) == "credit_pack"
+                and isinstance(metadata, dict)
+                and str(metadata.get("credit_pack_order_id")) == pack_order_id
+            ):
+                matching_pack_sessions.append(candidate_id)
+        matching_pack_sessions = list(dict.fromkeys(matching_pack_sessions))
+        if len(matching_pack_sessions) > 1:
+            raise RuntimeError("multiple credit-pack Sessions matched one E2E order")
+        pack_session_id = matching_pack_sessions[0] if matching_pack_sessions else ""
+    pack_identity_present = any(
+        row[field]
+        for field in (
+            "credit_pack_order_id",
+            "credit_pack_checkout_session_id",
+            "credit_pack_payment_intent_id",
+            "credit_pack_charge_id",
+        )
+    )
+    if pack_identity_present:
+        resolved_pack = await asyncio.to_thread(
+            _close_run_owned_pack_payment,
+            account_id=account_id,
+            order_id=pack_order_id,
+            session_id=pack_session_id,
+            payment_intent_id=str(row["credit_pack_payment_intent_id"] or ""),
+            charge_id=str(row["credit_pack_charge_id"] or ""),
+            customer_id=str(customer_id or ""),
+        )
+        pack_customer_id = resolved_pack["customer_id"] or None
+        if customer_id is not None and pack_customer_id != str(customer_id):
+            raise RuntimeError("credit-pack Customer conflicts with the E2E billing account")
+        if customer_id is None and pack_customer_id:
+            customer_id = pack_customer_id
+        owned_customer_id = pack_customer_id
+    if not session_id:
+        sessions = listed_sessions
+        if sessions is None:
+            sessions = await asyncio.to_thread(
+                _all_list_items,
+                stripe.checkout.Session.list,
+                limit=100,
+                **_options(),
+            )
         owned_sessions = []
         for candidate in sessions:
             raw = _dict(candidate)
-            metadata = raw.get("metadata") or {}
-            if (
-                not bool(raw.get("livemode"))
-                and str(raw.get("client_reference_id")) == str(row["id"])
-                and str(metadata.get("account_id")) == str(row["id"])
-            ):
+            if _owned_checkout_kind(raw, account_id) == "subscription":
                 owned_sessions.append(str(raw["id"]))
         if len(owned_sessions) > 1:
             raise RuntimeError("multiple Checkout Sessions matched one E2E account")
@@ -860,12 +1772,15 @@ async def cleanup_account(args: argparse.Namespace) -> None:
             metadata = raw.get("metadata") or {}
             owned = (
                 not bool(raw.get("livemode"))
-                and str(raw.get("client_reference_id")) == str(row["id"])
-                and str(metadata.get("account_id")) == str(row["id"])
+                and str(raw.get("client_reference_id")) == account_id
+                and str(metadata.get("account_id")) == account_id
             )
             if not owned:
                 raise RuntimeError("refusing to expire a Checkout Session outside this E2E run")
-            owned_customer_id = _object_id(raw.get("customer"))
+            session_customer_id = _object_id(raw.get("customer"))
+            if owned_customer_id is not None and session_customer_id != owned_customer_id:
+                raise RuntimeError("subscription and credit-pack Sessions use different Customers")
+            owned_customer_id = session_customer_id
             if customer_id is None and owned_customer_id:
                 customer_id = owned_customer_id
             session_subscription_id = _object_id(raw.get("subscription"))
@@ -881,7 +1796,7 @@ async def cleanup_account(args: argparse.Namespace) -> None:
         await asyncio.to_thread(
             _assert_checkout_session_closed,
             str(session_id),
-            str(row["id"]),
+            account_id,
         )
     if subscription_id:
         try:
@@ -893,7 +1808,7 @@ async def cleanup_account(args: argparse.Namespace) -> None:
             subscription_customer_id = _object_id(subscription_raw.get("customer"))
             owned = (
                 not bool(subscription_raw.get("livemode"))
-                and str(metadata.get("account_id")) == str(row["id"])
+                and str(metadata.get("account_id")) == account_id
                 and metadata.get("product_line") == E2E_PRODUCT_LINE
                 and subscription_customer_id is not None
                 and (customer_id is None or subscription_customer_id == str(customer_id))
@@ -911,7 +1826,7 @@ async def cleanup_account(args: argparse.Namespace) -> None:
         await asyncio.to_thread(
             _assert_subscription_canceled,
             str(subscription_id),
-            str(row["id"]),
+            account_id,
             str(customer_id) if customer_id else owned_customer_id,
         )
     customer_to_delete = str(customer_id) if customer_id else owned_customer_id
@@ -941,23 +1856,48 @@ def recover_cleanup_manifest(args: argparse.Namespace) -> None:
     session_id = str(manifest.get("checkout_session_id") or "")
     customer_id = str(manifest.get("stripe_customer_id") or "")
     subscription_id = str(manifest.get("stripe_subscription_id") or "")
+    pack_order_id = str(manifest.get("credit_pack_order_id") or "")
+    pack_session_id = str(manifest.get("credit_pack_checkout_session_id") or "")
+    pack_payment_intent_id = str(manifest.get("credit_pack_payment_intent_id") or "")
+    pack_charge_id = str(manifest.get("credit_pack_charge_id") or "")
     endpoint_id = str(manifest.get("endpoint_id") or "")
     endpoint_description = str(manifest.get("endpoint_description") or "")
     endpoint_url = str(manifest.get("endpoint_url") or "")
 
-    if any((session_id, customer_id, subscription_id)) and not account_id:
+    if (
+        any(
+            (
+                session_id,
+                customer_id,
+                subscription_id,
+                pack_order_id,
+                pack_session_id,
+                pack_payment_intent_id,
+                pack_charge_id,
+            )
+        )
+        and not account_id
+    ):
         raise RuntimeError("cleanup manifest has Stripe account objects without account identity")
 
     owned_customer_id: str | None = None
     matching_sessions: list[Any] = []
     if account_id:
-        if session_id:
+        explicit_session_ids = [
+            candidate for candidate in (session_id, pack_session_id) if candidate
+        ]
+        for explicit_session_id in dict.fromkeys(explicit_session_ids):
             try:
-                matching_sessions.append(stripe.checkout.Session.retrieve(session_id, **_options()))
+                matching_sessions.append(
+                    stripe.checkout.Session.retrieve(explicit_session_id, **_options())
+                )
             except stripe.InvalidRequestError as exc:
                 if not _is_missing_resource(exc):
                     raise
-        if not matching_sessions:
+        discover_pack_session = (
+            "credit_pack_checkout_session_id" in manifest and not pack_session_id
+        )
+        if not matching_sessions or discover_pack_session:
             sessions = _all_list_items(
                 stripe.checkout.Session.list,
                 limit=100,
@@ -965,17 +1905,43 @@ def recover_cleanup_manifest(args: argparse.Namespace) -> None:
             )
             for candidate in sessions:
                 raw = _dict(candidate)
-                metadata = raw.get("metadata") or {}
-                if (
-                    not bool(raw.get("livemode"))
-                    and str(raw.get("client_reference_id")) == account_id
-                    and str(metadata.get("account_id")) == account_id
-                ):
+                if _owned_checkout_kind(raw, account_id) is not None and str(raw.get("id")) not in {
+                    str(_dict(item).get("id")) for item in matching_sessions
+                }:
                     matching_sessions.append(candidate)
-        if len(matching_sessions) > 1:
-            raise RuntimeError("multiple Checkout Sessions matched one recovery manifest")
-        if matching_sessions:
-            session = matching_sessions[0]
+        subscription_sessions: list[Any] = []
+        pack_sessions: list[Any] = []
+        for candidate in matching_sessions:
+            raw = _dict(candidate)
+            metadata = raw.get("metadata") or {}
+            if metadata.get("billing_kind") == "credit_pack":
+                pack_sessions.append(candidate)
+            else:
+                subscription_sessions.append(candidate)
+        if len(subscription_sessions) > 1 or len(pack_sessions) > 1:
+            raise RuntimeError("multiple same-kind Checkout Sessions matched one recovery manifest")
+
+        if pack_sessions or pack_payment_intent_id or pack_charge_id:
+            discovered_pack_session_id = (
+                str(_dict(pack_sessions[0])["id"]) if pack_sessions else pack_session_id
+            )
+            resolved_pack = _close_run_owned_pack_payment(
+                account_id=account_id,
+                order_id=pack_order_id,
+                session_id=discovered_pack_session_id,
+                payment_intent_id=pack_payment_intent_id,
+                charge_id=pack_charge_id,
+                customer_id=customer_id,
+            )
+            pack_customer_id = resolved_pack["customer_id"] or None
+            if customer_id and pack_customer_id != customer_id:
+                raise RuntimeError("cleanup manifest pack Customer conflicts with account identity")
+            if not customer_id and pack_customer_id:
+                customer_id = pack_customer_id
+            owned_customer_id = pack_customer_id
+
+        if subscription_sessions:
+            session = subscription_sessions[0]
             raw = _dict(session)
             metadata = raw.get("metadata") or {}
             session_customer_id = _object_id(raw.get("customer"))
@@ -984,6 +1950,7 @@ def recover_cleanup_manifest(args: argparse.Namespace) -> None:
                 and str(raw.get("client_reference_id")) == account_id
                 and str(metadata.get("account_id")) == account_id
                 and (not customer_id or session_customer_id == customer_id)
+                and (owned_customer_id is None or session_customer_id == owned_customer_id)
             )
             if not owned:
                 raise RuntimeError("refusing to recover a Checkout Session outside this run")
@@ -1133,7 +2100,23 @@ def parser() -> argparse.ArgumentParser:
         default="endpoint",
     )
     database.add_argument("--expected-plan", default="pro")
-    database.add_argument("--expected-credits", default="1000")
+    database.add_argument("--expected-credits", default="1100")
+    database.add_argument("--expected-pack", default="boost-100")
+    database.add_argument("--expected-pack-credits", default="100")
+    database.add_argument("--expected-pack-price", type=int, default=1500)
+    database.add_argument("--expected-pack-currency", default="usd")
+    database.add_argument("--expected-pack-expires-days", type=int, default=365)
+    database.add_argument("--expected-pack-lookup-key", default="ent_pack_boost-100")
+    database.add_argument(
+        "--expected-success-job-key",
+        default="browser-e2e:job-success",
+    )
+    database.add_argument("--expected-success-job-credits", default="80")
+    database.add_argument(
+        "--expected-refunded-job-key",
+        default="browser-e2e:job-failure",
+    )
+    database.add_argument("--expected-refunded-job-credits", default="20")
     database.add_argument(
         "--transition-policy",
         choices=("full_period_reset", "prorated_delta"),
@@ -1174,6 +2157,32 @@ def parser() -> argparse.ArgumentParser:
     recover = commands.add_parser("recover-cleanup")
     recover.add_argument("--manifest", required=True)
     recover.set_defaults(run=recover_cleanup_manifest)
+
+    gate_arm = commands.add_parser("arm-credit-pack-gate")
+    gate_arm.add_argument("--state-dir", required=True)
+    gate_arm.add_argument("--account-id", required=True)
+    gate_arm.set_defaults(run=arm_credit_pack_gate)
+
+    gate_wait = commands.add_parser("wait-credit-pack-gate")
+    gate_wait.add_argument("--state-dir", required=True)
+    gate_wait.add_argument("--phase", choices=("captured", "forwarded"), required=True)
+    gate_wait.add_argument("--timeout-seconds", type=int, default=60)
+    gate_wait.set_defaults(run=wait_credit_pack_gate)
+
+    gate_release = commands.add_parser("release-credit-pack-gate")
+    gate_release.add_argument("--state-dir", required=True)
+    gate_release.set_defaults(run=release_credit_pack_gate)
+
+    auth_fixture = commands.add_parser("create-auth-fixture")
+    auth_fixture.add_argument("--issuer", required=True)
+    auth_fixture.add_argument("--personal-audience", required=True)
+    auth_fixture.add_argument("--personal-subject", required=True)
+    auth_fixture.add_argument("--email", required=True)
+    auth_fixture.add_argument("--workload-audience", required=True)
+    auth_fixture.add_argument("--workload-subject", required=True)
+    auth_fixture.add_argument("--jwks-output", required=True)
+    auth_fixture.add_argument("--token-output", required=True)
+    auth_fixture.set_defaults(run=create_auth_fixture)
     return root
 
 

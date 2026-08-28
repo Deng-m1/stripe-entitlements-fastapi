@@ -1,4 +1,5 @@
 import type {
+  CatalogCreditPack,
   CatalogPlan,
   CatalogResponse,
   Entitlement,
@@ -63,6 +64,17 @@ interface ReferencePlanSource {
   limits: Record<string, number>;
 }
 
+interface ReferenceCreditPackSource {
+  key: string;
+  name: string;
+  description: string;
+  currency: string;
+  rank: number;
+  credits: string;
+  price_usd: number;
+  expires_days: number;
+}
+
 /** Public build-time catalog used by the landing and initial pricing HTML. */
 export const referencePlans: CatalogPlan[] = (
   referenceCatalogSource.plans as ReferencePlanSource[]
@@ -90,9 +102,30 @@ export const referencePlans: CatalogPlan[] = (
   ),
 }));
 
+export const referenceCreditPacks: CatalogCreditPack[] = (
+  referenceCatalogSource.credit_packs as ReferenceCreditPackSource[]
+).map((pack) => {
+  const credits = creditAmountFromDecimal(pack.credits);
+  return {
+    key: pack.key,
+    name: pack.name,
+    description: pack.description,
+    display_order: pack.rank,
+    credits: credits.decimal,
+    credits_atoms: credits.atoms,
+    credit_scale: credits.scale,
+    price: {
+      currency: pack.currency,
+      unit_amount: pack.price_usd * 100,
+    },
+    expires_days: pack.expires_days,
+  };
+});
+
 export const referenceCatalog: CatalogResponse = {
   transition_policy: "full_period_reset",
   plans: referencePlans,
+  credit_packs: referenceCreditPacks,
 };
 
 export function referenceEntitlements(planKey: string): Entitlement[] {

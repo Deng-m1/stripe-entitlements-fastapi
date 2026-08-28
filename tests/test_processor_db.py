@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from typing import Any
 
@@ -1897,8 +1898,9 @@ async def test_unhandled_event_is_audited_without_side_effects(
     async with pool.acquire() as conn:
         row = await conn.fetchrow("select outcome,processed_at,payload from stripe_webhook_events")
     assert row is not None and row["outcome"] == "ignored" and row["processed_at"] is not None
-    assert row["payload"]["data"]["object"]["email"] == "[redacted]"
-    assert row["payload"]["data"]["object"]["metadata"]["free_form"] == "[redacted]"
+    assert row["payload"]["data"]["object"] == {"id": "cus_other"}
+    assert "private@example.test" not in json.dumps(row["payload"])
+    assert "private note" not in json.dumps(row["payload"])
 
 
 async def test_incident_deduplication_updates_seen_count(

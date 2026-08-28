@@ -24,7 +24,7 @@ if [[ "$e2e_webhook_transport" == "stripe_cli" && -z "${E2E_STRIPE_EVENT_API_VER
   exit 2
 fi
 e2e_event_version="${E2E_STRIPE_EVENT_API_VERSION:-2026-06-24.dahlia}"
-e2e_supported_events="checkout.session.completed,checkout.session.expired,invoice.paid,invoice.payment_failed,customer.subscription.updated,customer.subscription.deleted,charge.refunded,charge.dispute.created"
+e2e_supported_events="checkout.session.completed,checkout.session.expired,invoice.paid,invoice.payment_failed,customer.subscription.updated,customer.subscription.deleted,charge.refunded,charge.dispute.created,payment_intent.succeeded"
 e2e_transition_policy="${E2E_TRANSITION_POLICY:-full_period_reset}"
 case "$e2e_transition_policy" in
   full_period_reset|prorated_delta) ;;
@@ -47,13 +47,18 @@ if [[ -z "$e2e_postgres_image" ]]; then
   exit 2
 fi
 e2e_run_id="$(date -u +%Y%m%d%H%M%S)-$$"
-e2e_external_ref="browser-e2e-$e2e_run_id"
+e2e_user_id="$(uv run python -c 'import uuid; print(uuid.uuid4())')"
+e2e_workload_subject="$(uv run python -c 'import uuid; print(uuid.uuid4())')"
+e2e_external_ref="v1:user:${e2e_user_id}"
 e2e_description="stripe-entitlements-browser-e2e-$e2e_run_id"
 e2e_pg_container="stripe-entitlements-browser-e2e-pg-$$"
 e2e_tmp_dir="$(mktemp -d /tmp/stripe-entitlements-browser-e2e.XXXXXX)"
 e2e_endpoint_state="$e2e_tmp_dir/webhook.json"
 e2e_cleanup_manifest="$e2e_tmp_dir/cleanup-manifest.json"
 e2e_account_state="$e2e_tmp_dir/account.json"
+e2e_auth_state="$e2e_tmp_dir/auth.json"
+e2e_jwks_state="$e2e_tmp_dir/jwks.json"
+e2e_gate_state_dir="$e2e_tmp_dir/webhook-gate"
 e2e_endpoint_id=""
 e2e_webhook_url=""
 e2e_webhook_create_started=0
@@ -61,13 +66,16 @@ e2e_stateful_run_started=0
 e2e_tunnel_pid=""
 e2e_listener_pid=""
 e2e_listener_log=""
+e2e_gate_pid=""
 e2e_backend_pid=""
 e2e_frontend_pid=""
 e2e_tunnel_start=""
 e2e_listener_start=""
+e2e_gate_start=""
 e2e_backend_start=""
 e2e_frontend_start=""
 e2e_run_completed=0
+e2e_evidence_safe=1
 e2e_child_path="${PATH:-/usr/local/bin:/usr/bin:/bin}"
 e2e_child_home="${HOME:-/tmp}"
 e2e_child_tmp="${TMPDIR:-/tmp}"
@@ -82,19 +90,35 @@ e2e_backend_port="$(e2e_free_port)"
 while [[ "$e2e_backend_port" == "$e2e_pg_port" ]]; do
   e2e_backend_port="$(e2e_free_port)"
 done
+e2e_gate_port="$(e2e_free_port)"
+while [[ "$e2e_gate_port" == "$e2e_pg_port" || \
+         "$e2e_gate_port" == "$e2e_backend_port" ]]; do
+  e2e_gate_port="$(e2e_free_port)"
+done
 e2e_frontend_port="$(e2e_free_port)"
 while [[ "$e2e_frontend_port" == "$e2e_pg_port" || \
-         "$e2e_frontend_port" == "$e2e_backend_port" ]]; do
+         "$e2e_frontend_port" == "$e2e_backend_port" || \
+         "$e2e_frontend_port" == "$e2e_gate_port" ]]; do
   e2e_frontend_port="$(e2e_free_port)"
 done
 e2e_database_url="postgresql://postgres:local-only@127.0.0.1:${e2e_pg_port}/stripe_entitlements"
 e2e_backend_url="https://127.0.0.1:${e2e_backend_port}"
+e2e_gate_url="http://127.0.0.1:${e2e_gate_port}"
 e2e_frontend_url="https://127.0.0.1:${e2e_frontend_port}"
-e2e_demo_token="$(uv run python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+e2e_jwt_issuer="${e2e_backend_url}/e2e/issuer"
+e2e_personal_audience="stripe-entitlements-browser-e2e"
+e2e_workload_audience="stripe-entitlements-internal-e2e"
+e2e_personal_token=""
+e2e_workload_token=""
+e2e_job_success_key="browser-e2e:${e2e_run_id}:job-success"
+e2e_job_failure_key="browser-e2e:${e2e_run_id}:job-failure"
+e2e_portal_configuration_id=""
 e2e_output_root="${E2E_OUTPUT_DIR:-$e2e_repo_root/web/test-results/playwright-stripe-${e2e_transition_policy}}"
 e2e_output_dir=""
 e2e_loopback_key="$e2e_tmp_dir/loopback.key"
 e2e_loopback_cert="$e2e_tmp_dir/loopback.crt"
+e2e_combined_ca="$e2e_tmp_dir/combined-ca.pem"
+e2e_cloudflared_config="$e2e_tmp_dir/cloudflared-empty.yml"
 e2e_loopback_spki=""
 
 e2e_pid_start() {
@@ -103,22 +127,10 @@ e2e_pid_start() {
   awk '{print $22}' "/proc/$e2e_pid/stat"
 }
 
-e2e_redact_listener_log() {
-  local e2e_log_path="${1:-}"
-  [[ -f "$e2e_log_path" ]] || return 0
-  E2E_LISTENER_LOG="$e2e_log_path" uv run python -c '
-import os
-import re
-from pathlib import Path
-
-path = Path(os.environ["E2E_LISTENER_LOG"])
-data = path.read_bytes().replace(b"\\x00", b"")
-data = re.sub(rb"whsec_[A-Za-z0-9]+", b"whsec_[redacted]", data)
-temporary = path.with_name(f".{path.name}.redacted")
-temporary.write_bytes(data)
-temporary.chmod(0o600)
-temporary.replace(path)
-'
+e2e_sanitize_evidence_tree() {
+  local e2e_evidence_root="${1:-}"
+  [[ -n "$e2e_evidence_root" && -d "$e2e_evidence_root" ]] || return 0
+  uv run python scripts/sanitize_e2e_evidence.py --root "$e2e_evidence_root"
 }
 
 e2e_stop_pid() {
@@ -224,14 +236,13 @@ e2e_cleanup() {
   if ! e2e_stop_pid "$e2e_listener_pid" "$e2e_listener_start"; then
     e2e_cleanup_failed=1
   fi
-  if ! e2e_redact_listener_log "$e2e_listener_log"; then
-    echo "browser E2E Stripe CLI log redaction failed" >&2
-    e2e_cleanup_failed=1
-  fi
   if ! e2e_stop_pid "$e2e_backend_pid" "$e2e_backend_start"; then
     e2e_cleanup_failed=1
   fi
   if ! e2e_stop_pid "$e2e_tunnel_pid" "$e2e_tunnel_start"; then
+    e2e_cleanup_failed=1
+  fi
+  if ! e2e_stop_pid "$e2e_gate_pid" "$e2e_gate_start"; then
     e2e_cleanup_failed=1
   fi
   case "$e2e_pg_container" in
@@ -242,9 +253,20 @@ e2e_cleanup() {
       fi
       ;;
   esac
-  if ! rm -f "$e2e_endpoint_state"; then
-    echo "browser E2E signing-secret state cleanup failed" >&2
+  if ! rm -f "$e2e_endpoint_state" "$e2e_auth_state" "$e2e_jwks_state" \
+      "$e2e_loopback_key" "$e2e_cloudflared_config"; then
+    echo "browser E2E credential-state cleanup failed" >&2
     e2e_cleanup_failed=1
+  fi
+  if ! e2e_sanitize_evidence_tree "$e2e_tmp_dir" >/dev/null; then
+    echo "browser E2E could not prove retained service evidence is secret-free" >&2
+    e2e_cleanup_failed=1
+    e2e_evidence_safe=0
+  fi
+  if ! e2e_sanitize_evidence_tree "$e2e_output_dir" >/dev/null; then
+    echo "browser E2E could not prove retained Playwright evidence is secret-free" >&2
+    e2e_cleanup_failed=1
+    e2e_evidence_safe=0
   fi
   if [[ "$e2e_status" -eq 0 && "$e2e_run_completed" -ne 1 ]]; then
     echo "browser E2E exited before final database verification" >&2
@@ -268,15 +290,17 @@ e2e_cleanup() {
     esac
   fi
   if [[ "$e2e_status" -eq 0 ]]; then
-    echo "browser Stripe Checkout, $e2e_transition_policy upgrade, signed webhook, and cleanup E2E passed"
+    echo "browser Personal JWT, Stripe Checkout/Portal, $e2e_transition_policy upgrade, Boost 100 pack, product Job charge/refund, signed webhook, and cleanup E2E passed"
     echo "browser E2E artifacts: $e2e_output_dir"
     if [[ "$e2e_record_video" == "1" ]]; then
       find "$e2e_output_dir" -type f -name '*.webm' -print | while read -r video_path; do
         echo "recorded video: $video_path"
       done
     fi
+  elif [[ "$e2e_evidence_safe" -eq 1 ]]; then
+    echo "browser E2E failed; sanitized private logs kept in $e2e_tmp_dir" >&2
   else
-    echo "browser E2E failed; non-secret logs kept in $e2e_tmp_dir" >&2
+    echo "browser E2E failed and retained evidence did not pass the secret scan" >&2
   fi
   exit "$e2e_status"
 }
@@ -314,6 +338,19 @@ if ! openssl req -x509 -newkey rsa:2048 -nodes \
   exit 1
 fi
 chmod 600 "$e2e_loopback_key" "$e2e_loopback_cert"
+E2E_LOOPBACK_CERT="$e2e_loopback_cert" E2E_COMBINED_CA="$e2e_combined_ca" \
+  uv run python -c '
+import os
+from pathlib import Path
+
+import certifi
+
+system_ca = Path(certifi.where()).read_bytes()
+loopback_ca = Path(os.environ["E2E_LOOPBACK_CERT"]).read_bytes()
+output = Path(os.environ["E2E_COMBINED_CA"])
+output.write_bytes(system_ca.rstrip() + b"\n" + loopback_ca.rstrip() + b"\n")
+output.chmod(0o600)
+'
 if ! e2e_loopback_spki="$(
     openssl x509 -in "$e2e_loopback_cert" -pubkey -noout |
       openssl pkey -pubin -outform DER |
@@ -327,6 +364,55 @@ if [[ ! "$e2e_loopback_spki" =~ ^[A-Za-z0-9+/]{43}=$ ]]; then
   echo "browser E2E derived an invalid loopback certificate SPKI pin" >&2
   exit 1
 fi
+
+uv run python scripts/e2e_stripe.py create-auth-fixture \
+  --issuer "$e2e_jwt_issuer" \
+  --personal-audience "$e2e_personal_audience" \
+  --personal-subject "$e2e_user_id" \
+  --email "${e2e_user_id}@example.test" \
+  --workload-audience "$e2e_workload_audience" \
+  --workload-subject "$e2e_workload_subject" \
+  --jwks-output "$e2e_jwks_state" \
+  --token-output "$e2e_auth_state" >/dev/null
+e2e_personal_token="$(E2E_AUTH_STATE="$e2e_auth_state" uv run python -c '
+import json
+import os
+from pathlib import Path
+
+state = json.loads(Path(os.environ["E2E_AUTH_STATE"]).read_text(encoding="utf-8"))
+print(state["personal_token"])
+')"
+e2e_workload_token="$(E2E_AUTH_STATE="$e2e_auth_state" uv run python -c '
+import json
+import os
+from pathlib import Path
+
+state = json.loads(Path(os.environ["E2E_AUTH_STATE"]).read_text(encoding="utf-8"))
+print(state["workload_token"])
+')"
+if [[ ! "$e2e_personal_token" =~ ^eyJ[A-Za-z0-9._-]+$ || \
+      ! "$e2e_workload_token" =~ ^eyJ[A-Za-z0-9._-]+$ ]]; then
+  echo "browser E2E auth fixture did not produce signed JWTs" >&2
+  exit 1
+fi
+
+if ! STRIPE_API_VERSION="$e2e_request_version" \
+    uv run python scripts/bootstrap_stripe.py --verify-only \
+    --catalog "$e2e_repo_root/plans.toml" \
+    --product-line example-entitlements \
+    >"$e2e_tmp_dir/stripe-catalog-verify.log" 2>&1; then
+  echo "Stripe test catalog or Portal verification failed; inspect stripe-catalog-verify.log" >&2
+  exit 1
+fi
+e2e_portal_configuration_id="$(
+  rg -o 'portal=bpc_[A-Za-z0-9_]+' "$e2e_tmp_dir/stripe-catalog-verify.log" |
+    tail -n 1 | sed 's/^portal=//'
+)"
+if [[ ! "$e2e_portal_configuration_id" =~ ^bpc_[A-Za-z0-9_]+$ ]]; then
+  echo "verified Stripe test catalog did not expose one Portal configuration" >&2
+  exit 1
+fi
+
 if [[ "$e2e_webhook_transport" == "endpoint" ]]; then
   if [[ ! -x "$e2e_cloudflared" ]] && ! command -v "$e2e_cloudflared" >/dev/null; then
     echo "cloudflared is required; set CLOUDFLARED_BIN to its executable" >&2
@@ -375,9 +461,34 @@ if ! env \
 fi
 
 e2e_stateful_run_started=1
+mkdir -m 700 "$e2e_gate_state_dir"
+env \
+  E2E_WEBHOOK_GATE_STATE_DIR="$e2e_gate_state_dir" \
+  E2E_WEBHOOK_GATE_BACKEND_URL="${e2e_backend_url}/webhooks/stripe" \
+  E2E_WEBHOOK_GATE_CA_FILE="$e2e_loopback_cert" \
+  uv run uvicorn scripts.e2e_stripe:create_webhook_gate --factory \
+    --host 127.0.0.1 --port "$e2e_gate_port" --no-access-log \
+    >"$e2e_tmp_dir/webhook-gate.log" 2>&1 &
+e2e_gate_pid="$!"
+e2e_gate_start="$(e2e_pid_start "$e2e_gate_pid")"
+for _ in $(seq 1 60); do
+  curl -fsS "${e2e_gate_url}/health" >/dev/null 2>&1 && break
+  sleep 0.25
+done
+curl -fsS "${e2e_gate_url}/health" >/dev/null
+
 if [[ "$e2e_webhook_transport" == "endpoint" ]]; then
-  "$e2e_cloudflared" tunnel --no-autoupdate --no-tls-verify \
-    --url "$e2e_backend_url" >"$e2e_tmp_dir/cloudflared.log" 2>&1 &
+  E2E_CLOUDFLARED_CONFIG="$e2e_cloudflared_config" uv run python -c '
+import os
+from pathlib import Path
+
+path = Path(os.environ["E2E_CLOUDFLARED_CONFIG"])
+path.write_text("{}\n", encoding="utf-8")
+path.chmod(0o600)
+'
+  "$e2e_cloudflared" tunnel --no-autoupdate \
+    --config "$e2e_cloudflared_config" --no-tls-verify \
+    --url "$e2e_gate_url" >"$e2e_tmp_dir/cloudflared.log" 2>&1 &
   e2e_tunnel_pid="$!"
   e2e_tunnel_start="$(e2e_pid_start "$e2e_tunnel_pid")"
   e2e_tunnel_url=""
@@ -392,6 +503,21 @@ if [[ "$e2e_webhook_transport" == "endpoint" ]]; then
     exit 1
   fi
   e2e_webhook_url="${e2e_tunnel_url}/webhooks/stripe"
+
+  # E2E_ENDPOINT_TUNNEL_PREFLIGHT_BEGIN
+  e2e_public_tunnel_ready=0
+  for _ in $(seq 1 60); do
+    if curl -fsS "${e2e_tunnel_url}/health" >/dev/null 2>&1; then
+      e2e_public_tunnel_ready=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$e2e_public_tunnel_ready" -ne 1 ]]; then
+    echo "public webhook tunnel did not reach the isolated gate" >&2
+    exit 1
+  fi
+  # E2E_ENDPOINT_TUNNEL_PREFLIGHT_END
 
   e2e_webhook_create_started=1
   STRIPE_API_VERSION="$e2e_request_version" uv run python scripts/e2e_stripe.py \
@@ -409,7 +535,7 @@ if [[ "$e2e_webhook_transport" == "endpoint" ]]; then
     verify-webhook --endpoint-id "$e2e_endpoint_id" --url "$e2e_webhook_url" \
     --event-api-version "$e2e_event_version"
 else
-  e2e_webhook_url="${e2e_backend_url}/webhooks/stripe"
+  e2e_webhook_url="${e2e_gate_url}/webhooks/stripe"
   e2e_listener_log="$e2e_tmp_dir/stripe-listen.log"
   STRIPE_API_KEY="$STRIPE_SECRET_KEY" stripe listen --skip-update --skip-verify \
     --events "$e2e_supported_events" \
@@ -435,15 +561,17 @@ else
     echo "Stripe CLI Event version differs from E2E_STRIPE_EVENT_API_VERSION" >&2
     exit 1
   fi
-  echo "verified Stripe CLI signed forwarding: api_version=$e2e_event_version events=8"
+  echo "verified Stripe CLI signed forwarding: api_version=$e2e_event_version events=9"
 fi
 
 env \
+  SSL_CERT_FILE="$e2e_combined_ca" \
   DATABASE_URL="$e2e_database_url" \
   STRIPE_SECRET_KEY="$STRIPE_SECRET_KEY" \
   STRIPE_WEBHOOK_SECRET="$e2e_webhook_secret" \
   STRIPE_API_VERSION="$e2e_request_version" \
   STRIPE_WEBHOOK_API_VERSION="$e2e_event_version" \
+  STRIPE_PORTAL_CONFIGURATION_ID="$e2e_portal_configuration_id" \
   PRODUCT_LINE=example-entitlements \
   LOOKUP_PREFIX=ent \
   PLAN_CATALOG_PATH="$e2e_repo_root/plans.toml" \
@@ -452,11 +580,17 @@ env \
   CHECKOUT_CANCEL_URL="${e2e_frontend_url}/pricing" \
   PORTAL_RETURN_URL="${e2e_frontend_url}/account" \
   FRONTEND_ORIGINS="$e2e_frontend_url" \
-  APP_ENV=development \
-  DEMO_BEARER_TOKEN="$e2e_demo_token" \
-  DEMO_BEARER_SUBJECT="$e2e_external_ref" \
-  DEMO_BEARER_EMAIL="${e2e_external_ref}@example.test" \
-  uv run uvicorn stripe_entitlements.app:create_app --factory \
+  APP_ENV=production \
+  E2E_PERSONAL_JWKS_FILE="$e2e_jwks_state" \
+  E2E_JWT_ISSUER="$e2e_jwt_issuer" \
+  E2E_PERSONAL_JWT_AUDIENCE="$e2e_personal_audience" \
+  E2E_WORKLOAD_JWT_AUDIENCE="$e2e_workload_audience" \
+  E2E_WORKLOAD_SUBJECT="$e2e_workload_subject" \
+  E2E_WORKLOAD_JWT="$e2e_workload_token" \
+  E2E_EXPECTED_OWNER_EXTERNAL_REF="$e2e_external_ref" \
+  E2E_JOB_SUCCESS_KEY="$e2e_job_success_key" \
+  E2E_JOB_FAILURE_KEY="$e2e_job_failure_key" \
+  uv run uvicorn scripts.browser_e2e_app:create_app --factory \
     --host 127.0.0.1 --port "$e2e_backend_port" \
     --ssl-keyfile "$e2e_loopback_key" --ssl-certfile "$e2e_loopback_cert" \
     >"$e2e_tmp_dir/backend.log" 2>&1 &
@@ -469,16 +603,17 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 curl --cacert "$e2e_loopback_cert" -fsS "${e2e_backend_url}/health" >/dev/null
+curl -fsS "${e2e_gate_url}/ready" >/dev/null
 if [[ "$e2e_webhook_transport" == "endpoint" ]]; then
-  e2e_public_health_ready=0
+  e2e_public_backend_ready=0
   for _ in $(seq 1 60); do
-    if curl -fsS "${e2e_tunnel_url}/health" >/dev/null 2>&1; then
-      e2e_public_health_ready=1
+    if curl -fsS "${e2e_tunnel_url}/ready" >/dev/null 2>&1; then
+      e2e_public_backend_ready=1
       break
     fi
     sleep 1
   done
-  if [[ "$e2e_public_health_ready" -ne 1 ]]; then
+  if [[ "$e2e_public_backend_ready" -ne 1 ]]; then
     echo "public webhook tunnel did not reach the backend health endpoint" >&2
     exit 1
   fi
@@ -489,8 +624,21 @@ fi
 
 # E2E_CLEANUP_MANIFEST_SEED_BEGIN
 curl --cacert "$e2e_loopback_cert" -fsS \
-  -H "Authorization: Bearer $e2e_demo_token" \
+  -H "Authorization: Bearer $e2e_personal_token" \
   "${e2e_backend_url}/api/account" >"$e2e_account_state"
+e2e_account_id="$(E2E_ACCOUNT_STATE="$e2e_account_state" uv run python -c '
+import json
+import os
+from pathlib import Path
+
+account = json.loads(Path(os.environ["E2E_ACCOUNT_STATE"]).read_text(encoding="utf-8"))
+account_id = account.get("account_id")
+if not isinstance(account_id, str) or not account_id:
+    raise RuntimeError("authenticated account response has no account_id")
+print(account_id)
+')"
+uv run python scripts/e2e_stripe.py arm-credit-pack-gate \
+  --state-dir "$e2e_gate_state_dir" --account-id "$e2e_account_id"
 STRIPE_API_VERSION="$e2e_request_version" \
   uv run python scripts/e2e_stripe.py write-cleanup-manifest \
   --database-url "$e2e_database_url" \
@@ -580,17 +728,29 @@ curl --cacert "$e2e_loopback_cert" -fsS \
   "${e2e_frontend_url}/pricing" >/dev/null
 
 # E2E_PLAYWRIGHT_ENV_BEGIN
-env \
+(
+exec env -i \
+  PATH="$e2e_child_path" \
+  HOME="$e2e_child_home" \
+  TMPDIR="$e2e_child_tmp" \
+  LANG="$e2e_child_lang" \
   NODE_EXTRA_CA_CERTS="$e2e_loopback_cert" \
+  STRIPE_SECRET_KEY="$STRIPE_SECRET_KEY" \
+  STRIPE_API_VERSION="$e2e_request_version" \
   E2E_RUN_REAL_STRIPE=1 \
   E2E_STRIPE_MODE=test \
   E2E_BASE_URL="$e2e_frontend_url" \
   E2E_BACKEND_URL="$e2e_backend_url" \
   E2E_DATABASE_URL="$e2e_database_url" \
-  E2E_DEMO_BEARER_TOKEN="$e2e_demo_token" \
+  E2E_FULL_STACK_EVIDENCE=1 \
+  E2E_PERSONAL_BEARER_TOKEN="$e2e_personal_token" \
   E2E_EXTERNAL_REF="$e2e_external_ref" \
+  E2E_JOB_SUCCESS_KEY="$e2e_job_success_key" \
+  E2E_JOB_FAILURE_KEY="$e2e_job_failure_key" \
+  E2E_WEBHOOK_GATE_STATE_DIR="$e2e_gate_state_dir" \
   E2E_FRONTEND_BUILD_MODE=production \
   E2E_LOOPBACK_TLS_SPKI="$e2e_loopback_spki" \
+  E2E_WEBHOOK_TIMEOUT_MS="${E2E_WEBHOOK_TIMEOUT_MS:-180000}" \
   E2E_DECLINE_STABILITY_SECONDS="${E2E_DECLINE_STABILITY_SECONDS:-10}" \
   E2E_TRANSITION_POLICY="$e2e_transition_policy" \
   E2E_UPGRADE_PAYMENT_METHOD="$e2e_upgrade_payment_method" \
@@ -598,6 +758,7 @@ env \
   E2E_DEMO_PAUSE_MS="${E2E_DEMO_PAUSE_MS:-0}" \
   E2E_OUTPUT_DIR="$e2e_output_dir" \
   npm --prefix web run test:e2e:stripe
+)
 # E2E_PLAYWRIGHT_ENV_END
 
 STRIPE_API_VERSION="$e2e_request_version" uv run python scripts/e2e_stripe.py \
@@ -605,6 +766,13 @@ STRIPE_API_VERSION="$e2e_request_version" uv run python scripts/e2e_stripe.py \
   --external-ref "$e2e_external_ref" \
   --event-api-version "$e2e_event_version" \
   --delivery-transport "$e2e_webhook_transport" \
-  --expected-plan pro --expected-credits 1000 \
+  --expected-plan pro --expected-credits 1020 \
+  --expected-pack boost-100 --expected-pack-credits 100 \
+  --expected-pack-price 1500 --expected-pack-currency usd \
+  --expected-pack-expires-days 365 --expected-pack-lookup-key ent_pack_boost-100 \
+  --expected-success-job-key "$e2e_job_success_key" \
+  --expected-success-job-credits 80 \
+  --expected-refunded-job-key "$e2e_job_failure_key" \
+  --expected-refunded-job-credits 20 \
   --transition-policy "$e2e_transition_policy"
 e2e_run_completed=1

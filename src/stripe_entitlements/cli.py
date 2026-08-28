@@ -12,9 +12,10 @@ import asyncpg
 from . import __version__
 from .annual import AnnualGrantService
 from .catalog import PlanCatalog
-from .config import Settings, get_settings
+from .config import Settings, get_database_settings, get_settings
 from .database import Database
 from .doctor import run_doctor
+from .pack_reconcile import CreditPackReconciliationService
 from .processor import EventProcessor
 from .reconcile import ReconciliationService
 from .resources import default_migration_directory
@@ -50,7 +51,7 @@ async def _run_candidate_batch(
 
 
 async def _migrate() -> None:
-    settings = get_settings()
+    settings = get_database_settings()
     db = Database(settings.database_url)
     await db.connect()
     try:
@@ -119,6 +120,11 @@ async def _reconcile() -> None:
             api_version=settings.stripe_api_version,
         )
         service = ReconciliationService(db.require_pool(), processor, gateway)
+        pack_service = CreditPackReconciliationService(
+            db.require_pool(),
+            processor,
+            gateway,
+        )
         run_started = await service.database_now()
         attempted: set[str] = set()
         failures = 0
@@ -136,6 +142,18 @@ async def _reconcile() -> None:
                 return await service.reconcile_account(str(candidate["id"]))
 
             failures += await _run_candidate_batch(candidates, reconcile)
+        while True:
+            pack_results = await pack_service.reconcile_due(limit=100)
+            for result in pack_results:
+                print(
+                    result.order_id,
+                    f"credit-pack-{result.outcome}",
+                    result.error_code or "",
+                )
+                if result.outcome == "failed":
+                    failures += 1
+            if len(pack_results) < 100:
+                break
         if failures:
             raise RuntimeError(f"reconciliation completed with {failures} failure(s)")
     finally:

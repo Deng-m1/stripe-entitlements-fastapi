@@ -20,7 +20,12 @@ function accountApi(account: AccountResponse = demoAccount()): BillingApi {
     createCheckout: vi.fn(async () => ({
       url: "https://checkout.stripe.com/c/pay/unused",
     })),
+    createCreditPackCheckout: vi.fn(async () => ({
+      session_id: "cs_test_unused_pack",
+      url: "https://checkout.stripe.com/c/pay/unused-pack",
+    })),
     createPortal: vi.fn(async () => ({
+      session_id: "bps_test_portal",
       url: "https://billing.stripe.com/p/session/test-portal",
     })),
     previewPlanChange: vi.fn(async () => {
@@ -80,8 +85,11 @@ describe("account screen states", () => {
       subscription_status: "none",
       current_period_end: null,
       credits: {
+        ...demoAccount().credits,
         balance: zeroCredits.decimal,
         balance_atoms: zeroCredits.atoms,
+        subscription_balance: zeroCredits.decimal,
+        subscription_balance_atoms: zeroCredits.atoms,
         grant_amount: zeroCredits.decimal,
         grant_amount_atoms: zeroCredits.atoms,
         scale: zeroCredits.scale,
@@ -108,8 +116,11 @@ describe("account screen states", () => {
     const account: AccountResponse = {
       ...demoAccount(),
       credits: {
+        ...demoAccount().credits,
         balance: balance.decimal,
         balance_atoms: balance.atoms,
+        subscription_balance: balance.decimal,
+        subscription_balance_atoms: balance.atoms,
         grant_amount: grant.decimal,
         grant_amount_atoms: grant.atoms,
         scale: balance.scale,
@@ -119,7 +130,9 @@ describe("account screen states", () => {
 
     render(<AccountScreen api={accountApi(account)} redirect={vi.fn()} />);
 
-    expect(await screen.findByText("9,007,199,254.740993")).toBeInTheDocument();
+    expect(
+      await screen.findAllByText("9,007,199,254.740993"),
+    ).toHaveLength(2);
     expect(screen.getByText("0.000001")).toBeInTheDocument();
   });
 
@@ -195,6 +208,49 @@ describe("account screen states", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Paused")).toBeInTheDocument();
     expect(screen.getByText("past_due")).toBeInTheDocument();
+  });
+
+  it("presents an active pack without leaking a paused subscription balance", async () => {
+    const zero = creditAmountFromDecimal("0");
+    const pack = creditAmountFromDecimal("100");
+    const account: AccountResponse = {
+      ...demoAccount(),
+      subscription_status: "past_due",
+      entitlements_enforceable: false,
+      credits: {
+        ...demoAccount().credits,
+        balance: pack.decimal,
+        balance_atoms: pack.atoms,
+        subscription_balance: zero.decimal,
+        subscription_balance_atoms: zero.atoms,
+        purchased_balance: pack.decimal,
+        purchased_balance_atoms: pack.atoms,
+        credit_packs: [
+          {
+            lot_id: "lot-spendable-pack",
+            pack_key: "boost-100",
+            checkout_session_id: "cs_test_spendable_pack",
+            remaining: pack.decimal,
+            remaining_atoms: pack.atoms,
+            expires_at: "2027-08-28T00:00:00.000Z",
+          },
+        ],
+      },
+    };
+
+    render(<AccountScreen api={accountApi(account)} redirect={vi.fn()} />);
+
+    await screen.findByRole("heading", {
+      name: "Your latest payment has not settled",
+    });
+    expect(screen.getByText("Subscription balance").parentElement).toHaveTextContent(
+      "Subscription balance0",
+    );
+    expect(screen.getByText("Purchased balance").parentElement).toHaveTextContent(
+      "Purchased balance100",
+    );
+    expect(screen.getByText("100 credits")).toBeInTheDocument();
+    expect(screen.getByText("Paused")).toBeInTheDocument();
   });
 
   it("continues a requires-action pending change from the pending banner", async () => {

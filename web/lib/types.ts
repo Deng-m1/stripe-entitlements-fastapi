@@ -35,18 +35,45 @@ export interface CatalogPlan {
   entitlements: Entitlement[];
 }
 
+export interface CatalogCreditPack {
+  key: string;
+  name: string;
+  description: string;
+  display_order: number;
+  credits: CreditDecimalString;
+  credits_atoms: CreditAtomsString;
+  credit_scale: CreditScale;
+  price: Omit<Price, "interval">;
+  expires_days: number;
+}
+
 export interface CatalogResponse {
   transition_policy: TransitionPolicy;
   plans: CatalogPlan[];
+  credit_packs: CatalogCreditPack[];
+}
+
+export interface CreditPackLot {
+  lot_id: string;
+  pack_key: string;
+  checkout_session_id: string;
+  remaining: CreditDecimalString;
+  remaining_atoms: CreditAtomsString;
+  expires_at: string;
 }
 
 export interface Credits {
   balance: CreditDecimalString;
   balance_atoms: CreditAtomsString;
+  subscription_balance: CreditDecimalString;
+  subscription_balance_atoms: CreditAtomsString;
+  purchased_balance: CreditDecimalString;
+  purchased_balance_atoms: CreditAtomsString;
   grant_amount: CreditDecimalString;
   grant_amount_atoms: CreditAtomsString;
   scale: CreditScale;
   next_grant_at: string | null;
+  credit_packs: CreditPackLot[];
 }
 
 export interface PendingChange {
@@ -94,12 +121,26 @@ export interface CheckoutRequest {
   cancel_url: string;
 }
 
+export interface CreditPackCheckoutRequest {
+  pack_key: string;
+  success_url: string;
+  cancel_url: string;
+}
+
 export interface IdempotentRequestOptions {
   idempotencyKey?: string;
 }
 
 export interface RedirectResponse {
   url: string;
+}
+
+export interface CreditPackRedirectResponse extends RedirectResponse {
+  session_id: string;
+}
+
+export interface PortalRedirectResponse extends RedirectResponse {
+  session_id: string;
 }
 
 export interface ChangePreviewRequest {
@@ -149,10 +190,14 @@ export interface BillingApi {
     input: CheckoutRequest,
     options?: IdempotentRequestOptions,
   ): Promise<RedirectResponse>;
+  createCreditPackCheckout(
+    input: CreditPackCheckoutRequest,
+    options?: IdempotentRequestOptions,
+  ): Promise<CreditPackRedirectResponse>;
   createPortal(
     returnUrl: string,
     options?: IdempotentRequestOptions,
-  ): Promise<RedirectResponse>;
+  ): Promise<PortalRedirectResponse>;
   previewPlanChange(
     input: ChangePreviewRequest,
     options?: IdempotentRequestOptions,

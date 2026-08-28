@@ -115,7 +115,9 @@ async def pool(postgres_container: None) -> AsyncIterator[asyncpg.Pool]:
     )
     async with database_pool.acquire() as conn:
         await conn.execute(
-            """truncate billing_clawback_debts,billing_funding_allocations,
+            """truncate credit_pack_clawback_debts,credit_debit_allocations,
+               credit_funding_lots,credit_pack_orders,
+               billing_clawback_debts,billing_funding_allocations,
                billing_plan_changes,
                billing_incidents,checkout_claims,
                credit_debits,credit_ledger,

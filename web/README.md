@@ -2,9 +2,10 @@
 
 This directory is a minimal Next.js App Router UI for the repository's Stripe
 entitlement model. It consumes the backend's catalog, account, Checkout, Portal,
-and preview/confirm endpoints through a replaceable authentication adapter. It renders
-three monthly/yearly tiers, positive same-currency annual savings, and the server's two
-complete 6 × 6 transition policies: `full_period_reset` and `prorated_delta`.
+credit-pack Checkout, and preview/confirm endpoints through a replaceable authentication
+adapter. It renders three monthly/yearly tiers, one-time packs, positive same-currency
+annual savings, and the server's two complete 6 × 6 transition policies:
+`full_period_reset` and `prorated_delta`.
 
 ## Run locally
 
@@ -60,11 +61,14 @@ policy and deployment checks.
 
 ## API contract
 
-All monetary values are integer minor units. Plan identity uses `plan_key`;
-interval is `month | year`. The frontend does not infer a plan or change timing
-from a price.
+Cash values are integer currency minor units. Product credits are exact decimal strings
+paired with integer atom strings at `scale=1000000`; the browser validates both forms and
+never coerces atom balances through JavaScript `Number`. Plan identity uses `plan_key`;
+interval is `month | year`. The frontend does not infer a plan or change timing from a
+price.
 
-`POST /api/checkout`, `POST /api/billing/portal`, and
+`POST /api/checkout`, `POST /api/credit-packs/checkout`,
+`POST /api/billing/portal`, and
 `POST /api/billing/change/preview` require an `Idempotency-Key` header. The UI
 creates one cryptographic UUID per user intent and reuses it after a failed
 request or reload in the same tab. Only these non-secret keys are kept in
@@ -86,20 +90,35 @@ subdomains. Arbitrary HTTP(S) destinations are rejected.
     {
       "key": "starter",
       "name": "Starter",
-      "description": "For individuals",
+      "description": "Core conversion tools for individual workflows.",
       "display_order": 10,
       "prices": {
-        "month": {"currency": "USD", "unit_amount": 1900, "interval": "month"},
-        "year": {"currency": "USD", "unit_amount": 13700, "interval": "year"}
+        "month": {"currency": "usd", "unit_amount": 1900, "interval": "month"},
+        "year": {"currency": "usd", "unit_amount": 13700, "interval": "year"}
       },
       "entitlements": [
         {
           "key": "monthly_credits",
           "label": "Credits per monthly grant",
-          "value": 300,
+          "value": "300",
+          "value_atoms": "300000000",
+          "scale": 1000000,
           "unit": "credits"
         }
       ]
+    }
+  ],
+  "credit_packs": [
+    {
+      "key": "boost-100",
+      "name": "Boost 100",
+      "description": "A small one-time balance for occasional extra jobs.",
+      "display_order": 10,
+      "credits": "100",
+      "credits_atoms": "100000000",
+      "credit_scale": 1000000,
+      "price": {"currency": "usd", "unit_amount": 1500},
+      "expires_days": 365
     }
   ]
 }
@@ -114,21 +133,42 @@ claim. This calculation never determines upgrade/downgrade direction.
 
 ```json
 {
+  "account_id": "internal-opaque-account-id",
   "transition_policy": "full_period_reset",
   "plan_key": "starter",
   "plan_interval": "month",
   "subscription_status": "active",
   "current_period_end": "2026-08-31T00:00:00Z",
+  "observed_period_end": "2026-08-31T00:00:00Z",
   "credits": {
-    "balance": 214,
-    "grant_amount": 300,
-    "next_grant_at": "2026-08-31T00:00:00Z"
+    "balance": "314",
+    "balance_atoms": "314000000",
+    "subscription_balance": "214",
+    "subscription_balance_atoms": "214000000",
+    "purchased_balance": "100",
+    "purchased_balance_atoms": "100000000",
+    "grant_amount": "300",
+    "grant_amount_atoms": "300000000",
+    "scale": 1000000,
+    "next_grant_at": "2026-08-31T00:00:00Z",
+    "credit_packs": [
+      {
+        "lot_id": "opaque-lot-id",
+        "pack_key": "boost-100",
+        "checkout_session_id": "cs_test_example",
+        "remaining": "100",
+        "remaining_atoms": "100000000",
+        "expires_at": "2027-08-01T00:00:00Z"
+      }
+    ]
   },
   "entitlements": [
     {
       "key": "monthly_credits",
       "label": "Credits per monthly grant",
-      "value": 300,
+      "value": "300",
+      "value_atoms": "300000000",
+      "scale": 1000000,
       "unit": "credits"
     }
   ],
@@ -143,6 +183,12 @@ claim. This calculation never determines upgrade/downgrade direction.
   }
 }
 ```
+
+The decoder verifies that total atoms equal subscription atoms plus purchased atoms, and
+that the active pack-lot atoms equal the purchased subtotal. These values may exceed
+JavaScript's safe-integer range without losing precision. Pack funding can remain
+spendable when subscription entitlements are not enforceable; it never grants plan
+features or limits.
 
 `pending_change` and `pending_cancellation` are nullable. A pending cancellation
 targets `free`, remains period-end, and pauses plan-price changes until the user
@@ -173,11 +219,47 @@ The backend remains responsible for Checkout single-flight and for allowlisting
 the return URL origin, fixed path, and the two expected-target query fields. It
 must not accept arbitrary return paths or query parameters.
 
+The configured `CHECKOUT_SUCCESS_URL` is the query-free, fragment-free base URL. The
+request may add only the expected target fields shown above; the gateway appends the
+opaque Stripe `{CHECKOUT_SESSION_ID}` placeholder itself.
+
+### `POST /api/credit-packs/checkout`
+
+Request:
+
+```json
+{
+  "pack_key": "boost-100",
+  "success_url": "http://localhost:3000/billing/success?expected_credit_pack=boost-100",
+  "cancel_url": "http://localhost:3000/pricing"
+}
+```
+
+Response:
+
+```json
+{
+  "session_id": "cs_test_...",
+  "url": "https://checkout.stripe.com/..."
+}
+```
+
+The card-only `mode=payment` redirect is not funding proof. The success screen waits
+until the exact Checkout Session appears as an active funding lot in `GET /api/account`;
+only the signed `payment_intent.succeeded` projection creates spendable pack credits.
+
 ### `POST /api/billing/portal`
 
 Request: `{"return_url":"http://localhost:3000/account"}`.
 
-Response: `{"url":"https://billing.stripe.com/..."}`.
+Response:
+
+```json
+{
+  "session_id": "bps_REDACTED",
+  "url": "https://billing.stripe.com/..."
+}
+```
 
 The backend must create a Portal Session only with its verified safe Portal
 configuration. That configuration must keep subscription price changes disabled;
@@ -199,17 +281,21 @@ Request: `{"plan_key":"pro","interval":"month"}`.
   "transition_policy": "prorated_delta",
   "settlement_mode": "current_period_prorated_delta",
   "effective_at": "2026-07-31T12:00:00Z",
-  "currency": "USD",
+  "currency": "usd",
   "amount_due_now": 1500,
   "credit_applied": 950,
-  "entitlement_credit_delta": 700,
+  "entitlement_credit_delta": "700",
+  "entitlement_credit_delta_atoms": "700000000",
+  "credit_scale": 1000000,
   "next_invoice_amount": 4900
 }
 ```
 
 `timing`, `transition_policy`, `settlement_mode`, and all amounts are
-server-authoritative. `new_period_full_price` means one independently funded target
-period. `current_period_prorated_delta` means the current period remains unchanged,
+server-authoritative. `amount_due_now`, `credit_applied`, and `next_invoice_amount` are
+Stripe cash minor units; `entitlement_credit_delta` and its atom pair are product
+credits. `new_period_full_price` means one independently funded target period.
+`current_period_prorated_delta` means the current period remains unchanged,
 `credit_applied` is the unused source-plan cash credit, and
 `entitlement_credit_delta` is the fixed product-credit difference. Confirmation may
 charge the payment method or require authentication; entitlements still wait for paid
@@ -317,26 +403,28 @@ E2E_EXTERNAL_REF=browser-e2e-subject \
 npm run test:e2e:stripe
 ```
 
-It submits a real decline, then completes test 3DS in the same Checkout Session, and
-accepts success only after the browser observes the webhook-projected account. The
-default upgrade fixture then requires a second Stripe.js SCA flow before the settlement
-paid Event can project Pro/Monthly/1,000. It stops before card entry unless the hosted
+It submits a real decline, then completes test 3DS in the same subscription Checkout
+Session, and accepts success only after the browser observes the webhook-projected
+account. The default upgrade fixture then requires a second Stripe.js SCA flow before
+the settlement paid Event can project Pro/Monthly/1,000. The expanded flow also buys a
+credit pack, waits for its exact webhook-funded lot, opens the real Portal, and exercises
+the Job charge/replay/refund example. It stops before card entry unless each hosted
 Session is `cs_test_`. The full runner keeps the Stripe test key and database DSN in the
 Playwright Node helper, starts Next.js without them, and removes them from Chromium's
-process environment. Remote existing-stack runs additionally require a private mode-
-`0600` `E2E_STORAGE_STATE` for the same one-run subject as `E2E_EXTERNAL_REF`. Prefer
-the isolated full-stack runner and follow all prerequisites in
+process environment. Remote existing-stack runs additionally require a private
+mode-`0600` `E2E_STORAGE_STATE` for the same one-run subject as `E2E_EXTERNAL_REF`.
+Prefer the isolated full-stack runner and follow all prerequisites in
 [the browser E2E runbook](../docs/BROWSER_E2E.md).
 
-Current `0.2.2` release-candidate evidence recorded on 2026-08-18 is 102 passing
-RTL/Vitest tests, plus passing lint, typecheck, production build, production npm audit,
-and complete npm audit. It covers annual pricing math, both transition policies,
-reusable billing intents, Checkout/Portal redirect boundaries, strict Stripe.js result
-validation, webhook polling, HTTP timeout/error sanitization, browser secret isolation,
-security headers, SEO configuration, server-rendered plans, JSON-LD, and fail-closed
-indexing/demo builds. Both real-browser policies also passed through explicit Stripe CLI
-signed forwarding: each completed decline, Checkout 3DS, upgrade SCA, Starter/300 and
-Pro/1,000 projection, seven related and zero unrelated Events, exact three-essential-
-Event binding, and strict cleanup. The latest separate temporary-endpoint evidence remains
-the 2026-08-02 dual-policy run. All browser results remain test-mode evidence, not live-
-production proof.
+The `0.3.0` gate covers exact fractional-credit decoding, subscription/purchased balance
+separation, credit-pack UI, annual pricing math, both transition policies, reusable
+billing intents, Checkout/Portal redirect boundaries, strict Stripe.js result validation,
+webhook polling, browser secret isolation, security headers, SEO metadata/JSON-LD, and
+fail-closed indexing/demo builds. The current browser invariant binds exactly five
+essential Events: subscription Checkout, initial and settlement `invoice.paid`, pack
+Checkout, and pack `payment_intent.succeeded`; incidental account-related Events are
+audited separately and never turned into a fixed total-count assertion. Exact pass counts
+and network artifacts must be recorded against the final commit in the repository release
+checklist and browser runbook. Earlier `0.2.x`, three-essential-Event, and temporary-
+endpoint artifacts are historical test-mode evidence, not `0.3.0` or live-production
+proof.

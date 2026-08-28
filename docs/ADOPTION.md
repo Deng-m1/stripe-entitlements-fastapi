@@ -4,14 +4,28 @@ This guide explains how to connect the repository to an existing user system,
 organization model, product jobs, and frontend. It distinguishes code this repository
 already implements from policy and coordination that the host application must own.
 
-The current main branch is best adopted as a complete source template or a standalone
-billing service. It is not yet a drop-in router, identity plugin, or language-neutral
-billing SDK.
+The current working tree supports both a standalone FastAPI billing application and
+native installation into an existing FastAPI root through `BillingKernel`,
+`create_billing_router`, and `install_billing`. It also includes production-oriented
+personal/team JWT authentication starters, an in-process `EntitlementService`, and an
+optional owner-bound internal workload router. It is still not a language-neutral SDK
+or a complete product/Job framework.
 
-This guide assumes a source checkout. Until a matching 0.3 tag and published artifact
-exist, pin the exact reviewed commit rather than assuming that the latest older tag or a
-package index contains this code. The built Wheel contains the Python package, migrations
-and catalog, but not top-level operator scripts such as `scripts/bootstrap_stripe.py`.
+This guide assumes an exact release-tag source checkout or the matching source
+distribution. Until a matching 0.3 tag and published artifact exist, pin the exact
+reviewed commit rather than assuming that the latest older tag or a package index
+contains this code. The Wheel deliberately contains only the Python backend runtime,
+migrations, and catalog. The source distribution additionally contains `.env` templates,
+operator scripts, Docker/Compose files, auth and Job examples, tests, and the Next.js
+reference UI needed by the end-to-end commands in this guide.
+
+For a published version tag, the repository release workflow attaches both Python
+distributions and their checksums to the GitHub Release and records the immutable GHCR
+container digest. That is distinct from PyPI publication; do not install an unrelated or
+older package-index artifact merely because its name matches.
+The published GHCR image is currently native `linux/amd64`; it is not a verified
+multi-architecture manifest. ARM64 adopters should use the Wheel/source distribution or
+build and validate the pinned Dockerfile on their target platform.
 
 ## Contents
 
@@ -35,11 +49,12 @@ and catalog, but not top-level operator scripts such as `scripts/bootstrap_strip
 | Stripe Checkout, Portal, plan changes and signed webhooks | Implemented | Configure and operate |
 | Duplicate, delayed, concurrent and out-of-order Event handling | Implemented | Preserve the database invariants |
 | Billing account resolution from one stable subject | Implemented | Choose and verify that subject |
-| Session, JWT or OIDC verification | Adapter protocol only | Implement |
-| Tenant membership and billing-admin authorization | Not implemented | Implement |
+| Session, JWT or OIDC verification | Strict JWT/JWKS starter plus adapter protocol | Configure the starter or implement another verifier |
+| Tenant membership and billing-admin authorization | Team starter and explicit route policy | Supply the live membership repository and lifecycle |
 | Catalog, account and billing mutation HTTP APIs | Implemented | Authenticate and consume |
-| Atomic credit charge/refund primitive | Implemented in Python | Associate it with product work |
-| Job creation plus credit charge as one business workflow | Not implemented | Add an outbox/saga and repair loop |
+| FastAPI router, service facade and composed lifespan | Implemented | Choose a prefix and preserve host startup/shutdown tests |
+| Entitlement check and atomic credit charge/refund | Implemented in-process and as an optional internal router | Bind each workload to the requested owner |
+| Job creation plus credit charge as one business workflow | Runnable reference schema/workflow/demo | Adapt it to host Job/queue tables and operate the outbox/repair loop |
 | Feature and numeric-limit enforcement | Returned as data | Enforce in the product backend |
 | Concurrent-job and API-key limits | Returned as data | Enforce transactionally in host tables |
 | Production frontend authentication | TypeScript adapter only | Implement or add a BFF |
@@ -51,20 +66,40 @@ and catalog, but not top-level operator scripts such as `scripts/bootstrap_strip
 | Shape | Current fit | Use when | Important limitation |
 | --- | --- | --- | --- |
 | Fork the complete repository | Best supported | Building a new FastAPI billing boundary | You own future upstream merges |
-| Standalone billing service | Supported | The host is large, separately deployed or not Python | There is no internal credit charge/refund HTTP API yet |
-| Same-process FastAPI composition | Possible with adaptation | The host is Python and can use this app as its root | `create_app` returns a complete app, not an `APIRouter` |
-| Install as a generic SDK | Not currently supported | — | No stable service facade or published identity plugins |
+| Standalone billing service | Supported | The host is large, separately deployed or not Python | Configure both workload authentication and owner authorization before enabling private APIs |
+| Same-process FastAPI composition | Supported | The host is Python and already owns a FastAPI root | Install before startup and test route-prefix conflicts |
+| Python service facade | Supported | Product code runs in the billing process | Services exist only inside the installed lifespan |
+| Generic cross-language SDK | Not currently supported | — | Use the authenticated internal HTTP boundary or build a typed client |
 
-For an existing application, the standalone-service boundary is currently the safest
-path. A new same-process application can make the billing app its root and add host
-routers, but migrating an existing root app requires deliberate lifespan, middleware,
-state and path composition. Mounting it as a sub-application is not a supported
-copy-paste path.
+For an existing FastAPI application, `install_billing` is the supported same-process
+path. It installs a native `APIRouter`, scopes browser CORS/Origin handling to public
+billing routes and response hardening to installed billing routes, keeps unrelated host
+routes unchanged, and composes the existing host lifespan with the billing lifespan. A
+separately deployed billing service remains a good boundary for non-Python or
+independently operated hosts.
 
 For a standalone service, the browser-facing billing APIs are usable after injecting
-real authentication. Product credit charging still needs either a private service API
-or an asynchronous integration owned by the host. Never expose `CreditService` directly
-to a browser.
+real authentication. The optional internal router exposes owner-bound check, charge,
+and refund operations to authenticated workloads; it is reject-all until the host
+supplies both a workload identity adapter and an owner authorizer. Never expose that
+router or `CreditService` directly to a browser.
+
+The documented 0.3 Python integration surface is intentionally small:
+
+- package-root `BillingKernel`, `BillingServices`, `create_app`,
+  `create_billing_router`, and `install_billing`;
+- `Settings` and `Database` when the host injects configuration or owns the pool;
+- `AuthAccountAdapter` plus the personal/team classes in `auth_starters`;
+- `kernel.services.entitlements` for owner-bound checks and credit operations; and
+- `create_internal_router` plus the workload identity/owner-authorization protocols for
+  a separate service boundary.
+
+The Wheel carries a PEP 561 `py.typed` marker so downstream type checkers can validate
+these calls. Product code does not need to query `credit_pack_orders`, funding lots,
+debit allocations, or pack clawback debts. Migrations own their schema and the public
+router/`EntitlementService`/reconciler own their behavior. Direct imports of processor,
+pack-accounting, or SQL helpers are reference-internal coupling unless this guide names
+the exact class as an integration boundary.
 
 ## Runtime dependencies
 
@@ -84,9 +119,10 @@ Django ORM, another database, or another language, run billing as a separate ser
 rather than letting application code write its tables.
 
 Production should use a dedicated billing database. The migration creates
-`schema_migrations`, ten correctness tables, a function and a trigger in the current
-PostgreSQL `search_path`; there is no `BILLING_DB_SCHEMA` namespace setting. The ten
-tables must be backed up and restored as one unit.
+`schema_migrations`, fourteen correctness tables, and their coordination functions and
+triggers in the current PostgreSQL `search_path`; there is no `BILLING_DB_SCHEMA`
+namespace setting. The
+fourteen tables must be backed up and restored as one unit.
 
 Initialize that database before traffic:
 
@@ -105,10 +141,10 @@ lineage/checksum guard. Once a baseline is published, keep it immutable and appe
 
 | Existing host | Integration effort | Reason |
 | --- | --- | --- |
-| FastAPI plus verified Bearer JWT/OIDC | Moderate | The auth protocol matches naturally; tenant authorization is still host-owned |
+| FastAPI plus verified Bearer JWT/OIDC | Low to moderate | Personal/team JWT starters are supplied; issuer settings and team membership remain host-owned |
 | FastAPI plus server session/HttpOnly cookie | Moderate in one process | The backend adapter can read the cookie; the reference browser client needs a BFF or transport change |
 | SQLAlchemy or Django application | Moderate as a sidecar | Billing uses fixed `asyncpg` SQL and does not expose ORM models |
-| Non-Python service | Higher | Public billing HTTP works, but entitlement checks and credit charge/refund need private APIs |
+| Non-Python service | Moderate to high | Public billing plus the optional workload-authenticated internal router are HTTP-accessible; the host still needs a client and saga |
 | User-only SaaS | Lower | One immutable user subject maps directly to one billing account |
 | Multi-tenant/team SaaS | Higher | Membership, selected-tenant validation, billing roles and tenant lifecycle remain host concerns |
 | Existing job queue/workflow engine | Moderate to high | The queue is unrestricted, but charge/job atomicity needs a durable saga/outbox |
@@ -152,6 +188,11 @@ Recommended mappings:
 `external_ref` is globally unique in `billing_accounts`, contains 1–512 visible UTF-8
 bytes, and resolves to one internal billing account. That account owns at most one Stripe
 Customer and one Subscription in the implemented model.
+
+The shared validator deliberately rejects a bare UUID and values beginning with Stripe
+account selectors such as `cus_`, `sub_`, or `acct_`. Namespace host IDs as shown above;
+the public auth adapter, database resolver, service facade, and internal workload API all
+enforce the same rule before creating or selecting an account.
 
 Rules for a durable subject:
 
@@ -201,138 +242,124 @@ deployment or availability boundaries.
 boundary. The adapter receives a FastAPI `Request` and returns a verified
 `AuthenticatedIdentity`. The safe default rejects every protected request.
 
-The following skeleton shows the required separation. `TokenVerifier` and
-`MembershipRepository` are host-owned interfaces, not classes supplied by this package.
+Install the optional asymmetric JWT/JWKS verifier:
 
-```python
-# host/auth.py
-from dataclasses import dataclass
-from typing import Protocol
-from uuid import UUID
-
-from fastapi import HTTPException, Request
-
-from stripe_entitlements.auth import (
-    AuthenticatedIdentity,
-    AuthenticationError,
-)
-
-from host.billing_owner import BillingOwner
-
-
-@dataclass(frozen=True, slots=True)
-class HostPrincipal:
-    user_id: UUID
-    selected_tenant_id: UUID
-    email: str | None
-    email_verified: bool
-
-
-@dataclass(frozen=True, slots=True)
-class Membership:
-    can_manage_billing: bool
-
-
-class InvalidHostCredential(RuntimeError):
-    pass
-
-
-class TokenVerifier(Protocol):
-    async def verify(self, request: Request) -> HostPrincipal: ...
-
-
-class MembershipRepository(Protocol):
-    async def require_membership(
-        self,
-        user_id: UUID,
-        tenant_id: UUID,
-    ) -> Membership | None: ...
-
-
-class HostAuthAdapter:
-    def __init__(
-        self,
-        tokens: TokenVerifier,
-        memberships: MembershipRepository,
-    ) -> None:
-        self.tokens = tokens
-        self.memberships = memberships
-
-    async def authenticate(self, request: Request) -> AuthenticatedIdentity:
-        try:
-            principal = await self.tokens.verify(request)
-        except InvalidHostCredential as exc:
-            raise AuthenticationError("invalid host session") from exc
-
-        membership = await self.memberships.require_membership(
-            principal.user_id,
-            principal.selected_tenant_id,
-        )
-        if membership is None:
-            raise HTTPException(403, "tenant membership required")
-        catalog_paths = {"/api/catalog", "/billing/catalog"}
-        if (
-            request.url.path not in catalog_paths
-            and not membership.can_manage_billing
-        ):
-            raise HTTPException(403, "billing administrator permission required")
-
-        owner = BillingOwner("tenant", principal.selected_tenant_id)
-        checkout_email = principal.email if principal.email_verified else None
-        return AuthenticatedIdentity(owner.external_ref, checkout_email)
+```bash
+uv sync --extra auth
 ```
 
-The token verifier must validate the host's normal security contract, including the
-signature, accepted algorithm, issuer, audience, expiry, not-before value and any
-revocation/session rules. A decoded but unverified JWT is not authentication.
+The personal starter verifies signature, algorithm, `iss`, exact `aud`, `exp`, `nbf`,
+canonical UUID `sub`, and `kid`, then maps that immutable subject to
+`v1:user:<sub>`. Only an exactly true signed `email_verified` claim permits forwarding
+the email as a Checkout hint:
 
-Catch only explicit invalid/expired credential failures as `AuthenticationError`. The
-host verifier should map a known identity-provider outage to a sanitized 503. Unknown
-exceptions must remain 500 errors rather than being disguised as bad credentials and
-forcing a user logout.
+```python
+from stripe_entitlements.auth_starters import (
+    JwtVerificationConfig,
+    JwtVerifier,
+    PersonalJwtAuthAdapter,
+)
 
-A selected-tenant claim, route parameter, cookie or header is only a selector. The
-membership repository must prove that the authenticated user currently belongs to that
-tenant. A bare `X-Tenant-ID`, `X-User-ID`, query parameter, request body field or email
-must never become `external_ref` directly.
+verifier = JwtVerifier(
+    JwtVerificationConfig(
+        issuer="https://identity.example.com/",
+        audience="billing-api",
+        jwks_url="https://identity.example.com/.well-known/jwks.json",
+        algorithms=("RS256",),
+    )
+)
+personal_auth = PersonalJwtAuthAdapter(verifier)
+```
+
+For a team-owned subscription, supply a live `TeamMembershipRepository`. The signed
+`tenant_id` UUID remains only a selector: `TeamJwtAuthAdapter` queries membership for
+the verified `(sub, tenant_id)` pair on every request. Its explicit policy permits a
+viewer to read only catalog routes; `/api/account`, recovery URLs, Checkout, Portal,
+plan changes, and unknown billing routes require `billing_admin`:
+
+```python
+from stripe_entitlements.auth_starters import (
+    TeamBillingAuthorizationPolicy,
+    TeamJwtAuthAdapter,
+)
+
+# memberships implements membership_for(user_id, tenant_id).
+team_auth = TeamJwtAuthAdapter(
+    verifier,
+    memberships,
+    authorization=TeamBillingAuthorizationPolicy(billing_prefix="/stripe"),
+)
+```
+
+The authorization prefix is explicit; the policy does not guess it. Pass the same
+prefix to `install_billing`. For standalone `create_app()` routes, use the default
+`TeamBillingAuthorizationPolicy()` and no billing prefix.
+
+Complete executable personal and team entrypoints, including the example PostgreSQL
+membership table, live in
+[`examples/auth_starters/`](../examples/auth_starters/README.md). Start them with:
+
+```bash
+uv run --env-file .env uvicorn \
+  examples.auth_starters.personal_app:create_host_app \
+  --factory --host 0.0.0.0 --port 8000
+
+uv run --env-file .env uvicorn \
+  examples.auth_starters.team_app:create_host_app \
+  --factory --host 0.0.0.0 --port 8000
+```
+
+The token verifier handles known invalid/expired credentials as sanitized 401s and a
+known JWKS transport failure as a sanitized 503. A decoded but unverified JWT is never
+authentication. Hosts still own token revocation/session policy and the team membership
+lifecycle. Implement another `AuthAccountAdapter` when the product uses cookie sessions
+or a different identity protocol.
+
+A selected-tenant claim, route parameter, cookie or header is only a selector. A bare
+`X-Tenant-ID`, `X-User-ID`, query parameter, request body field or email must never
+become `external_ref` directly.
 
 Pass an email to Stripe only when the host identity provider has verified it. Otherwise
 return `email=None`; email remains an optional Checkout hint.
 
-The current adapter protocol is authentication-first and has no separate authorization
-object or scope hook. Raising `HTTPException(403)` as above works for this app, but
-authorization remains host policy. Do not authorize only by HTTP method:
 `GET /api/account` can contain a Stripe hosted-invoice recovery URL, which is a payment
-capability. Team viewers should receive only catalog/sanitized product entitlement data;
-billing administrators may receive the full account view. Applications with viewer,
-billing-admin and owner roles should preferably enforce path/capability scopes in a
-same-origin BFF or add a first-class authorization adapter.
+capability. The supplied team policy therefore keeps viewers on catalog-only data and
+requires a billing administrator for the full account view and every mutation. Extend
+its explicit route-to-capability map and tests when adding routes; never authorize a
+viewer by HTTP method alone.
 
 ## Compose the FastAPI application
 
-For a new root application, use a host-owned ASGI entrypoint so production never starts
-with the default `RejectAllAuthAdapter`:
+### Standalone billing application
+
+For a dedicated billing process or a new root application, `create_app` remains the
+smallest entrypoint. Use a host-owned factory so production never starts with the
+default `RejectAllAuthAdapter`:
 
 ```python
 # host_billing.py
-from stripe_entitlements.app import create_app
+from stripe_entitlements import create_app
+from stripe_entitlements.auth_starters import (
+    JwtVerificationConfig,
+    JwtVerifier,
+    PersonalJwtAuthAdapter,
+)
 from stripe_entitlements.config import get_settings
-from stripe_entitlements.database import Database
-
-from host.auth import HostAuthAdapter, memberships, tokens
-from host.routes import product_router
 
 
 def create_host_app():
-    settings = get_settings()  # reads the process environment
-    database = Database(settings.database_url)
-    app = create_app(
-        settings,
-        database=database,
-        auth_adapter=HostAuthAdapter(tokens, memberships),
+    verifier = JwtVerifier(
+        JwtVerificationConfig(
+            issuer="https://identity.example.com/",
+            audience="billing-api",
+            jwks_url="https://identity.example.com/.well-known/jwks.json",
+            algorithms=("RS256",),
+        )
     )
-    app.include_router(product_router)
-    return app
+    return create_app(
+        get_settings(),
+        auth_adapter=PersonalJwtAuthAdapter(verifier),
+    )
 ```
 
 ```bash
@@ -347,20 +374,77 @@ The stock Docker command is intentionally safe but incomplete for production ide
 without an injected adapter, protected APIs return 401. Do not enable the demo Bearer
 adapter in production.
 
-The snippet is not a complete migration recipe for an existing FastAPI root. Before
-using same-process composition, explicitly merge and test:
+### Install into an existing FastAPI root
+
+Use `BillingKernel` plus `install_billing` instead of copying route objects or mounting
+the standalone app. This minimal host owns the injected pool in its existing lifespan:
+
+```python
+# host_app.py
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+
+from stripe_entitlements import BillingKernel, install_billing
+from stripe_entitlements.config import get_settings
+from stripe_entitlements.database import Database
+
+from host.auth import personal_auth
+
+settings = get_settings()
+database = Database(settings.database_url)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    del app
+    await database.connect()
+    try:
+        yield
+    finally:
+        await database.close()
+
+
+app = FastAPI(lifespan=lifespan)
+kernel = BillingKernel(
+    settings,
+    database=database,
+    auth_adapter=personal_auth,
+)
+install_billing(app, kernel, prefix="/stripe")
+```
+
+```bash
+uvicorn host_app:app --host 0.0.0.0 --port 8000
+```
+
+Installation must happen before application startup. The composed lifespan enters the
+existing host lifespan first and the billing lifespan second, then unwinds in reverse.
+That ordering lets billing reuse a pool connected by the host without closing it. If the
+kernel receives an unconnected `Database`, it connects and closes that pool itself.
+One `Database` object may bind to exactly one `BillingKernel`; constructing a second
+kernel with the same object fails immediately. Reuse one kernel within its application,
+or construct separate `Database` objects from the same DSN for separately owned apps.
+
+The installer includes a native prefixed `APIRouter` in the host OpenAPI document.
+Browser CORS and untrusted-Origin rejection apply only to public billing routes;
+no-store hardening covers both public billing routes and explicitly installed internal
+routes. Unrelated host routes and global logging configuration are unchanged. The
+installed kernel is available as `app.state.stripe_entitlements`, while
+`kernel.services` is intentionally valid only inside the active lifespan.
+
+Before using same-process composition, explicitly test:
 
 - both applications' lifespan/startup/shutdown behavior;
 - middleware order, exception handlers, tracing, metrics and security headers;
 - app state and database-pool ownership;
-- CORS and trusted origins (the billing middleware also sees host routes);
+- CORS and trusted origins on both billing and unrelated host routes;
 - OpenAPI metadata and route-prefix conflicts; and
 - readiness semantics and graceful shutdown.
 
-`include_router` moves routes; it does not import another app's lifespan, middleware or
-state. If these concerns are already established in a large host, deploy billing as a
-standalone service until the project exposes a router/service facade designed for
-composition.
+Do not call `create_app()`, extract its route list, and attach it to another app;
+`include_router` alone cannot transfer a child app's lifespan, middleware, or state.
+`install_billing` is the supported composition boundary.
 
 ## Resolve host entities to billing accounts
 
@@ -393,13 +477,24 @@ Credit quantities use the exact wire contract documented in
 strings and a fixed scale. Do not parse the balance into a JavaScript `number` or a
 Python `float` before enforcing it.
 
-The product backend must fail closed and check, at minimum:
+Separate subscription entitlement admission from credit funding admission:
 
-1. the authenticated request resolves to the expected billable owner;
-2. `entitlements_enforceable` is true;
-3. the required feature is present;
-4. file size, page count or another numeric input is within its limit; and
-5. any credit charge has committed before expensive work starts.
+1. Every request must resolve authenticated identity and membership to the expected
+   billable owner.
+2. A Job that requires a paid-plan feature or limit must require
+   `EntitlementService.check(...).allowed`; that decision includes an enforceable
+   subscription plus every requested feature and numeric limit.
+3. A credit-only Job may use `credits_spendable` as a current display/admission hint, but
+   the atomic `charge` result is the authority. Another worker can spend the balance
+   immediately after a check.
+4. A Job that requires both plan access and credits must pass the feature/limit decision
+   and commit its credit charge before expensive work starts.
+
+By default an active, unexpired credit-pack lot remains spendable after a subscription
+ends; it does not make subscription features or limits enforceable. Requiring an active
+subscription for pack purchase or pack-funded work is an optional host policy and must
+be added explicitly at those admission boundaries. Do not implement it by deleting pack
+funding or by treating `entitlements_enforceable` as the definition of credit spendability.
 
 Never authorize from a browser redirect, Checkout Session URL, `confirm` response,
 mutable Stripe Subscription read, or cached client-side account JSON.
@@ -412,13 +507,40 @@ Static limits require host behavior:
 | `max_file_mb` / `max_pages_per_job` | Request validation before upload/queue admission |
 | `concurrent_jobs` | Transactional host job lease/count |
 | `api_keys` | Transactional host API-key table constraint |
-| Monthly credits | `CreditService.charge` before execution |
+| Subscription and pack credits | owner-bound `EntitlementService.charge` before execution |
 
-There is currently no public Python `EntitlementService` or `/internal/check` endpoint.
-In-process hosts may load the same `PlanCatalog`, but a standalone deployment needs a
-private server-to-server check API or may forward/exchange the current user's trusted
-credential to consume `/api/account`. A generic service token resolves only to whatever
-subject its adapter assigns; it cannot select an arbitrary owner through this API.
+In-process product routes can use the initialized `EntitlementService` facade without
+reading billing tables or accepting an internal billing UUID:
+
+```python
+from fastapi import APIRouter, HTTPException, Request
+
+router = APIRouter()
+
+
+@router.post("/convert")
+async def convert(request: Request):
+    kernel = request.app.state.stripe_entitlements
+    decision = await kernel.services.entitlements.check(
+        request.state.billing_owner_external_ref,
+        required_features=("pdf_to_ppt",),
+        required_limits={"max_pages_per_job": 80},
+    )
+    if not decision.allowed:
+        raise HTTPException(403, decision.reason)
+    return {"accepted": True}
+```
+
+The owner reference in this example must already come from verified personal/team
+identity and membership, not the request body. `EntitlementService.check` returns a
+fail-closed `owner_not_found` decision for an unknown owner; its owner-bound `charge`
+and `refund` methods preserve exact decimal amounts, idempotency, and credit-epoch
+semantics. `credits_spendable` and `credit_balance` describe only currently usable
+subscription/pack funding, and `credit_expires_at` is the earliest expiry among those
+usable sources. They remain snapshots; only `charge` serializes concurrent consumption.
+The service deliberately does not enforce host Job counts, API-key rows, or upload limits
+by itself.
+
 Positive caching is a host security/product decision because it can extend access for
 its TTL after revocation. Fail closed when a cached value expires or cannot be refreshed.
 
@@ -439,9 +561,10 @@ charge(account_id, amount, idempotency_key)
 refund(idempotency_key)
 ```
 
-The module is importable from source and the built Wheel, but it is not yet exposed as a
-versioned public service facade. Pin a repository release/commit and cover the wrapper
-with host contract tests before depending on it in process.
+The lower-level module remains importable for existing integrations. New in-process
+code should normally enter through `kernel.services.entitlements`, which resolves stable
+owners before delegating to the same credit primitive. Until a matching 0.3 artifact is
+published, pin the reviewed source commit and retain host contract tests.
 
 The debit key is global across `credit_debits`. It must identify one immutable business
 attempt and cannot later be reused with another account or amount.
@@ -464,9 +587,7 @@ class JobCredits:
         return f"job:v1:{job_id}:attempt:{billing_attempt_id}"
 
     async def account_id(self, owner: BillingOwner) -> str:
-        row = await self.database.existing_account_for_external_ref(
-            owner.external_ref
-        )
+        row = await self.database.existing_account_for_external_ref(owner.external_ref)
         if row is None:
             raise CreditsUnavailableError("billing account does not exist")
         return str(row["id"])
@@ -480,9 +601,7 @@ class JobCredits:
     ):
         key = self.key(job_id, billing_attempt_id)
         account_id = await self.account_id(owner)
-        result = await CreditService(
-            self.database.require_pool()
-        ).charge(account_id, amount, key)
+        result = await CreditService(self.database.require_pool()).charge(account_id, amount, key)
         return key, result
 
     async def refund(self, key: str):
@@ -492,8 +611,10 @@ class JobCredits:
 An integer amount retains the historical meaning of whole credits. Use a decimal string,
 `Decimal`, or `CreditAmount` for fractions; binary `float` is rejected. Store the
 canonical decimal or atom string in a host outbox so another language cannot reinterpret
-the request before an idempotent replay. `CreditResult.balance` is a `CreditAmount`, with
-the exact persisted value available as `balance.atoms` or `balance_atoms`.
+the request before an idempotent replay. `CreditResult.balance`, `requested`, and
+`restored` are `CreditAmount` values, with their exact forms available through
+`balance_atoms`, `requested_atoms`, and `restored_atoms`. The internal HTTP response
+serializes each decimal and atom value as a string plus `scale=1000000`.
 
 Result and error semantics matter:
 
@@ -501,15 +622,18 @@ Result and error semantics matter:
 - `replayed` from `charge`: a matching debit row exists, but it may already have been
   refunded; it is not proof that the Job may start;
 - `replayed` from `refund`: that debit was already refunded; the returned balance is
-  current, not a historical transaction balance;
+  current, not a historical transaction balance, while `requested` and `restored` are
+  the original persisted operation values;
 - `epoch_expired`: a refund arrived after the funding epoch closed and cannot recreate
   old credits;
 - `InsufficientCreditsError`: do not start the job;
-- `CreditsUnavailableError`: the subscription, revocation or credit window blocks use;
+- `CreditsUnavailableError`: no subscription or pack funding source is currently usable;
 - `ValueError`: the key or parameters conflict and require investigation; and
 - `KeyError` from refund: no matching debit exists and the workflow is out of order.
 
-Refund must reuse the original charge key. If a refunded job is attempted again, create
+Refund must reuse the original charge key. Synthetic pack-debt collection keys are not
+product operations and cannot be charged or refunded through this facade. If a refunded
+job is attempted again, create
 a new immutable billing-attempt ID and therefore a new debit key. A same-epoch refund
 may also be consumed by outstanding clawback debt, so callers must use the returned
 balance rather than assuming that the pre-charge balance was restored.
@@ -548,6 +672,21 @@ outbox worker claims with a lease
         ▼
 queue dispatcher publishes outside the transaction and records delivery
 ```
+
+The repository includes that host-owned workflow, schema, and a bounded executable demo
+under [`examples/job_outbox/`](../examples/job_outbox/README.md). The following command
+uses real PostgreSQL while injecting an explicitly non-production, process-local billing
+adapter, so it makes no Stripe request:
+
+```bash
+uv run --env-file .env python -m examples.job_outbox.demo --apply-schema
+```
+
+The demo exercises exact fractional amounts, same-request replay, charge and refund
+outboxes, at-least-once dispatch, queue deduplication, stale execution-token rejection,
+success, terminal failure, and bounded cleanup. The PostgreSQL tests separately inject
+the real `EntitlementService`; replace the demo adapter with that service or the secured
+internal client in production.
 
 If the worker crashes after charge and before updating the host row, lease expiry causes
 the same key to be retried. `replayed` then lets the workflow converge without a second
@@ -589,25 +728,67 @@ changes already follow their own durable remote-operation protocol.
 
 ## Standalone-service private APIs
 
-The public API intentionally has no route that accepts an arbitrary account UUID and
-charges credits. Adding such a route without a service boundary would create an account
-takeover and denial-of-wallet risk.
+The browser-facing API intentionally has no route that accepts an arbitrary account UUID
+and charges credits. A separately deployed billing process can opt into the supplied
+internal workload router, which accepts only stable `owner_external_ref` selectors and
+resolves the internal account server-side.
 
-A host that deploys billing separately must add a private API or message consumer that:
+Replace the final `install_billing` call in the host composition example with:
 
-- authenticates the calling service with validated issuer, audience, expiry and replay
-  controls, not an end-user browser credential;
-- requires an explicit operation scope such as check, charge or refund;
-- authorizes that workload and operation for the requested owner/tenant;
-- accepts the stable owner reference plus immutable business-operation identity;
-- resolves the owner reference server-side to the internal account UUID;
-- rejects a caller-supplied Stripe Customer or Subscription as authority;
-- binds owner, amount and operation to the same idempotency/outbox identity;
-- preserves `CreditService` error and replay semantics; and
-- records caller, owner, operation and key for audit and unknown-response reconciliation.
+```python
+from stripe_entitlements.internal_api import create_internal_router
 
-Mutual TLS, workload identity or signed service tokens are deployment choices. A static
-browser-visible token is not service authentication.
+from host.workload_auth import owner_authorizer, workload_auth
+
+internal_router = create_internal_router(
+    service_provider=lambda: kernel.services.entitlements,
+    auth_adapter=workload_auth,
+    owner_authorizer=owner_authorizer,
+)
+install_billing(
+    app,
+    kernel,
+    prefix="/stripe",
+    internal_routers=[internal_router],
+)
+```
+
+This installs:
+
+| Method | Effective route | Required scope |
+| --- | --- | --- |
+| POST | `/stripe/internal/v1/entitlements/check` | `entitlements:check` |
+| POST | `/stripe/internal/v1/credits/charge` | `credits:charge` |
+| POST | `/stripe/internal/v1/credits/refund` | `credits:refund` |
+
+`charge` and `refund` require the immutable `Idempotency-Key`; charge amounts are exact
+decimal strings. Responses use no-store headers and exact decimal/atom balances.
+Routes passed through `internal_routers` receive no-store/nosniff hardening, including
+validation and not-found errors, but they do not inherit the public browser CORS/Origin
+permission. Keep them behind a private service boundary. This hook is deliberately not
+a generic public-extension mechanism.
+
+Register every host `CORSMiddleware` before calling `install_billing`, and call the
+installer last. When internal routers are present, startup fails closed if a Starlette
+`CORSMiddleware` appears outside the billing middleware; otherwise that outer layer could
+silently add browser CORS headers after the internal response was scrubbed. FastAPI cannot
+inspect a reverse proxy or an arbitrary ASGI wrapper placed around the completed app, so
+the host must also ensure those outer layers never add browser CORS to internal paths.
+Prefer a separate private listener or service boundary when that contract cannot be
+enforced.
+
+Both security callbacks default to reject-all. `WorkloadIdentityAdapter` must validate
+the complete service credential, including algorithm, issuer, audience, expiry,
+not-before, revocation, and replay policy. Possessing a route scope is intentionally
+insufficient to select every billing owner: `WorkloadOwnerAuthorizer` must separately
+prove that this principal may perform this operation for this exact personal/tenant
+owner. A global `credits:charge` scope must never become cross-tenant authority.
+
+Mutual TLS, workload identity, or signed service tokens are deployment choices. A static
+browser-visible token is not service authentication. The host should additionally audit
+principal, owner, operation, and key, and reconcile unknown responses through its durable
+outbox. The Job example supplies the saga/outbox mechanics, but the product must adapt its
+tables and add its own workload-identity audit, grants, queue client, and operations.
 
 ## Connect or replace the Next.js frontend
 
@@ -660,7 +841,8 @@ With the repository defaults, open the frontend at `http://localhost:3000`. Open
 as `http://127.0.0.1:3000` produces a different browser Origin and state-changing calls
 will be rejected unless `FRONTEND_ORIGINS`, Checkout success/cancel URLs and the Portal
 return URL are changed to that exact origin. Production CORS entries must be bare HTTPS
-origins.
+origins. `CHECKOUT_SUCCESS_URL` itself must contain no query or fragment; target fields
+are request-scoped and the server appends the Checkout Session placeholder.
 
 ## Customize the catalog deliberately
 
@@ -767,7 +949,7 @@ Kubernetes CronJobs, Railway Cron, systemd timers or another scheduler:
 # Hourly
 uv run --env-file /run/secrets/billing.env stripe-entitlements grant-due
 
-# Daily
+# Every five minutes (subscription and credit-pack recovery)
 uv run --env-file /run/secrets/billing.env stripe-entitlements reconcile
 ```
 
@@ -779,8 +961,10 @@ stripe-entitlements grant-due
 stripe-entitlements reconcile
 ```
 
-Multiple schedulers are safe. No scheduler means annual monthly grants or webhook-loss
-repair can be delayed. API and worker replicas must share the PostgreSQL primary,
+Multiple schedulers are safe. The reconciliation command covers both recurring Invoice
+state and persisted credit-pack Session/PaymentIntent/Charge state. No scheduler means
+annual monthly grants or webhook-loss repair can be delayed. API and worker replicas
+must share the PostgreSQL primary,
 catalog, product line, transition policy and Stripe version contracts.
 
 At minimum monitor database health, unresolved incidents, webhook 5xx/delivery age,
@@ -793,7 +977,7 @@ Use [the repository release checklist](../.github/RELEASE_CHECKLIST.md) for comp
 evidence. The integration-specific order is:
 
 1. while Checkout/customer traffic is still disabled, create the final live webhook
-   endpoint with only the eight supported Event types and an explicitly pinned payload
+   endpoint with only the nine supported Event types and an explicitly pinned payload
    version; put its real signing secret, the live Stripe key, database URL and public URL
    settings into the production secret manager;
 2. provision the dedicated production database, restore-test its backup policy, and
@@ -804,10 +988,10 @@ evidence. The integration-specific order is:
      stripe-entitlements migrate
    ```
 
-   The current migration command loads the complete `Settings` object even though it
-   only mutates PostgreSQL. Its env file must therefore already contain the real live
-   Stripe/webhook contract; do not use format-valid fake credentials to make migration
-   start.
+   The migration command loads only `DATABASE_URL`. Prefer a database-only secret for
+   this schema-init Job; it does not need the live Stripe key, webhook signing secret, or
+   browser configuration. Supply the complete runtime contract separately to API and
+   worker processes.
 
 3. configure `APP_ENV=production`, remove `DEMO_BEARER_TOKEN`, and configure the
    deployment to use only the host-owned entrypoint with production authentication and
@@ -827,7 +1011,8 @@ evidence. The integration-specific order is:
 6. verify that the endpoint from step 1 remains limited to
    `checkout.session.completed`, `checkout.session.expired`, `invoice.paid`,
    `invoice.payment_failed`, `customer.subscription.updated`,
-   `customer.subscription.deleted`, `charge.refunded`, and `charge.dispute.created`;
+   `customer.subscription.deleted`, `charge.refunded`, `charge.dispute.created`, and
+   `payment_intent.succeeded`;
 7. independently verify its actual
    signed payload version; test-mode evidence is not live-payload evidence;
 8. configure HTTPS Checkout success/cancel and Portal return URLs plus exact bare HTTPS
@@ -836,7 +1021,7 @@ evidence. The integration-specific order is:
    and canonical-site variables before `npm run build`, and keep demo auth disabled;
 10. set `NEXT_PUBLIC_ALLOW_INDEXING=true` only for the canonical public site, never a
    staging or preview deployment;
-11. enable hourly annual grants, daily reconciliation, incidents/webhook/scheduler alerts
+11. enable hourly annual grants, five-minute reconciliation, incidents/webhook/scheduler alerts
    and backup monitoring; and
 12. run host contract tests, repository gates, a low-risk live delivery/payment-recovery
     smoke, and a low-traffic observation window before increasing traffic.
@@ -853,8 +1038,7 @@ the boundary you own:
 - an invalid or expired token cannot create a billing account;
 - a forged tenant selector and cross-tenant membership both fail;
 - a viewer can read catalog/sanitized product state but cannot fetch a recovery URL;
-- a viewer receives 403 from `/api/account` and every billing mutation unless a
-  role-aware response layer removes every privileged capability;
+- a viewer receives 403 from `/api/account` and every billing mutation;
 - concurrent resolution of one `external_ref` produces one billing account;
 - concurrent calls for one job key charge once and replay thereafter;
 - the same key with another account or amount fails;
@@ -888,10 +1072,11 @@ Portal policy, frontend auth or plan-transition behavior.
 - [ ] Use a dedicated, migrated PostgreSQL database and test complete backup/restore.
 - [ ] Enforce feature and numeric limits in the product backend.
 - [ ] Coordinate Jobs and credits through a durable outbox/saga.
-- [ ] Add a service-authenticated credit API only if billing is separately deployed.
+- [ ] If billing is separate, configure the internal router with workload authentication
+      and explicit workload-to-owner authorization.
 - [ ] Configure the real test/live Portal IDs and independently verified webhook versions.
 - [ ] Keep test and live Products, Prices, endpoints and secrets separate.
-- [ ] Deploy hourly annual grants and daily reconciliation.
+- [ ] Deploy hourly annual grants and five-minute reconciliation.
 - [ ] Implement production frontend auth or a same-origin BFF.
 - [ ] Decide identity merge/deletion and catalog-grandfathering policy.
 - [ ] Pass host contract tests, repository tests and the applicable real Stripe gates.
@@ -904,8 +1089,9 @@ and deliberately independent of a particular identity provider. The difficult pa
 not the `external_ref`; it is coordinating tenant authorization, product state and
 credits without weakening the billing invariants.
 
-For a Python/FastAPI product willing to fork the source and use dedicated PostgreSQL,
-adoption is practical today. For an existing service that expects a router, ORM models,
-cookie auth, a transactional Job API or language-neutral RPC, integration still requires
-an explicit adapter layer. Those dependencies are visible and bounded in this guide, but
-they are not implemented by the repository yet.
+For a Python/FastAPI product using dedicated PostgreSQL, both standalone and native
+same-process adoption are practical through the implemented app/router/service facade.
+The personal/team JWT starters and owner-bound internal API remove common bootstrap
+work, while leaving issuer configuration, tenant membership, and service-to-owner grants
+under host control. ORM models, cookie/BFF auth, a transactional Job/outbox workflow,
+and generated clients for other languages still require explicit host integration.

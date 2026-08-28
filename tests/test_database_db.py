@@ -26,16 +26,27 @@ async def test_connection_initializer_forces_utc_before_timestamp_arithmetic() -
 
 @pytest.mark.parametrize(
     "external_ref",
-    ["", " padded ", "line\nbreak", "delete\x7f", "zero\u200bwidth", "x" * 513],
+    [
+        "",
+        " padded ",
+        "line\nbreak",
+        "delete\x7f",
+        "zero\u200bwidth",
+        "x" * 513,
+        "00000000-0000-4000-8000-000000000001",
+        "cus_database_owner",
+        "sub_database_owner",
+        "acct_database_owner",
+    ],
 )
 async def test_database_rejects_invalid_external_refs_before_write(
     external_ref: str, pool: asyncpg.Pool
 ) -> None:
     database = Database(TEST_DSN)
     database.pool = pool
-    with pytest.raises(ValueError, match="external_ref"):
+    with pytest.raises(ValueError, match=r"external_ref|Stripe identifier|internal account ID"):
         await database.create_account(external_ref)
-    with pytest.raises(ValueError, match="external_ref"):
+    with pytest.raises(ValueError, match=r"external_ref|Stripe identifier|internal account ID"):
         await database.account_for_external_ref(external_ref)
     async with pool.acquire() as conn:
         assert await conn.fetchval("select count(*) from billing_accounts") == 0

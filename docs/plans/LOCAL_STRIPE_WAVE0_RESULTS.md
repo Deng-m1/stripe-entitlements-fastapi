@@ -1,5 +1,8 @@
 # Wave 0 勘察结果（R0a–R0d）
 
+> 历史工件：以下 9-case/733-test 数字只描述所列旧提交，不是当前 10-case
+> credit-pack 树或最终提交的执行证据。
+
 - 执行日期：2026-08-26；分支：`cursor/stripe-promo-ui-expand-7789`；HEAD：`ccad9c5d9d701d986e9d54313c20ed15dc04c8bd`。
 - 计划依据：[LOCAL_STRIPE_REAL_REGRESSION.md](LOCAL_STRIPE_REAL_REGRESSION.md) §3 回归矩阵 Wave 0 行（R0a–R0d）。
 - **证据层级声明（§6.4 纪律）**：本报告全部内容属于 mocked/预检层（分层第 0 层）。本波**未发起任何 Stripe 网络调用、未创建任何真实对象**；下文没有任何一行构成真实 API、Test Clock 或 browser 层证据。`--collect-only` 输出仅为收集证据，不是执行证据。

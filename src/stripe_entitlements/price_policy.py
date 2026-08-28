@@ -98,3 +98,51 @@ def catalog_price_matches(
         )
         and price.get("tax_behavior") in {None, "unspecified"}
     )
+
+
+def catalog_one_time_price_matches(
+    price: Mapping[str, Any],
+    *,
+    expected_currency: str,
+    expected_unit_amount: int,
+    expected_product_line: str,
+    expected_pack_key: str,
+    expected_lookup_key: str,
+    require_active: bool = True,
+) -> bool:
+    """Fail closed around the deliberately narrow one-time credit-pack Price shape."""
+
+    product = price.get("product")
+    if not isinstance(product, Mapping):
+        return False
+    metadata_values = (price.get("metadata"), product.get("metadata"))
+    for metadata in metadata_values:
+        if metadata is None:
+            continue
+        if not isinstance(metadata, Mapping):
+            return False
+        if metadata.get("product_line") not in {None, expected_product_line}:
+            return False
+        if metadata.get("credit_pack") not in {None, expected_pack_key}:
+            return False
+        if metadata.get("plan") is not None:
+            return False
+    return bool(
+        (not require_active or (price.get("active") is True and product.get("active") is True))
+        and price.get("lookup_key") == expected_lookup_key
+        and price.get("type", "one_time") == "one_time"
+        and price.get("recurring") is None
+        and price.get("currency") == expected_currency
+        and type(price.get("unit_amount")) is int
+        and price.get("unit_amount") == expected_unit_amount
+        and price.get("billing_scheme", "per_unit") == "per_unit"
+        and price.get("tiers_mode") is None
+        and price.get("transform_quantity") is None
+        and price.get("custom_unit_amount") is None
+        and price.get("tax_behavior") in {None, "unspecified"}
+        and _currency_options_match(
+            price.get("currency_options"),
+            expected_currency=expected_currency,
+            expected_unit_amount=expected_unit_amount,
+        )
+    )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from functools import lru_cache
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -26,10 +27,43 @@ def _visible(value: Any, *, field: str, max_bytes: int) -> str:
     return value
 
 
-class Settings(BaseSettings):
+def public_http_url_is_structurally_safe(value: str) -> bool:
+    if type(value) is not str:
+        return False
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme in {"http", "https"}
+        and parsed.netloc
+        and parsed.username is None
+        and parsed.password is None
+    )
+
+
+def checkout_success_base_url_is_safe(value: str) -> bool:
+    if not public_http_url_is_structurally_safe(value):
+        return False
+    parsed = urlsplit(value)
+    return bool(not parsed.query and not parsed.fragment)
+
+
+class DatabaseSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str
+
+    @field_validator("database_url")
+    @classmethod
+    def _database_url(cls, value: str) -> str:
+        value = _visible(value, field="DATABASE_URL", max_bytes=2048)
+        if not value.startswith(("postgresql://", "postgres://")):
+            raise ValueError("DATABASE_URL must use PostgreSQL")
+        return value
+
+
+class Settings(DatabaseSettings):
     stripe_secret_key: str
     stripe_webhook_secret: str
     stripe_api_version: str = "2026-06-24.dahlia"
@@ -48,14 +82,6 @@ class Settings(BaseSettings):
     demo_bearer_subject: str = "demo-user"
     demo_bearer_email: str | None = None
     billing_transition_policy: Literal["full_period_reset", "prorated_delta"] = "full_period_reset"
-
-    @field_validator("database_url")
-    @classmethod
-    def _database_url(cls, value: str) -> str:
-        value = _visible(value, field="DATABASE_URL", max_bytes=2048)
-        if not value.startswith(("postgresql://", "postgres://")):
-            raise ValueError("DATABASE_URL must use PostgreSQL")
-        return value
 
     @field_validator("stripe_secret_key")
     @classmethod
@@ -118,6 +144,20 @@ class Settings(BaseSettings):
     def _bounded_configuration_text(cls, value: str) -> str:
         return _visible(value, field="configuration value", max_bytes=8192)
 
+    @field_validator("checkout_success_url", "checkout_cancel_url", "portal_return_url")
+    @classmethod
+    def _public_http_url(cls, value: str) -> str:
+        if not public_http_url_is_structurally_safe(value):
+            raise ValueError("billing redirect URLs must be origin-safe HTTP(S) URLs")
+        return value
+
+    @field_validator("checkout_success_url")
+    @classmethod
+    def _checkout_success_base_url(cls, value: str) -> str:
+        if not checkout_success_base_url_is_safe(value):
+            raise ValueError("CHECKOUT_SUCCESS_URL must not include a query or fragment")
+        return value
+
     @field_validator("demo_bearer_token")
     @classmethod
     def _demo_token(cls, value: str | None) -> str | None:
@@ -147,3 +187,8 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()  # type: ignore[call-arg]
+
+
+@lru_cache
+def get_database_settings() -> DatabaseSettings:
+    return DatabaseSettings()  # type: ignore[call-arg]

@@ -13,6 +13,7 @@ from .bounds import POSTGRES_BIGINT_MAX
 from .catalog import Plan, PlanCatalog
 from .clawbacks import collect_clawback_debts
 from .credit_amount import checked_add_atoms, credit_decimal
+from .credit_packs import CreditPackEventProcessor, collect_pack_debts_from_subscription
 from .event_audit import redacted_event_snapshot
 from .invoice_policy import (
     has_unsupported_invoice_adjustments,
@@ -49,6 +50,7 @@ _SUPPORTED_EVENT_TYPES = {
     "customer.subscription.deleted",
     "charge.refunded",
     "charge.dispute.created",
+    "payment_intent.succeeded",
 }
 
 
@@ -259,6 +261,7 @@ class EventProcessor:
         self.product_line = product_line
         self.expected_livemode = expected_livemode
         self.expected_api_version = expected_api_version
+        self.credit_pack_events = CreditPackEventProcessor(catalog, product_line)
 
     async def has_committed_event(self, event_id: object) -> bool:
         if not _valid_event_identifier(event_id, max_bytes=512):
@@ -271,6 +274,62 @@ class EventProcessor:
                     event_id,
                 )
             )
+
+    @staticmethod
+    async def _credit_pack_reconcile_claim_current(
+        conn: asyncpg.Connection, event: Mapping[str, Any]
+    ) -> bool:
+        """Fence a synthetic pack fact in the same transaction as its effects.
+
+        The account-first lock order matches every credit-pack projection. Holding
+        both rows until Event inbox and business effects commit prevents an expired
+        network worker from racing a replacement lease between a preflight check and
+        projection.
+        """
+
+        raw_guard = event.get("_credit_pack_reconcile_claim")
+        if raw_guard is None:
+            return True
+        if event.get("_remote_verified") is not True or not isinstance(raw_guard, Mapping):
+            return False
+        raw_order_id = raw_guard.get("order_id")
+        raw_account_id = raw_guard.get("account_id")
+        raw_token = raw_guard.get("token")
+        if not all(isinstance(value, str) for value in (raw_order_id, raw_account_id, raw_token)):
+            return False
+        try:
+            order_id = uuid.UUID(raw_order_id)
+            account_id = uuid.UUID(raw_account_id)
+            token = uuid.UUID(raw_token)
+        except (ValueError, TypeError, AttributeError):
+            return False
+        if (str(order_id), str(account_id), str(token)) != (
+            raw_order_id,
+            raw_account_id,
+            raw_token,
+        ):
+            return False
+        owner = await conn.fetchval(
+            "select account_id from credit_pack_orders where id=$1", order_id
+        )
+        if owner != account_id:
+            return False
+        account_locked = await conn.fetchval(
+            "select id from billing_accounts where id=$1 for update", account_id
+        )
+        if account_locked is None:
+            return False
+        order_locked = await conn.fetchval(
+            """select id from credit_pack_orders
+                 where id=$1 and account_id=$2
+                   and reconcile_claim_token=$3
+                   and reconcile_claim_expires_at > clock_timestamp()
+                 for update""",
+            order_id,
+            account_id,
+            token,
+        )
+        return order_locked is not None
 
     def _catalog_line_matches(self, line: Mapping[str, Any], plan: Plan, interval: str) -> bool:
         resolved_price = line.get("_resolved_price")
@@ -310,6 +369,8 @@ class EventProcessor:
         event_type = raw_event_type
         audit_payload = redacted_event_snapshot(event)
         async with self.pool.acquire() as conn, conn.transaction():
+            if not await self._credit_pack_reconcile_claim_current(conn, event):
+                return ProcessResult("ignored", "credit-pack reconciliation lease lost")
             claimed = await conn.fetchval(
                 """insert into stripe_webhook_events(id,event_type,livemode,payload)
                      values($1,$2,$3,$4::jsonb)
@@ -332,7 +393,7 @@ class EventProcessor:
                 )
                 await conn.execute(
                     """update stripe_webhook_events set outcome='ignored',reason=$2,
-                           processed_at=now() where id=$1""",
+                           processed_at=clock_timestamp() where id=$1""",
                     event_id,
                     shape_error,
                 )
@@ -361,7 +422,7 @@ class EventProcessor:
                     result = ProcessResult("ignored", mismatch)
                     await conn.execute(
                         """update stripe_webhook_events set outcome='ignored',reason=$2,
-                               processed_at=now() where id=$1""",
+                               processed_at=clock_timestamp() where id=$1""",
                         event_id,
                         mismatch,
                     )
@@ -369,7 +430,8 @@ class EventProcessor:
             result = await self._dispatch(conn, event)
             await conn.execute(
                 """update stripe_webhook_events
-                      set outcome=$2, reason=$3, processed_at=now() where id=$1""",
+                      set outcome=$2, reason=$3,
+                          processed_at=clock_timestamp() where id=$1""",
                 event_id,
                 result.outcome,
                 result.reason,
@@ -388,6 +450,8 @@ class EventProcessor:
 
     async def _dispatch(self, conn: asyncpg.Connection, event: dict[str, Any]) -> ProcessResult:
         event_type = event["type"]
+        if event_type == "payment_intent.succeeded":
+            return await self.credit_pack_events.payment_succeeded(conn, event)
         if event_type == "invoice.paid":
             return await self._invoice_paid(conn, event)
         if event_type == "invoice.payment_failed":
@@ -397,10 +461,19 @@ class EventProcessor:
         if event_type == "customer.subscription.deleted":
             return await self._subscription_deleted(conn, event)
         if event_type in {"charge.refunded", "charge.dispute.created"}:
+            pack_result = await self.credit_pack_events.clawback(conn, event)
+            if pack_result is not None:
+                return pack_result
             return await self._clawback(conn, event)
         if event_type == "checkout.session.completed":
+            pack_result = await self.credit_pack_events.checkout_event(conn, event)
+            if pack_result is not None:
+                return pack_result
             return await self._checkout_completed(conn, event)
         if event_type == "checkout.session.expired":
+            pack_result = await self.credit_pack_events.checkout_event(conn, event)
+            if pack_result is not None:
+                return pack_result
             return await self._checkout_expired(conn, event)
         return ProcessResult("ignored", "event type is outside the reference contract")
 
@@ -1100,6 +1173,12 @@ class EventProcessor:
                 reason="refund_clawback",
                 event_id=event["id"],
             )
+        await collect_pack_debts_from_subscription(
+            conn,
+            account_id=account["id"],
+            grant_epoch=new_epoch,
+            event_id=f"pack-debt:{event['id']}",
+        )
         if transition is None:
             transition = await conn.fetchrow(
                 """select * from billing_plan_changes
@@ -1422,6 +1501,12 @@ class EventProcessor:
             account_id=account["id"],
             grant_epoch=int(account["grant_epoch"]),
             event_id=str(event["id"]),
+        )
+        await collect_pack_debts_from_subscription(
+            conn,
+            account_id=account["id"],
+            grant_epoch=int(account["grant_epoch"]),
+            event_id=f"pack-debt:{event['id']}",
         )
         if refund_units:
             assert grant is not None

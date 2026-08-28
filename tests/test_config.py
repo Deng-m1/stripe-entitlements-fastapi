@@ -33,6 +33,16 @@ def _valid(**overrides: object) -> dict[str, object]:
         ("log_level", "info", "Input should be"),
         ("app_env", "staging", "Input should be"),
         ("frontend_origins", "https://app.example\u200b", "visible string"),
+        (
+            "checkout_success_url",
+            "https://app.example/billing/success?campaign=launch",
+            "query or fragment",
+        ),
+        (
+            "checkout_success_url",
+            "https://app.example/billing/success#done",
+            "query or fragment",
+        ),
         ("demo_bearer_token", "token\x7f", "visible string"),
         ("demo_bearer_email", "missing-at.example.test", "one @"),
         ("demo_bearer_email", "has space@example.test", "no whitespace"),

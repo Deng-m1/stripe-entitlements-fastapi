@@ -107,10 +107,11 @@ const recordVideo = process.env.E2E_RECORD_VIDEO === "1";
 const loopbackCertificateSpki = optionalLoopbackCertificateSpki(
   process.env.E2E_LOOPBACK_TLS_SPKI,
 );
-const outputDir = resolve(
+const artifactRoot = resolve(
   process.env.E2E_OUTPUT_DIR?.trim() ||
     `test-results/playwright-stripe-${transitionPolicy}`,
 );
+const outputDir = resolve(artifactRoot, "results");
 
 export default defineConfig({
   testDir: "./e2e",
@@ -125,7 +126,7 @@ export default defineConfig({
   outputDir,
   reporter: [
     ["list"],
-    ["html", { outputFolder: "playwright-report/stripe", open: "never" }],
+    ["html", { outputFolder: resolve(artifactRoot, "html-report"), open: "never" }],
   ],
   use: {
     baseURL: frontend.url.origin,
@@ -138,7 +139,10 @@ export default defineConfig({
       : { width: 1280, height: 720 },
     actionTimeout: 30_000,
     navigationTimeout: 60_000,
-    trace: "retain-on-failure",
+    // The Node harness injects a one-run Personal JWT into attested backend requests.
+    // A Playwright trace can retain request headers, so screenshots, video, the HTML
+    // report, and the explicit timeline are the permitted browser evidence instead.
+    trace: "off",
     screenshot: "only-on-failure",
     video: recordVideo
       ? { mode: "on", size: { width: 1440, height: 810 } }

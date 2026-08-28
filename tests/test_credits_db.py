@@ -8,7 +8,9 @@ import pytest
 from stripe_entitlements.bounds import POSTGRES_BIGINT_MAX
 from stripe_entitlements.catalog import PlanCatalog
 from stripe_entitlements.credit_amount import MAX_CREDIT_ATOMS, CreditAmount
+from stripe_entitlements.credit_packs import CreditPackCoordinator
 from stripe_entitlements.credits import (
+    CreditResult,
     CreditService,
     CreditsUnavailableError,
     InsufficientCreditsError,
@@ -16,6 +18,50 @@ from stripe_entitlements.credits import (
 from stripe_entitlements.processor import EventProcessor
 from tests.builders import paid_invoice, payment_failed, refunded_charge
 from tests.credit_helpers import atoms, catalog_with_credits
+from tests.db_lock_helpers import (
+    wait_for_account_row_lock_waiter,
+    wait_until_database_time_after,
+)
+
+
+async def _grant_test_pack(
+    pool: asyncpg.Pool,
+    catalog: PlanCatalog,
+    account_id: str,
+    *,
+    request_key: str,
+    expires_in_days: int,
+) -> None:
+    reservation = await CreditPackCoordinator(pool, catalog).reserve(
+        account_id,
+        catalog.require_credit_pack("boost-100"),
+        request_key,
+    )
+    async with pool.acquire() as conn, conn.transaction():
+        database_now = await conn.fetchval("select clock_timestamp()")
+        await conn.execute(
+            """update credit_pack_orders
+                  set checkout_status='completed',payment_status='paid',
+                      stripe_checkout_session_id=$2,stripe_payment_intent_id=$3,
+                      stripe_charge_id=$4,amount_paid=price_amount,paid_at=$5
+                where id=$1::uuid""",
+            reservation.order_id,
+            f"cs_{reservation.order_id}",
+            f"pi_{reservation.order_id}",
+            f"ch_{reservation.order_id}",
+            database_now,
+        )
+        await conn.execute(
+            """insert into credit_funding_lots(
+                   id,order_id,account_id,original_credits,remaining_credits,expires_at)
+                 values(gen_random_uuid(),$1::uuid,$2::uuid,$3,$3,
+                        $4::timestamptz + $5::integer * interval '1 day')""",
+            reservation.order_id,
+            account_id,
+            100_000_000,
+            database_now,
+            expires_in_days,
+        )
 
 
 async def test_credit_charge_rejects_amount_outside_postgresql_bigint_range(
@@ -41,7 +87,114 @@ async def test_atomic_charge_and_refund(
     charged = await service.charge(account_id, 40, "job-1")
     refunded = await service.refund("job-1")
     assert (charged.outcome, charged.balance.atoms) == ("charged", 260_000_000)
+    assert (charged.requested.atoms, charged.restored.atoms) == (40_000_000, 0)
     assert (refunded.outcome, refunded.balance.atoms) == ("refunded", 300_000_000)
+    assert (refunded.requested.atoms, refunded.restored.atoms) == (
+        40_000_000,
+        40_000_000,
+    )
+
+
+async def test_charge_and_refund_replays_exclude_newly_expired_subscription_funding(
+    processor: EventProcessor,
+    pool: asyncpg.Pool,
+    catalog: PlanCatalog,
+    make_account,
+) -> None:
+    account_id = await make_account()
+    await processor.process(paid_invoice(account_id))
+    await _grant_test_pack(
+        pool,
+        catalog,
+        account_id,
+        request_key="replay-pack-first",
+        expires_in_days=2,
+    )
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """update billing_accounts
+                  set credit_expires_at=clock_timestamp()+interval '30 days'
+                where id=$1::uuid""",
+            account_id,
+        )
+
+    service = CreditService(pool)
+    charged = await service.charge(account_id, "25", "replay-pack-funded-job")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """update billing_accounts
+                  set credit_expires_at=clock_timestamp()-interval '1 second'
+                where id=$1::uuid""",
+            account_id,
+        )
+
+    charge_replay = await service.charge(account_id, "25", "replay-pack-funded-job")
+    refunded = await service.refund("replay-pack-funded-job")
+    refund_replay = await service.refund("replay-pack-funded-job")
+
+    assert (charged.outcome, charged.balance.atoms) == ("charged", 375_000_000)
+    assert (charge_replay.outcome, charge_replay.balance.atoms) == (
+        "replayed",
+        75_000_000,
+    )
+    assert (refunded.outcome, refunded.balance.atoms, refunded.restored_atoms) == (
+        "refunded",
+        100_000_000,
+        25_000_000,
+    )
+    assert (refund_replay.outcome, refund_replay.balance.atoms) == (
+        "replayed",
+        100_000_000,
+    )
+
+
+async def test_epoch_expired_refund_and_replay_report_only_live_pack_funding(
+    processor: EventProcessor,
+    pool: asyncpg.Pool,
+    catalog: PlanCatalog,
+    make_account,
+) -> None:
+    account_id = await make_account()
+    await processor.process(paid_invoice(account_id))
+    await _grant_test_pack(
+        pool,
+        catalog,
+        account_id,
+        request_key="epoch-expired-live-pack",
+        expires_in_days=30,
+    )
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """update billing_accounts
+                  set credit_expires_at=clock_timestamp()+interval '1 day'
+                where id=$1::uuid""",
+            account_id,
+        )
+
+    service = CreditService(pool)
+    charged = await service.charge(account_id, "25", "epoch-expired-pack-balance")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """update billing_accounts
+                  set credit_expires_at=clock_timestamp()-interval '1 second'
+                where id=$1::uuid""",
+            account_id,
+        )
+
+    expired = await service.refund("epoch-expired-pack-balance")
+    replay = await service.refund("epoch-expired-pack-balance")
+
+    assert (charged.outcome, charged.balance.atoms) == ("charged", 375_000_000)
+    assert (expired.outcome, expired.balance.atoms, expired.restored_atoms) == (
+        "epoch_expired",
+        100_000_000,
+        0,
+    )
+    assert (replay.outcome, replay.balance.atoms, replay.restored_atoms) == (
+        "replayed",
+        100_000_000,
+        0,
+    )
 
 
 async def test_same_charge_idempotency_key_never_double_spends(
@@ -147,6 +300,65 @@ async def test_concurrent_refund_happens_once(
     assert sum(result.outcome == "refunded" for result in results) == 1
     assert sum(result.outcome == "replayed" for result in results) == 19
     assert all(result.balance.atoms == 300_000_000 for result in results)
+    assert all(result.requested_atoms == 80_000_000 for result in results)
+    assert all(result.restored_atoms == 80_000_000 for result in results)
+
+
+async def test_refund_rechecks_wall_clock_after_waiting_for_account_lock(
+    processor: EventProcessor, pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account()
+    await processor.process(paid_invoice(account_id))
+    service = CreditService(pool)
+    await service.charge(account_id, 40, "refund-across-expiry-lock")
+
+    blocker = await pool.acquire()
+    transaction = blocker.transaction()
+    refund_task: asyncio.Task[CreditResult] | None = None
+    committed = False
+    await transaction.start()
+    try:
+        await blocker.fetchrow(
+            "select id from billing_accounts where id=$1::uuid for update",
+            account_id,
+        )
+        refund_task = asyncio.create_task(service.refund("refund-across-expiry-lock"))
+        await wait_for_account_row_lock_waiter(pool)
+        expires_at = await blocker.fetchval(
+            """update billing_accounts
+                  set credit_expires_at=clock_timestamp()+interval '250 milliseconds'
+                where id=$1::uuid returning credit_expires_at""",
+            account_id,
+        )
+        await wait_until_database_time_after(pool, expires_at)
+        await transaction.commit()
+        committed = True
+
+        result = await refund_task
+    finally:
+        if not committed:
+            await transaction.rollback()
+        await pool.release(blocker)
+        if refund_task is not None and not refund_task.done():
+            refund_task.cancel()
+            await asyncio.gather(refund_task, return_exceptions=True)
+
+    assert (result.outcome, result.requested_atoms, result.restored_atoms) == (
+        "epoch_expired",
+        40_000_000,
+        0,
+    )
+    async with pool.acquire() as conn:
+        account_balance = await conn.fetchval(
+            "select credits_balance from billing_accounts where id=$1::uuid",
+            account_id,
+        )
+        debit = await conn.fetchrow(
+            """select restored_credits,refunded_at is not null
+                 from credit_debits where idempotency_key='refund-across-expiry-lock'"""
+        )
+    assert account_balance == 260_000_000
+    assert debit is not None and tuple(debit) == (0, True)
 
 
 async def test_refund_cannot_cross_a_new_grant_epoch(
@@ -167,6 +379,13 @@ async def test_refund_cannot_cross_a_new_grant_epoch(
     )
     result = await service.refund("old-job")
     assert (result.outcome, result.balance.atoms) == ("epoch_expired", 300_000_000)
+    assert (result.requested_atoms, result.restored_atoms) == (50_000_000, 0)
+    replay = await service.refund("old-job")
+    assert (replay.outcome, replay.requested_atoms, replay.restored_atoms) == (
+        "replayed",
+        50_000_000,
+        0,
+    )
 
 
 async def test_fractional_charge_is_exact_and_equivalent_forms_replay(

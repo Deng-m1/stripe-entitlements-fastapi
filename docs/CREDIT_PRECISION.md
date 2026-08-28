@@ -9,7 +9,7 @@ credits and Stripe currency.
 ```text
 credit scale       = 1,000,000 atoms per credit
 minimum amount     = 0.000001 credit
-database authority = signed PostgreSQL bigint atoms
+database row authority = signed PostgreSQL bigint atoms
 Python boundary    = CreditAmount / Decimal, never float
 HTTP boundary      = canonical decimal string plus atom string
 ```
@@ -58,6 +58,11 @@ and the backend emits a minimal canonical form without redundant trailing zeroes
 comparisons and arithmetic use atom strings or the validated amount helper.
 Scientific notation, booleans, JSON fractional numbers, NaN, infinity, negative zero,
 more than six fractional digits and overflowing values fail closed.
+
+Each persisted balance, lot, debit, allocation, and ledger delta must fit one signed
+PostgreSQL `bigint`. An account total may aggregate several funding rows and can therefore
+exceed one `bigint`; API decimal/atoms strings and the Python/JavaScript exact-integer
+parsers deliberately support that aggregate without crossing a float boundary.
 
 ## Currency is not credit
 

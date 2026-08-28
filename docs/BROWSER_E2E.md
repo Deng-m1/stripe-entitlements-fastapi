@@ -1,4 +1,4 @@
-# Real-browser Stripe Checkout and plan-upgrade E2E
+# Real-browser Auth, Checkout, Portal, credit-pack, and product-Job E2E
 
 The opt-in Playwright gate drives the real Next.js UI and a real Stripe-hosted
 **test-mode** Checkout. It is intentionally stateful and serial:
@@ -24,39 +24,111 @@ The opt-in Playwright gate drives the real Next.js UI and a real Stripe-hosted
     fixture is used, then require a second signed paid-Invoice projection to reach
     `pro/month`, 1,000 credits, and enforceable entitlements;
 14. verify the completed intent and either one 700-credit delta allocation or no delta
-    allocation, according to policy.
+    allocation, according to policy;
+15. create Boost 100 through the UI and require the API response, hosted URL, and return
+    query to carry the same real `cs_test_` Session;
+16. submit that one-time `mode=payment` Checkout on Stripe's real hosted page;
+17. while the runner's in-memory webhook barrier holds only this account's genuine
+    `payment_intent.succeeded`, prove the return page still reports Pro 1,000,
+    purchased balance 0, and no lot for the Session;
+18. release the original signed request, then require Pro 1,000 + purchased 100 = 1,100
+    and exactly one unexpired Boost 100 lot bound to that Session;
+19. create a real `bps_` Portal Session through the account UI, require the Stripe
+    creation response to bind the exact Customer, dedicated safe configuration,
+    return URL, object type, and test mode, then open `billing.stripe.com`;
+20. use the hosted Portal's return control and require navigation back to `/account`
+    with Pro/1,100 unchanged;
+21. trigger a product Job from the browser-facing host API, require the user's Personal
+    JWT to map to the same owner, then have the host call the private facade with a
+    separately signed workload JWT and an explicit workload-to-owner authorization;
+22. require that successful Job to charge exactly 80 credits, replay the same operation
+    key without a second debit, and observe 1,100 → 1,020;
+23. run a terminal-failure Job that charges 20, refunds the original operation key, and
+    proves the transient 1,000 balance converges back to 1,020; and
+24. verify PostgreSQL contains exactly those two usage debits, exact allocation totals,
+    a terminal refund only on the failed Job, and subscription/pack provenance that
+    sums to the final browser projection.
 
 The redirect and either SCA completion are never treated as entitlement proof. The browser
 test captures the application's authenticated `GET /api/account` response. The full
-runner additionally requires exactly three identity-bound essential Events in
-PostgreSQL: this account's `checkout.session.completed`, initial `invoice.paid`, and
-settlement `invoice.paid`. It binds them to the run's Session, two funding Invoices,
-ledger grants, and policy-specific allocation, checks every additional account-matched
-Event against Stripe, and rejects unresolved incidents for those identities.
+runner additionally requires exactly five identity-bound essential Events in
+PostgreSQL: the subscription `checkout.session.completed`, initial `invoice.paid`,
+settlement `invoice.paid`, pack `checkout.session.completed`, and authoritative pack
+`payment_intent.succeeded`. It binds them to the two Sessions, two funding Invoices,
+subscription ledger grants, policy-specific allocation, pack order, PaymentIntent,
+Charge, and lot; checks every additional account-matched Event against Stripe; and
+rejects unresolved incidents for those identities. The pack Checkout Event records
+identity only. Its stored reason must explicitly say the payment webhook remains
+authoritative; only the handled PaymentIntent Event may correspond to the funded lot.
+The final verifier separately checks the two product-operation idempotency keys and
+their debit/allocation/refund equations. Portal opening creates no entitlement Event;
+its evidence is the gateway-validated Stripe creation response, the owner-bound
+in-process E2E observation, the real hosted DOM, and the observed return to `/account`.
 
-A successful complete run proves one isolated Stripe test-mode Checkout and selected
-upgrade lifecycle. It does not prove live mode, every bank's 3DS UI, Stripe Tax,
-coupons, trials, or arbitrary Checkout settings.
+A successful complete run proves one isolated subscription Checkout, selected upgrade
+lifecycle, one isolated card-funded one-time credit-pack Checkout, one Portal round trip, and the
+Personal-identity → owner → signed-workload → credit-operation boundary in Stripe test mode. Cleanup
+fully refunds the positively identified pack Charge before deleting the run-owned
+Customer, so the run leaves no refundable pack cash inventory. It does not prove live
+mode, a third-party IdP's login UI/session revocation, a production workload issuer,
+every bank's 3DS UI, Stripe Tax, coupons, trials, or arbitrary Checkout settings. The
+runner's local IdP signs real asymmetric JWTs and serves real HTTPS JWKS; it is evidence
+for the starter adapter contract, not a claim that a host application's login page was tested.
 
-Current local signed-forwarding evidence: both policies passed on the 0.3 baseline
-candidate on 2026-08-28 through explicit Stripe CLI forwarding. Each reached
-Pro/Monthly/1,000, observed seven account-related and zero unrelated Events, bound exactly
-three essential Events, used a Clover signed payload/Event API view for that test account,
-had no unresolved run-related incident, and completed strict cleanup. This proves the
-raw-signature, application, browser, and PostgreSQL path, not Webhook Endpoint metadata.
+The historical runs below predate the credit-pack browser gate and therefore remain
+subscription/upgrade evidence only. They must not be cited as evidence for the final
+Boost 100 path. The final commit still requires a fresh dual-policy real-browser run.
+
+## Real Stripe API credit-pack convergence gate
+
+The browser gate proves hosted interaction and signed delivery. A separate opt-in
+`real_stripe` test creates a run-scoped one-time Product, Price, Customer, attached test
+PaymentMethod, and confirmed PaymentIntent, then uses the real Event snapshots against
+the real PostgreSQL processor:
+
+```bash
+case "$STRIPE_SECRET_KEY" in sk_test_*) ;; *) exit 2 ;; esac
+uv run pytest -m real_stripe \
+  tests/real/test_stripe_test_mode.py \
+  -k credit_pack_payment_cash_clawback_and_product_refund_converge
+```
+
+It verifies exact amount, currency, complete immutable metadata, Customer,
+PaymentIntent, and Charge identity before granting Boost 100. It then charges an
+80-credit product Job, applies a cumulative 50-credit partial cash refund, refunds the
+product Job, requires convergence to 50 spendable credits, applies the remaining cash
+refund, and requires zero spendable lot balance, fully refunded cash, and no outstanding
+pack debt. Its `finally` path independently re-verifies run ownership, refunds any
+remaining amount, deletes the Customer, archives only the run-tagged Price/Product, and
+fails if cleanup leaves active/refundable inventory. Immutable Stripe test history is
+not deleted and is not described as active inventory.
+
+Do not use `stripe trigger payment_intent.succeeded` as a substitute: generated fixture
+metadata is not bound to the database-reserved order. The test retrieves the genuine
+Event created by its own confirmed PaymentIntent. Never run it with a shared live key;
+the helper rejects every value that does not begin with `sk_test_` before networking.
+
+Historical local signed-forwarding evidence: before the credit-pack lane was added, both
+policies passed on the 0.3 baseline candidate on 2026-08-28 through explicit Stripe CLI
+forwarding. Each reached Pro/Monthly/1,000, observed seven account-related and zero
+unrelated Events, bound the then-current three subscription essential Events, used a
+Clover signed payload/Event API view, had no unresolved run-related incident, and
+completed strict cleanup. This proves that older raw-signature/browser/database path,
+not Webhook Endpoint metadata or the expanded pack/Portal/Job gate.
 
 The 2026-08-28 endpoint-mode retry created and verified a temporary Dahlia endpoint but
 stopped before account creation or Checkout because the account-less Quick Tunnel
 hostname remained DNS `NXDOMAIN`. Recovery verified the endpoint was closed; no current
 endpoint-mode pass is claimed from that attempt.
 
-The latest stronger endpoint-mode evidence remains the 2026-08-02 dual-policy run.
-`full_period_reset` completed in about 1.6 minutes and `prorated_delta` in about
-1.7 minutes. Each used an isolated version-pinned Dahlia endpoint, reached
-Pro/Monthly/1,000, bound exactly three essential Events, found zero unrelated Events,
-recorded a separate Clover Event API view, and completed strict cleanup. Each run happened
-to observe seven account-related Events; that incidental count is not an invariant.
-Earlier pre-hardening 2026-08-01 runs happened to observe five and are retained only as
+Two later 2026-08-28 temporary-endpoint working-tree runs completed the expanded gate for
+both policies. Each bound the current five essential Events, observed 11 account-related
+and zero unrelated Events, covered the pack/Portal/Job path, ended at Pro/1,020, and
+completed strict cleanup including endpoint deletion. Their artifacts predate the final
+hardening changes and do not embed the final Git SHA, so they are not final-commit
+evidence. The 2026-08-02 dual-policy run remains historical Dahlia signed-payload versus
+Clover Event-API version evidence; it bound only the older three-event
+subscription/upgrade gate. Earlier pre-hardening 2026-08-01 runs are retained only as
 historical regression evidence.
 
 ## Recommended isolated runner
@@ -74,7 +146,8 @@ Requirements:
 - test-mode secret and publishable keys supplied through a secret manager or ignored
   local environment, never committed or pasted into shared shell history.
 
-Bootstrap/verify the six test Prices and dedicated Portal policy before the run:
+Bootstrap/verify the six recurring Prices, three one-time pack Prices, and dedicated
+Portal policy before the run:
 
 ```bash
 uv run python scripts/bootstrap_stripe.py --verify-only
@@ -108,10 +181,14 @@ temporary test Webhook Endpoint. It is not inferred from `STRIPE_API_VERSION`.
 ### Webhook transport modes
 
 `E2E_WEBHOOK_TRANSPORT=endpoint` is the default and the stronger release-evidence mode.
-It starts a Quick Tunnel, creates a temporary version-pinned test Webhook Endpoint,
-preflights the public `/health` path before any Checkout state is created, and verifies
-endpoint URL, enabled Event set, mode, status, and Event API version. A failed tunnel
-therefore stops before the stateful lifecycle rather than timing out after a payment.
+It starts a Quick Tunnel with a mode-`0600`, runner-owned empty config so an operator's
+`~/.cloudflared/config.yml` or named-Tunnel credentials cannot change the process. It
+first requires the public `/health` path to reach the isolated gate, before creating any
+Stripe Endpoint. It then creates a temporary version-pinned test Webhook Endpoint,
+starts the signed backend, and requires the public `/ready` path to reach that backend
+before creating the account or Checkout. The runner verifies endpoint URL, enabled
+Event set, mode, status, and Event API version. A failed tunnel therefore stops before
+the payment lifecycle rather than timing out after a payment.
 
 For local recording or diagnosis when a Quick Tunnel is unavailable, opt into Stripe
 CLI signed forwarding and provide the actual CLI-delivered Event version explicitly:
@@ -125,7 +202,7 @@ scripts/run_browser_e2e.sh
 
 The value above is an example from one test account; inspect the listener/account
 contract rather than copying it blindly. CLI mode still supplies the temporary signing
-secret to the backend, forwards only the eight supported raw Events, executes the same
+secret to the backend, forwards only the nine supported raw Events, executes the same
 browser and PostgreSQL assertions, matches stored Event identities back to Stripe, and
 performs strict run-owned account cleanup. It does **not** create or verify a Webhook
 Endpoint and must not be reported as endpoint-metadata or endpoint-version-pin evidence.
@@ -135,12 +212,23 @@ The runner:
 - starts a disposable, memory-backed PostgreSQL 17 container on a loopback-only random
   port;
 - checks PostgreSQL from the host, then applies the real migrations;
-- gives the account a unique demo-auth subject;
-- in default endpoint mode, starts a Quick Tunnel, creates a temporary **test-mode**
-  Webhook Endpoint, preflights public reachability, and verifies URL, enabled Event set,
-  mode, status, and Event API version;
+- creates one ephemeral RSA key in memory, persists only its public JWKS and two
+  mode-`0600` short-lived JWTs, and gives the account a canonical
+  `v1:user:<UUID>` Personal Auth subject;
+- starts the host with `APP_ENV=production`, `PersonalJwtAuthAdapter`, an HTTPS JWKS
+  URL, and a separate workload-audience verifier; no demo adapter is configured;
+- verifies the shared Stripe test catalog and resolves the dedicated safe Portal
+  configuration before creating any run-owned Stripe object;
+- in default endpoint mode, isolates Quick Tunnel from any user config, preflights the
+  public gate before creating a temporary **test-mode** Webhook Endpoint, then preflights
+  the real backend and verifies URL, enabled Event set, mode, status, and Event API
+  version before account creation;
 - in explicit CLI mode, starts a locally authenticated listener for only the supported
   Event set and redacts its signing secret from the retained private log;
+- starts a loopback webhook proxy whose private filesystem control state contains only
+  account/order/Event/pack correlation IDs; the original Stripe signature and payload
+  remain in memory, are never logged or written, and only this run's pack PaymentIntent
+  is held long enough to prove the browser return has no grant authority;
 - keeps any endpoint-returned signing secret in a mode-`0600` temporary file;
 - starts FastAPI over runner-owned loopback HTTPS, builds Next.js with only the
   public backend URL and test publishable key, and serves that production bundle
@@ -149,15 +237,23 @@ The runner:
 - switches only the run-owned Subscription to an allowlisted test Payment Method before
   the upgrade step, after checking test mode, customer identity, account metadata, and
   product line; the default `pm_card_authenticationRequired` exercises upgrade SCA;
-- verifies the database projection, exact account/Checkout/initial-Invoice/settlement-
-  Invoice lineage, exactly three essential Event identities, and the absence of related
-  unresolved incidents;
+- verifies the database projection, exact account/two-Checkout/initial-Invoice/
+  settlement-Invoice/pack-PaymentIntent/Charge/lot lineage, exactly five essential Event
+  identities, the successful 80-credit product debit, the 20-credit failed-Job debit and
+  exact refund, their funding allocations, and the absence of related unresolved incidents;
+- creates an owner-bound `bps_` Portal Session, opens the real hosted Portal, and follows
+  its configured return control back to the production Next.js account page;
+- sends product Jobs only to the host's browser-facing E2E route; the host derives the
+  owner from the verified Personal JWT and calls the no-browser-CORS internal router
+  using a separately signed workload JWT and owner authorizer;
 - matches every account-related stored Event ID, type and mode back to Stripe's
   test-mode Event API without requiring an incidental total Event count;
 - verifies signed-payload `api_version` against the temporary endpoint contract and
   records the independently retrieved Event API view version without conflating them;
-- expires an unfinished Checkout Session and deletes only the Customer, Subscription,
-  and Webhook Endpoint owned by that run;
+- expires unfinished run-owned Checkout Sessions, fully refunds only a pack Charge whose
+  Session, PaymentIntent, Charge, Customer, account, order, mode, amount, currency, and
+  immutable metadata all agree, then deletes only the run-owned Customer, Subscription,
+  and Webhook Endpoint;
 - writes a mode-`0600`, secret-free cleanup manifest before deletion, falls back to the
   run's unique endpoint description/URL after an unknown create outcome, and fails the
   overall run if any cleanup step fails;
@@ -169,15 +265,16 @@ The runner builds and launches the directly tracked Next.js production process r
 than using `next dev` or an npm parent/child chain. Both build and HTTPS start run under
 separate `env -i` allowlists. The build sees only public frontend settings plus a fixed
 non-secret, non-public-name acknowledgement that enables its E2E-only route-auth mode;
-neither process receives the Stripe secret key, webhook secret, database DSN, or demo
-Bearer token. This mode is accepted only for a production HTTP-mode build whose backend
+neither process receives the Stripe secret key, webhook secret, database DSN, Personal
+JWT, or workload JWT. This mode is accepted only for a production HTTP-mode build whose backend
 is an HTTPS loopback origin, whose indexing flag is explicitly `false`, and which has no
-browser demo token. It compiles one fixed, deliberately invalid public sentinel into the
-page. The Playwright Node helper holds the test key and database DSN for server-side
-ownership/stability checks, and holds the one-run demo Bearer token solely to replace
+browser credential. It compiles one fixed, deliberately invalid public sentinel into the
+page. The Playwright Node helper itself runs under a separate `env -i` allowlist. It
+holds the test key and database DSN for server-side
+ownership/stability checks, and holds the one-run Personal JWT solely to replace
 that exact sentinel on the attested backend origin's `/api/` requests. It fetches without
 following redirects and fulfills the 30x back to Chromium, so a redirected request is
-new and never inherits the real token. The helper never adds that token to Stripe,
+new and never inherits the real JWT. The helper never adds that JWT to Stripe,
 another origin, the frontend document, or a response. Without Playwright interception,
 the backend sees only the known-invalid sentinel and returns `401`.
 Chromium is launched with a separate runtime-only environment allowlist, so these
@@ -193,9 +290,12 @@ does not pass this variable into Chromium.
 The runner reports `E2E passed` only after the final database verifier and every cleanup
 step succeed. On success the private temporary directory is removed and the unique
 artifact child remains at the printed path. On failure, the runner removes the
-signing-secret state file but retains private service logs and a secret-free cleanup
-manifest with exact recovery IDs when available. It never prints Stripe API keys,
-signing secrets, database credentials, or card input.
+signing-secret state, JWT/JWKS files, and loopback private key. Before reporting either
+success or failure it rewrites every retained service log and browser artifact through a
+fail-closed scan for Stripe restricted/secret keys, webhook secrets, JWTs, Stripe client
+secrets, database DSNs, and private keys, then verifies that none remain. The secret-free
+cleanup manifest keeps exact recovery IDs when available. It never prints a matched
+value, Stripe API key, signing secret, database credential, JWT, or card input.
 
 ## Running Playwright against an existing staging stack
 
@@ -252,8 +352,11 @@ Load `TEST_STRIPE_SECRET_KEY` from the staging secret manager; it must start wit
 by `E2E_STORAGE_STATE`; the decline and upgrade helpers query that exact subject and
 verify its Customer/Subscription ownership before mutation. The standalone existing-
 stack command intentionally does not own the deployment, database, webhook endpoint,
-or authentication subject. It therefore cannot run the full wrapper's final account/
-Invoice/three-essential-Event verifier or automatic teardown. Use a one-run subject and
+or authentication subject. It therefore cannot run the full wrapper's in-memory
+pre-projection barrier, final account/Invoice/five-essential-Event verifier, pack cash
+refund, or automatic teardown. It still checks the exact pack Session and eventual
+webhook-backed lot, but it cannot claim the stronger observed “return stayed at 1,000”
+proof. Use a one-run subject and
 isolated test database, then run the staging verification/cleanup procedure for the
 exact Subscription, Customer, endpoint evidence, and unresolved incidents. For a
 recovery manifest, final database/Event verification, and strict teardown, use
@@ -308,24 +411,31 @@ scripts/review_promo_video.sh
 See [Demo recording and promotional video](DEMO_VIDEO.md) for the full workflow and
 privacy/evidence boundary.
 
-## Existing-stack environment contract
+## Authentication environment boundary
 
-For the repository's local demo adapter, the following values must agree across the
-backend and frontend. Put secrets in ignored environment files; the names below show the
-contract, not values to commit.
+The full runner generates the Personal and workload JWTs itself. It never asks the
+operator to paste them, never gives the workload JWT to Playwright or Chromium, removes
+both JWT files even when a run fails, and never stores the ephemeral RSA private key.
+The following names document the isolated process boundaries; the runner supplies the
+values rather than accepting them as public frontend configuration.
 
 ```text
 Backend:
-  APP_ENV=development
+  APP_ENV=production
   STRIPE_SECRET_KEY=sk_test_...
   STRIPE_WEBHOOK_SECRET=whsec_...
   STRIPE_WEBHOOK_API_VERSION=<actual endpoint Event snapshot version>
+  STRIPE_PORTAL_CONFIGURATION_ID=bpc_...
   CHECKOUT_SUCCESS_URL=<E2E_BASE_URL>/billing/success
   CHECKOUT_CANCEL_URL=<E2E_BASE_URL>/pricing
   PORTAL_RETURN_URL=<E2E_BASE_URL>/account
   FRONTEND_ORIGINS=<E2E_BASE_URL>
-  DEMO_BEARER_TOKEN=<random local value>
-  DEMO_BEARER_SUBJECT=<unique value for this run>
+  E2E_PERSONAL_JWKS_FILE=<private temporary path containing public JWKS>
+  E2E_JWT_ISSUER=<loopback HTTPS issuer>
+  E2E_PERSONAL_JWT_AUDIENCE=<personal audience>
+  E2E_WORKLOAD_JWT_AUDIENCE=<different internal audience>
+  E2E_WORKLOAD_JWT=<short-lived server-only signed JWT>
+  E2E_EXPECTED_OWNER_EXTERNAL_REF=v1:user:<personal JWT sub>
   BILLING_TRANSITION_POLICY=<full_period_reset|prorated_delta>
 
 Frontend process environment:
@@ -340,16 +450,19 @@ Playwright process:
   E2E_EXTERNAL_REF=<the authenticated one-run subject>
   E2E_FRONTEND_BUILD_MODE=production
   E2E_LOOPBACK_TLS_SPKI=<optional one-certificate SHA-256 SPKI pin>
-  E2E_DEMO_BEARER_TOKEN=<same random local value; full runner only>
+  E2E_PERSONAL_BEARER_TOKEN=<short-lived Personal JWT; full runner Node only>
+  E2E_FULL_STACK_EVIDENCE=1                       # full runner only
   E2E_STORAGE_STATE=<private mode-0600 file; required for a remote origin>
 ```
 
-The demo token remains a development-only backend adapter credential. The full runner
-does not compile it into the production frontend: the page carries only the fixed
-invalid route-auth sentinel, and Playwright replaces that value only on exact loopback
-backend API requests. The acknowledgement is rejected for remote, HTTP, mock, indexable,
-demo-token, or custom-sentinel builds. Do not deploy this adapter as production
-authentication.
+The production frontend contains only the fixed invalid route-auth sentinel. Playwright
+replaces it with the Personal JWT only on exact loopback backend `/api/` requests and
+never on a redirect. A separately managed staging stack may omit the Personal token and
+use `E2E_STORAGE_STATE` from its real host login instead; in that mode the repository
+cannot expose the full runner's private workload/Job evidence route. The local issuer is
+a deterministic adapter test fixture, not a deployable IdP. Production hosts must use
+their own OIDC/session login, issuer, audience, key rotation, revocation, and workload
+authorization policy.
 
 ## Failure diagnosis
 
@@ -359,10 +472,11 @@ authentication.
   separately checks container readiness and host-side database connectivity first.
 - **Checkout returns 400/409:** verify exact allowlisted origins/paths, test catalog
   lookup keys, and whether an older unexpired Checkout owns the account claim.
-- **No `/api/account` response:** verify the frontend HTTP mode, demo token, and CORS
-  origin; mock mode is deliberately rejected by the initial-state assertion.
-- **No decline message:** inspect Stripe's current Checkout DOM and the retained trace;
-  Stripe may have changed hosted copy or field structure.
+- **No `/api/account` response:** inspect the HTTPS JWKS path, issuer/audience/sub claims,
+  Personal token expiry, frontend HTTP mode, and CORS origin; mock mode is deliberately
+  rejected by the initial-state assertion.
+- **No decline message:** inspect Stripe's current Checkout DOM, failure screenshot, and
+  sanitized private service logs; Stripe may have changed hosted copy or field structure.
 - **No 3DS challenge:** confirm the Session is `cs_test_` and the card is Stripe's
   documented `4000002500003155` test card.
 - **3DS remains open:** confirm the Sandbox AI-agent disclosure was checked, then
@@ -373,12 +487,36 @@ authentication.
 - **Webhook timeout:** verify endpoint delivery status, the exact signing secret, Event
   snapshot version, backend 5xx logs, and unresolved `billing_incidents`. A successful
   browser redirect does not waive this failure.
+- **Pack page stays at 1,000 after the barrier releases:** inspect the private gate and
+  backend logs (never the payload), confirm `payment_intent.succeeded` is enabled, and
+  check the immutable metadata/amount/currency contract. `checkout.session.completed`
+  must not create a lot.
+- **Pack cleanup refuses to refund:** keep the mode-`0600` recovery manifest. One of the
+  Session → PaymentIntent → Charge → Customer/account/order checks drifted, so the runner
+  intentionally left the Charge untouched instead of risking a cross-run refund.
+- **Portal creation returns 502:** inspect whether the dedicated configuration still has
+  plan updates disabled and period-end cancellation enabled. The gateway also rejects a
+  Session whose object, `bps_` ID, Customer, configuration, return URL, or mode differs
+  from the request; it does not fall back to the Dashboard default Portal.
+- **Portal opens but cannot return:** inspect the failure screenshot and sanitized logs
+  for Stripe's hosted return control, and confirm `PORTAL_RETURN_URL` is the exact
+  frontend `/account` URL.
+  Directly navigating back in the test would hide this contract failure and is not used.
+- **Product Job returns 401/403/502:** distinguish Personal JWT failure on the host route
+  from workload JWT/audience/scope failure and owner-authorizer denial on the internal
+  route. The browser never receives the workload credential, and internal routes must
+  remain outside browser CORS.
+- **Final balance is not 1,020:** require one exact 80-credit successful debit and one
+  exact 20-credit terminal debit/refund. Inspect debit allocations and `refunded_at`;
+  changing the browser number without those PostgreSQL facts is not a fix.
 
-On failure, Playwright retains a trace and screenshot under ignored `web/test-results/`.
-Open a trace locally with `npx playwright show-trace <trace.zip>`. Treat artifacts as
-private test evidence: they can contain hosted Session URLs, test customer identifiers,
-test email, and browser/network snapshots. Do not attach them unredacted to public
-issues. Passing runs retain no trace or video.
+Authenticated request traces are deliberately disabled: a Playwright trace can retain
+the one-run Personal JWT injected by the Node harness. Playwright instead retains its
+failure screenshot, unique HTML report, explicit redacted timeline, and optional video
+under ignored `web/test-results/`; all are scanned before the runner reports their path.
+Treat them as private test evidence because screenshots can still contain test customer
+identifiers or the test email. Do not attach them unreviewed to public issues. Video is
+created only when `E2E_RECORD_VIDEO=1`.
 
 ## Relationship to Test Clocks
 

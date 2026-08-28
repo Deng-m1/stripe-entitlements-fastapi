@@ -268,6 +268,16 @@ export function AccountScreen({
           ) : null}
           <dl className="fact-list">
             <div>
+              <dt>Subscription balance</dt>
+              <dd>
+                {formatCreditDecimal(account.credits.subscription_balance)}
+              </dd>
+            </div>
+            <div>
+              <dt>Purchased balance</dt>
+              <dd>{formatCreditDecimal(account.credits.purchased_balance)}</dd>
+            </div>
+            <div>
               <dt>Grant amount</dt>
               <dd>{formatCreditDecimal(account.credits.grant_amount)}</dd>
             </div>
@@ -276,6 +286,24 @@ export function AccountScreen({
               <dd>{formatDate(account.credits.next_grant_at)}</dd>
             </div>
           </dl>
+          {account.credits.credit_packs.length > 0 ? (
+            <div className="credit-lot-list">
+              <h3>Active credit-pack lots</h3>
+              <ul>
+                {account.credits.credit_packs.map((lot) => (
+                  <li key={lot.lot_id}>
+                    <span>{lot.pack_key}</span>
+                    <strong>{formatCreditDecimal(lot.remaining)} credits</strong>
+                    <small>expires {formatDate(lot.expires_at)}</small>
+                  </li>
+                ))}
+              </ul>
+              <p>
+                Packs add spendable credits only. They do not change this account&apos;s
+                plan features, limits, or subscription status.
+              </p>
+            </div>
+          ) : null}
         </section>
       </div>
 

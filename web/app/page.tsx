@@ -11,7 +11,10 @@ import {
   formatCreditDecimal,
 } from "@/lib/credit-amount";
 import { annualSavings, formatMoney } from "@/lib/money";
-import { referencePlans } from "@/lib/reference-catalog";
+import {
+  referenceCreditPacks,
+  referencePlans,
+} from "@/lib/reference-catalog";
 import {
   absoluteSiteUrl,
   publicSiteUrl,
@@ -22,9 +25,9 @@ import {
 } from "@/lib/site";
 
 export const metadata: Metadata = {
-  title: "Stripe Billing & Entitlements Template for FastAPI",
+  title: "Stripe Billing, Credit Packs & Entitlements for FastAPI",
   description:
-    "An open-source Stripe subscription billing template with FastAPI, PostgreSQL entitlements, Next.js, and complete full-period or prorated upgrade policies.",
+    "An open-source Stripe billing template with FastAPI, PostgreSQL, exact fractional credits, one-time credit packs, and complete full-period or prorated subscription upgrades.",
   alternates: absoluteSiteUrl(publicSiteUrl, "/")
     ? { canonical: absoluteSiteUrl(publicSiteUrl, "/") }
     : undefined,
@@ -39,6 +42,10 @@ const capabilities = [
   {
     title: "Subscription entitlements",
     body: "Structured plan limits, monthly credit grants, annual funding slots, refunds, disputes, and grant-epoch-safe usage.",
+  },
+  {
+    title: "Exact fractional credits and credit packs",
+    body: "One million integer atoms per credit, one-time Checkout packs, expiring funding lots, source-aware consumption, cash clawbacks, and product-operation refunds without floating-point drift.",
   },
   {
     title: "Full-price or prorated upgrades",
@@ -141,6 +148,16 @@ const frequentlyAskedQuestions = [
       "The UI compares twelve monthly payments with the explicit annual price in the same currency. It displays savings only when the annual total is lower.",
   },
   {
+    question: "Does it support one-time Stripe credit packs?",
+    answer:
+      "Yes. Hosted Checkout payment Sessions fund independently expiring credit lots after a signed payment_intent.succeeded webhook. Packs add credits only; they never grant subscription features or higher plan limits.",
+  },
+  {
+    question: "Can product credits be fractional?",
+    answer:
+      "Yes. One credit is represented as one million integer atoms from PostgreSQL through the HTTP and browser boundaries. Decimal strings are exact and binary floating point is rejected for authoritative balances.",
+  },
+  {
     question: "Are coupons, trials, tax, and multi-currency billing included?",
     answer:
       "No. Those policies are intentionally outside the implemented scope and are not advertised as supported behavior.",
@@ -203,8 +220,8 @@ export default function HomePage() {
               </h1>
               <p className="hero-support">
                 An open-source Stripe billing reference for FastAPI, PostgreSQL,
-                and Next.js that turns noisy webhook streams into deterministic
-                access.
+                and Next.js that turns subscriptions, one-time credit packs, and
+                noisy webhook streams into deterministic access.
               </p>
               <div className="hero-actions">
                 <Link className="button primary" href="/pricing">
@@ -216,8 +233,8 @@ export default function HomePage() {
               </div>
               <ul aria-label="Core guarantees" className="hero-microcopy">
                 <li>Race-safe webhooks</li>
-                <li>Idempotent grants</li>
-                <li>Deterministic upgrades</li>
+                <li>Exact fractional credits</li>
+                <li>Source-aware refunds</li>
               </ul>
             </div>
             <div className="hero-artifact">
@@ -500,6 +517,46 @@ export default function HomePage() {
                     </tr>
                   );
                 })}
+              </tbody>
+            </table>
+          </div>
+          <div className="section-heading">
+            <p className="eyebrow">One-time funding</p>
+            <h3>Stripe credit packs with exact source attribution.</h3>
+            <p>
+              Each payment creates its own expiring funding lot. Product usage
+              records the exact subscription or pack source, so cash refunds,
+              disputes, and Job refunds converge without converting balances to
+              floating point.
+            </p>
+          </div>
+          <div
+            aria-label="Scrollable one-time credit pack comparison"
+            className="comparison-table-wrap"
+            role="region"
+            tabIndex={0}
+          >
+            <table className="comparison-table">
+              <caption>Reference one-time Stripe credit packs</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Credit pack</th>
+                  <th scope="col">Exact credits</th>
+                  <th scope="col">One-time price</th>
+                  <th scope="col">Expiry after payment</th>
+                </tr>
+              </thead>
+              <tbody>
+                {referenceCreditPacks.map((pack) => (
+                  <tr key={pack.key}>
+                    <th scope="row">{pack.name}</th>
+                    <td>{formatCreditDecimal(pack.credits)}</td>
+                    <td>
+                      {formatMoney(pack.price.unit_amount, pack.price.currency)}
+                    </td>
+                    <td>{pack.expires_days} days</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

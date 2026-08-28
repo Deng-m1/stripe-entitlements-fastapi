@@ -31,38 +31,42 @@ E2E_TRANSITION_POLICY=prorated_delta \
 ```
 
 It creates a temporary test Webhook Endpoint with only the supported Events, receives
-real Checkout/3DS and plan-upgrade Events through a temporary HTTPS tunnel, verifies
-their signatures, and checks both PostgreSQL projections. It then retrieves every stored Event ID from
-Stripe and compares identity, type and mode with the signed payload saved in the inbox.
-The final invariant is exactly three run-bound essential Events: the Checkout Session,
-its initial paid Invoice, and the plan-change settlement paid Invoice. Those identities
-must match the account, two ledger grants, and policy-specific allocation. Every other
-account-matched Event is still checked, but its incidental count is not fixed.
+real Checkout/3DS, plan-upgrade, and credit-pack Events through a temporary HTTPS tunnel,
+verifies their signatures, and checks every PostgreSQL projection. It then retrieves
+every stored Event ID from Stripe and compares identity, type, and mode with the signed
+payload saved in the inbox. The final invariant is exactly five run-bound essential
+Events: subscription `checkout.session.completed`, initial and settlement
+`invoice.paid`, credit-pack `checkout.session.completed`, and the pack's authoritative
+`payment_intent.succeeded`. Those identities must match the account, two Sessions, two
+subscription ledger grants, policy-specific allocation, pack order, PaymentIntent,
+Charge, and funding lot. Every other account-matched Event is still checked, but its
+incidental count is not fixed.
 The signed payload's `api_version` is checked against the endpoint contract; the Event
 API retrieval view is recorded separately because it is not evidence of the endpoint's
-delivery serialization. The endpoint, Customer and Subscription are scoped to the run
-and cleaned up; an unfinished Checkout Session is expired. Cleanup failure fails the
-gate and retains a secret-free, mode-`0600` recovery manifest rather than losing exact
-object IDs.
+delivery serialization. The endpoint, Customer, Subscription, and pack cash are scoped
+to the run and cleaned up; unfinished Checkout Sessions are expired. Cleanup failure
+fails the gate and retains a secret-free, mode-`0600` recovery manifest rather than
+losing exact object IDs.
 
 See [BROWSER_E2E.md](BROWSER_E2E.md) for prerequisites, failure artifacts and the exact
 browser assertions. A collected, skipped or partially completed Playwright test is not
 evidence.
 
-Current 0.3 candidate evidence: both policy runs passed on 2026-08-28 through explicit
-Stripe CLI signed forwarding. Each passed its decline barrier, Checkout 3DS, UI upgrade
-SCA, Starter/Monthly/300 and Pro/Monthly/1,000 projection, three-essential-Event binding,
-zero-unrelated-Event check, unresolved-incident check, and strict cleanup. Each happened
-to cross-check seven account-related Events, but that incidental count is not an
-invariant. These runs observed signed Clover payloads and prove the raw-signature,
-application, browser, and PostgreSQL path; they do not prove Webhook Endpoint metadata.
+Historical pre-credit-pack evidence: both subscription/upgrade policy runs passed on
+2026-08-28 through explicit Stripe CLI signed forwarding. Each bound the then-current
+three essential Events, cross-checked seven account-related Events, observed no unrelated
+Event, and completed strict cleanup. They prove the raw-signature/application/database
+path for that older gate, not Webhook Endpoint metadata or the expanded pack/Portal/Job
+lifecycle.
 
-The latest separate endpoint-mode evidence remains the 2026-08-02 dual-policy run. Its
-isolated endpoints were pinned to Dahlia, delivered signed Dahlia payloads, and were
-compared with an independent Clover Event API view. No live-production Event is included.
-The 2026-08-28 endpoint retry stopped before account creation or Checkout because its
-account-less Quick Tunnel hostname remained DNS `NXDOMAIN`; recovery verified the
-temporary endpoint was closed, so that attempt is not endpoint evidence.
+Two later 2026-08-28 temporary-endpoint working-tree runs completed the expanded browser
+gate for both policies. Each bound five essential Events, observed 11 account-related and
+zero unrelated Events, ended at Pro/1,020 after the Job refund path, and cleaned its
+endpoint and run-owned Stripe state. The artifacts predate final hardening and do not
+embed the final commit SHA, so a final-commit rerun is still required. The 2026-08-02
+dual-policy endpoint runs remain historical Dahlia signed-payload versus Clover Event-API
+version evidence; an earlier 2026-08-28 Quick Tunnel `NXDOMAIN` attempt created no
+account/Checkout state and was safely recovered. No live-production Event is included.
 
 ## Existing staging endpoint
 

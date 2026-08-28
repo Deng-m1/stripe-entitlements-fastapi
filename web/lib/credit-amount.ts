@@ -8,7 +8,6 @@ import type {
 export const CREDIT_SCALE: CreditScale = 1_000_000;
 
 const FRACTION_DIGITS = 6;
-const MAX_CREDIT_ATOMS = 9_223_372_036_854_775_807n;
 const CANONICAL_ATOMS = /^(?:0|[1-9]\d*)$/u;
 const EXACT_DECIMAL_INPUT = /^(?:0|[1-9]\d*)(?:\.\d{1,6})?$/u;
 
@@ -32,9 +31,6 @@ function parseAtoms(value: unknown): bigint {
     );
   }
   const atoms = BigInt(value);
-  if (atoms > MAX_CREDIT_ATOMS) {
-    throw new CreditAmountError("Credit atoms exceed the signed 64-bit range.");
-  }
   return atoms;
 }
 
@@ -48,9 +44,6 @@ function atomsFromDecimal(value: unknown): bigint {
   const atoms =
     BigInt(whole) * BigInt(CREDIT_SCALE) +
     BigInt(fraction.padEnd(FRACTION_DIGITS, "0") || "0");
-  if (atoms > MAX_CREDIT_ATOMS) {
-    throw new CreditAmountError("Credit value exceeds the signed 64-bit atom range.");
-  }
   return atoms;
 }
 
@@ -137,4 +130,12 @@ export function subtractCreditDecimals(
     throw new CreditAmountError("Credit subtraction cannot produce a negative value.");
   }
   return decimalFromAtoms(difference);
+}
+
+export function addCreditDecimals(
+  left: string,
+  right: string,
+): ExactCreditAmount {
+  const sum = atomsFromDecimal(left) + atomsFromDecimal(right);
+  return creditAmountFromAtoms(sum.toString());
 }

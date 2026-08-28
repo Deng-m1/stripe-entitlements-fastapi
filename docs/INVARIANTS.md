@@ -56,10 +56,13 @@ For the current active pool, these permutations converge to the same credit bala
 ## 5. Checkout single-flight
 
 One account has at most one unexpired Checkout claim. Claim identity, not only account
-identity, guards attach/release. Expiration or completion of an older Session cannot
-delete or bind a newer claim. A Subscription update that first binds through a claim
-consumes that authority in the same transaction, and terminal deletion removes any claim
-that existed before it. A late paid Event cannot reuse pre-deletion Checkout authority.
+identity, guards attach/release. The claim snapshots the pre-existing Stripe Customer or
+first-Customer create mode before remote work. Same-key recovery replays that immutable
+choice and omits an email prefill instead of retaining mutable login PII. Expiration or
+completion of an older Session cannot delete or bind a newer claim. A Subscription update
+that first binds through a claim consumes that authority in the same transaction, and
+terminal deletion removes any claim that existed before it. A late paid Event cannot
+reuse pre-deletion Checkout authority.
 
 ## 6. Annual monthly grants
 
@@ -226,11 +229,13 @@ compiled protocol constant, not a per-process environment setting. Stripe curren
 minor units remain a separate integer dimension and are never scaled as product
 credits.
 
-Catalog and HTTP boundaries accept canonical decimal strings with at most six fractional
-digits. Python `float`, PostgreSQL floating-point values, JSON fractional numbers,
-scientific notation, silent rounding and values outside the PostgreSQL `bigint` range
-are rejected. JavaScript receives both canonical decimal strings and atom strings; a JS
-`number` is never the source of truth for a credit balance.
+Catalog and incoming amount boundaries accept canonical decimal strings with at most six
+fractional digits. Python `float`, PostgreSQL floating-point values, JSON fractional
+numbers, scientific notation, silent rounding, and a value destined for one persisted
+atom column outside the PostgreSQL `bigint` range are rejected. An account total may
+aggregate several independently bounded funding rows and therefore exceed one `bigint`;
+that read/result aggregate uses Python arbitrary-precision integers and decimal/atom
+strings end to end. JavaScript `number` is never its source of truth.
 
 Idempotency binds the normalized atom value. Equivalent spellings such as `0.1` and
 `0.100000` represent the same amount; values that differ by one atom are different
@@ -240,5 +245,60 @@ ledger row satisfies exact integer addition without permitting a negative balanc
 Refund and dispute ratios continue to use integer multiplication followed by an explicit
 ceiling in atom space. This preserves cumulative, delivery-order-independent clawback
 behavior while limiting rounding to at most one atom. Product-operation refunds remain
-bound to their recorded grant epoch. Any addition that would overflow `bigint` fails and
-rolls back the complete business effect.
+bound to their recorded grant epoch. Any addition written back to one `bigint` column
+that would overflow fails and rolls back the complete business effect; summing separate
+funding rows for an exact read-only account total is not such a write.
+
+## 18. Credit packs preserve immutable cash and funding provenance
+
+A pack order snapshots its account, client and Stripe request identities, pack key,
+lookup key, credit atoms, currency amount, currency, expiry policy, and nullable
+pre-existing Customer request before Checkout is created. Same-key recovery replays only
+those durable facts; first-Customer creation deliberately omits an email prefill instead
+of rereading mutable authentication state. Checkout Session, PaymentIntent, Charge, and
+Dispute facts must match that full snapshot, exact customer lineage, authorized amount,
+amount received, latest Charge, and object state. Only a compatible
+`payment_intent.succeeded` grants funding; a browser return or Checkout completion never
+does. An expired Session or an unknown Checkout outcome beyond the bounded same-key
+recovery window cannot be reopened with the old intent. One paid order has at most one
+funding lot. The first compatible committed payment fact freezes `paid_at` and the lot's
+`expires_at = paid_at + expires_days`; a later business duplicate, refund, dispute, or
+reconciliation replay cannot move that financial window. The lot's `created_at` is only
+the local projection audit time. If a missed successful payment is first projected after
+that immutable financial expiry, its lot is created already expired; those atoms are
+never exposed or used to collect a later clawback debt.
+
+Pack lots and subscription funding are consumed first-expiring-first-out. Every product
+debit records exact source allocations, and a product refund can return atoms only to
+those sources while their funding window remains valid. Pack lots never grant plan
+features, limits, subscription status, or a new subscription epoch.
+
+Cash refunds are cumulative facts. They withdraw the ceiling of the cumulative cash
+ratio from unspent and expired atoms first; already-consumed funding becomes durable
+pack debt. Cash-refund-before-product-refund, product-refund-before-cash-refund, debt
+collection before or after renewal, duplicate Events, and concurrent delivery converge
+to the same net funding. Releasing collected debt reverses its exact recorded source and
+cannot cross an account, pack order, lot, or subscription grant epoch.
+
+`credit_pack_clawback_debts.collected_credits` always equals the outstanding,
+not-yet-reversed allocations of its synthetic debt-collection debits. Every such debit
+has exactly one funding-source allocation and a direct account-scoped foreign key to an
+existing debt, so a counter update cannot erase liability and a collection cannot exist
+before its debt and funding lot.
+
+The account row is locked before every pack order, lot, allocation, or debt mutation.
+Account-scoped composite foreign keys prevent cross-tenant provenance even if application
+code is wrong. Deferred database equations require each debit to equal its allocations,
+each order's refunded atoms to equal cash-clawed atoms plus debt target, and each lot's
+original atoms to equal its remaining, expired, cash-clawed, debt-released, and still-
+allocated atoms.
+
+Reconciliation leases one exact order, performs every Stripe retrieval outside a
+database transaction, and rechecks the lease token inside the EventProcessor transaction
+before claiming the synthetic Event inbox identity. A stale worker therefore cannot
+project a fact or clear a replacement worker's lease.
+
+PostgreSQL `now()` is transaction-start time and is never used as the pack-expiry cutoff
+after a row-lock wait. Charge, product refund, and Checkout reservation paths sample
+`clock_timestamp()` only after acquiring the account lock and reuse that wall-clock
+cutoff for the transaction's expiry decisions.

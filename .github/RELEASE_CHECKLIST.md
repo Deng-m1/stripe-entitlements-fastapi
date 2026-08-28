@@ -2,16 +2,18 @@
 
 ## Scope and evidence
 
-- [ ] State the supported single-item/USD/fixed-plan scope and relevant non-goals.
+- [ ] State the supported single-item/USD/fixed-plan and card-funded credit-pack scope,
+      plus relevant non-goals.
 - [ ] Link every billing behavior change to an invariant and migration.
 - [ ] Separate automated PostgreSQL, automated real Stripe, manual test-mode and
       production evidence.
-- [ ] Bind every pass claim to the exact commit. The review candidate based on
-      `main@4df7f73` provisionally passed 787 PostgreSQL tests and 155 frontend tests; it
-      is not evidence for that base commit. Replace this label after the final commit and
-      full rerun. The 0.3 candidate passed 9 real Stripe cases and 2 CLI-transport browser
-      policies; label older 239/7/60/2 and 270/9/62/2 results as historical, and do not
-      relabel the failed pre-state Quick Tunnel attempt as endpoint evidence.
+- [ ] Bind every pass claim to the exact commit. An earlier phase-1 snapshot reported
+      1,110 network-free PostgreSQL tests and 180 frontend tests, but final credit-pack
+      hardening changed the tree afterward. The later working-tree candidate passed
+      1,187/189/10 local, frontend, and Stripe test-mode gates; bind them to the final
+      commit before release. The expanded browser artifacts still predate final hardening;
+      label older 239/7/60/2 and 270/9/62/2 results as historical, and do not relabel the
+      failed pre-state Quick Tunnel attempt as endpoint evidence.
 - [ ] Cite Test Clock renewal/annual-slot evidence only when the full annual lifecycle
       test actually ran; a collected or skipped test is not evidence.
 - [ ] Record outbound request API version and webhook Event snapshot API version
@@ -38,7 +40,9 @@
 
 - [ ] Confirm the key starts with `sk_test_` before any automated real call.
 - [ ] Run `uv run pytest -m real_stripe -v` when Stripe object/payload parsing
-      changed; require all 9 current cases to execute and record counts/skips.
+      changed; require all 10 current cases to execute and record counts/skips.
+- [ ] Verify the real credit-pack PaymentIntent, immutable metadata, Customer/Charge
+      lineage, partial/full cash clawback, product refund interaction, and strict cleanup.
 - [ ] Verify the automated real full-price/no-proration monthly transition.
 - [ ] Verify the automated real prorated-delta transition, source allocation, and full
       refund reversion.
@@ -75,9 +79,13 @@
         default Stripe.js upgrade SCA, and a second paid projection reached
         Pro/Monthly/1,000;
   - [ ] delta created one 700-credit allocation; full-period created none;
-  - [ ] exactly three essential Events were identity-bound to the account, Checkout,
-        initial Invoice, settlement Invoice, grants, and allocation; do not require the
-        historical incidental total of five;
+  - [ ] exactly five essential Events were identity-bound to the account: subscription
+        Checkout completion, initial and settlement `invoice.paid`, credit-pack Checkout
+        completion, and the pack `payment_intent.succeeded`; do not require an incidental
+        total Event count;
+  - [ ] the pack success screen waited for the exact webhook-funded lot, Portal creation
+        returned through the real hosted flow, and the Job example completed
+        charge/replay/refund without cross-wiring an owner, Job, attempt, or allocation;
   - [ ] each additional account-matched Event ID/type/mode matched Stripe's Event API
         truth and no related unresolved incident remained;
   - [ ] signed payload version matched the endpoint contract, while the independently
@@ -104,7 +112,7 @@
 - [ ] Confirm Stripe cash minor-unit columns were not scaled or reinterpreted as product
       credits.
 
-- [ ] Back up all ten correctness tables together.
+- [ ] Back up all fourteen correctness tables together.
 - [ ] For 0.3, initialize a fresh database with `001_v3_baseline.sql`; do not attempt an
       in-place upgrade from a v0.2.x migration history.
 - [ ] Recreate every v0.2.x development, demo, and staging database before using 0.3;
@@ -138,6 +146,14 @@
 ## Publish
 
 - [ ] Update README/docs, changelog and version metadata without overstating evidence.
+- [ ] Before creating `v*`, require an active GitHub tag ruleset targeting
+      `refs/tags/v*` that blocks updates and deletion with no ordinary bypass. The
+      workflow's repeated tag-object checks do not replace server-side immutability.
+- [ ] Before the first release tag, bootstrap the repository-named GHCR container
+      package, explicitly change its visibility to public, and verify that an
+      unauthenticated client can read it. The release workflow refuses a missing/private
+      package, then anonymously inspects and pulls the exact published digest using a
+      fresh Docker config with no credentials.
 - [ ] Apply the GitHub description/topics from `.github/REPOSITORY_METADATA.md`.
 - [ ] Set one canonical HTTPS `NEXT_PUBLIC_SITE_URL`; enable indexing only there.
 - [ ] Verify canonical/robots/sitemap/social-image responses and keep account/billing
@@ -148,6 +164,12 @@
       must install the Wheel independently and apply the complete baseline to fresh
       PostgreSQL; Container must do the same from the built image, then return
       `ok=true`/`database=true` from host `curl` while UID/GID 10001 and read-only.
+- [ ] Run `scripts/build_distributions.sh` in an empty output directory; it must build
+      the sdist first, unpack that exact archive, and build the only release Wheel from
+      the unpacked source. Verify the artifact boundary: Wheel contains the
+      backend package/catalog/migrations; sdist additionally contains `.env` templates,
+      scripts, Docker/Compose, examples, tests, and `web/`, with no `.next`, `node_modules`,
+      Playwright report, or test-result directories.
 - [ ] Review dependency/security alerts and license changes.
 - [ ] When publishing a demo video:
   - [ ] record only isolated Stripe test mode and show an explicit test-mode label;
@@ -161,5 +183,26 @@
   - [ ] describe CLI signed forwarding separately from endpoint-metadata evidence;
   - [ ] unless a new cut is recorded and reviewed, label the 48.800-second video as the
         `0.2.0` visual artifact rather than `0.2.2` code/network evidence.
-- [ ] Tag with a signed/annotated version and publish release notes.
+- [ ] Tag with an annotated `v<project-version>` only after all applicable networked
+      gates above are bound to that exact commit. The tag workflow reruns network-free
+      backend/web gates, creates Wheel/sdist checksums, publishes exact/minor/commit/latest
+      GHCR tags without allowing an older patch to roll back either moving channel. The
+      immutable commit tag uses the complete Git commit SHA. It refuses an existing
+      Release, version image tag, or commit image tag, rechecks the annotated tag object,
+      reserves a draft Release before publishing the immutable image, publishes moving
+      tags last, proves both immutable tags resolve to one digest, records that digest,
+      and attaches those artifacts to the GitHub Release; it does not substitute for real
+      Stripe or live-payload evidence.
+- [ ] If publication stops after reserving the draft Release or pushing only part of the
+      immutable/moving tag set, do not blindly rerun: the vacancy guards intentionally
+      fail. Inspect the remote tag object, draft/public Release, exact-version tag,
+      full-SHA tag and each digest; then either finish the same verified digest manually
+      or remove only the unpublished draft/partial package state under administrator
+      review. Record the recovery decision and final digest in the private release log.
+- [ ] Download the published GitHub assets, verify `SHA256SUMS`, install the Wheel in a
+      clean environment, and require `stripe-entitlements --version` to equal the tag.
+- [ ] Pull the image by the recorded digest, require the same CLI version, apply the fresh
+      baseline, and repeat the non-root/read-only health smoke before announcing release.
+- [ ] Record that the release workflow currently publishes a native `linux/amd64` image;
+      do not advertise ARM64/multi-architecture support until a verified manifest exists.
 - [ ] Include migrations, compatibility, evidence boundary, rollback and known limits.

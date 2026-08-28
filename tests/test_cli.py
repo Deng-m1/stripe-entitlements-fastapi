@@ -10,12 +10,18 @@ import asyncpg
 import pytest
 
 from stripe_entitlements import __version__, cli
-from stripe_entitlements.config import Settings
-from stripe_entitlements.doctor import DoctorCheck, DoctorReport, run_doctor
+from stripe_entitlements.config import DatabaseSettings, Settings
+from stripe_entitlements.doctor import (
+    DoctorCheck,
+    DoctorReport,
+    _configuration_checks,
+    run_doctor,
+)
 from stripe_entitlements.resources import (
     default_migration_directory,
     default_plan_catalog_path,
 )
+from tests.builders import resolved_price
 
 
 @pytest.mark.parametrize(
@@ -71,6 +77,32 @@ def test_source_version_matches_release() -> None:
     assert __version__ == "0.3.0"
 
 
+async def test_migrate_requires_only_database_configuration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from tests.conftest import TEST_DSN
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DATABASE_URL", TEST_DSN)
+    for name in (
+        "STRIPE_SECRET_KEY",
+        "STRIPE_WEBHOOK_SECRET",
+        "STRIPE_WEBHOOK_API_VERSION",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: pytest.fail("migration must not load Stripe runtime settings"),
+    )
+
+    cli.get_database_settings.cache_clear()
+    try:
+        await cli._migrate()
+    finally:
+        cli.get_database_settings.cache_clear()
+
+
 async def test_doctor_passes_local_and_database_checks_without_stripe_network(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -100,6 +132,30 @@ async def test_doctor_passes_local_and_database_checks_without_stripe_network(
     assert by_name["stripe.network"].status == "skipped"
     assert "no Stripe API request was made" in by_name["stripe.network"].summary
     assert "does not verify an endpoint payload" in by_name["stripe.version_contracts"].summary
+
+
+@pytest.mark.parametrize(
+    "checkout_success_url",
+    [
+        "http://localhost:3000/billing/success?campaign=launch",
+        "http://localhost:3000/billing/success#done",
+    ],
+)
+def test_doctor_rejects_ambiguous_checkout_success_base_url(
+    checkout_success_url: str,
+) -> None:
+    settings = Settings(
+        database_url="postgresql://unused",
+        stripe_secret_key="sk_test_doctor_url",
+        stripe_webhook_secret="whsec_doctor_url",
+        stripe_webhook_api_version="2025-12-15.clover",
+        stripe_portal_configuration_id="bpc_doctor_url",
+        plan_catalog_path=default_plan_catalog_path(),
+    ).model_copy(update={"checkout_success_url": checkout_success_url})
+
+    by_name = {check.name: check for check in _configuration_checks(settings)}
+
+    assert by_name["http.urls_and_cors"].status == "fail"
 
 
 async def test_doctor_reports_placeholders_without_rendering_secret_values() -> None:
@@ -163,7 +219,49 @@ async def test_doctor_stripe_network_opt_in_uses_read_only_retrievals(
             "active": True,
             "livemode": False,
             "metadata": {"product_line": "example-entitlements"},
+            "features": {
+                "subscription_update": {"enabled": False},
+                "subscription_cancel": {"enabled": True, "mode": "at_period_end"},
+            },
         }
+
+    def list_prices(**kwargs):  # type: ignore[no-untyped-def]
+        lookup_key = kwargs["lookup_keys"][0]
+        calls.append(f"price.list:{lookup_key}")
+        if lookup_key.startswith("ent_pack_"):
+            pack_key = lookup_key.removeprefix("ent_pack_")
+            amounts = {"boost-100": 1500, "boost-500": 5900, "boost-2000": 19_900}
+            price = {
+                "id": f"price_{pack_key}",
+                "lookup_key": lookup_key,
+                "active": True,
+                "type": "one_time",
+                "currency": "usd",
+                "unit_amount": amounts[pack_key],
+                "recurring": None,
+                "billing_scheme": "per_unit",
+                "tax_behavior": "unspecified",
+                "tiers_mode": None,
+                "transform_quantity": None,
+                "custom_unit_amount": None,
+                "currency_options": None,
+                "metadata": {
+                    "product_line": "example-entitlements",
+                    "credit_pack": pack_key,
+                },
+                "product": {
+                    "id": f"prod_{pack_key}",
+                    "active": True,
+                    "metadata": {
+                        "product_line": "example-entitlements",
+                        "credit_pack": pack_key,
+                    },
+                },
+            }
+        else:
+            _, plan, interval = lookup_key.split("_")
+            price = resolved_price(plan, interval)
+        return SimpleNamespace(data=[price])
 
     monkeypatch.setattr(doctor.stripe.Account, "retrieve", retrieve_account)
     monkeypatch.setattr(
@@ -171,6 +269,7 @@ async def test_doctor_stripe_network_opt_in_uses_read_only_retrievals(
         "retrieve",
         retrieve_portal,
     )
+    monkeypatch.setattr(doctor.stripe.Price, "list", list_prices)
     settings = Settings(
         database_url=TEST_DSN,
         stripe_secret_key="sk_test_doctor_network",
@@ -182,10 +281,64 @@ async def test_doctor_stripe_network_opt_in_uses_read_only_retrievals(
     report = await run_doctor(settings, stripe_network=True)
     by_name = {check.name: check for check in report.checks}
     assert report.ok
-    assert calls == ["account.retrieve", "portal.retrieve"]
+    assert calls[0] == "account.retrieve"
+    assert calls[-1] == "portal.retrieve"
+    assert len([call for call in calls if call.startswith("price.list:")]) == 9
     assert by_name["stripe.network.account"].status == "pass"
+    assert by_name["stripe.network.catalog"].status == "pass"
     assert by_name["stripe.network.portal"].status == "pass"
+    assert "subscription updates are disabled" in by_name["stripe.network.portal"].summary
+    assert "period end" in by_name["stripe.network.portal"].summary
     assert by_name["stripe.webhook_endpoint"].status == "skipped"
+
+
+@pytest.mark.parametrize(
+    ("update_enabled", "cancel_mode"),
+    [(True, "at_period_end"), (False, "immediately")],
+)
+async def test_doctor_stripe_network_rejects_portal_mutation_policy_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    update_enabled: bool,
+    cancel_mode: str,
+) -> None:
+    from stripe_entitlements import doctor
+    from stripe_entitlements.doctor import _stripe_network_checks
+    from tests.conftest import TEST_DSN
+
+    monkeypatch.setattr(
+        doctor.stripe.Account,
+        "retrieve",
+        lambda **kwargs: {"id": "acct_test"},
+    )
+    monkeypatch.setattr(
+        doctor.stripe.billing_portal.Configuration,
+        "retrieve",
+        lambda portal_id, **kwargs: {
+            "id": portal_id,
+            "active": True,
+            "livemode": False,
+            "metadata": {"product_line": "example-entitlements"},
+            "features": {
+                "subscription_update": {"enabled": update_enabled},
+                "subscription_cancel": {"enabled": True, "mode": cancel_mode},
+            },
+        },
+    )
+    settings = Settings(
+        database_url=TEST_DSN,
+        stripe_secret_key="sk_test_doctor_portal_drift",
+        stripe_webhook_secret="whsec_doctor_portal_drift",
+        stripe_webhook_api_version="2025-12-15.clover",
+        stripe_portal_configuration_id="bpc_doctor_portal_drift",
+        plan_catalog_path=default_plan_catalog_path(),
+    )
+
+    checks = await _stripe_network_checks(settings, None, enabled=True)
+    by_name = {check.name: check for check in checks}
+
+    assert by_name["stripe.network.portal"].status == "fail"
+    assert "subscription updates must be disabled" in by_name["stripe.network.portal"].summary
+    assert "period end" in by_name["stripe.network.portal"].summary
 
 
 async def test_candidate_batch_continues_after_one_failure_and_redacts_message(
@@ -232,13 +385,17 @@ async def test_migrate_uses_resolved_resource_and_always_closes(
         async def close(self) -> None:
             calls.append("close")
 
-    monkeypatch.setattr(cli, "get_settings", lambda: SimpleNamespace(database_url="db://test"))
+    monkeypatch.setattr(
+        cli,
+        "get_database_settings",
+        lambda: DatabaseSettings(database_url="postgresql://test/migrations"),
+    )
     monkeypatch.setattr(cli, "Database", FakeDatabase)
     monkeypatch.setattr(cli, "default_migration_directory", lambda: migration_dir)
 
     await cli._migrate()
     assert calls == [
-        ("init", "db://test"),
+        ("init", "postgresql://test/migrations"),
         "connect",
         ("migrate", migration_dir),
         "close",
@@ -297,6 +454,25 @@ async def test_reconcile_cli_uses_database_clock_and_excludes_attempted_accounts
             calls.append(("reconcile", account_id))
             return ProcessResult("handled", account_id=account_id)
 
+    class FakeCreditPackReconciliationService:
+        def __init__(self, pool, processor, gateway):  # type: ignore[no-untyped-def]
+            del pool, processor, gateway
+            self.scan = 0
+
+        async def reconcile_due(self, *, limit: int):  # type: ignore[no-untyped-def]
+            from stripe_entitlements.pack_reconcile import CreditPackReconcileResult
+
+            calls.append(("pack-reconcile-due", limit))
+            self.scan += 1
+            if self.scan == 1:
+                return [
+                    CreditPackReconcileResult(
+                        "00000000-0000-0000-0000-000000000001",
+                        "reconciled",
+                    )
+                ]
+            return []
+
     settings = SimpleNamespace(
         database_url="db://test",
         plan_catalog_path="plans.toml",
@@ -313,6 +489,11 @@ async def test_reconcile_cli_uses_database_clock_and_excludes_attempted_accounts
     monkeypatch.setattr(cli, "_event_processor", lambda *args: "processor")
     monkeypatch.setattr(cli, "StripeGateway", lambda *args, **kwargs: "gateway")
     monkeypatch.setattr(cli, "ReconciliationService", FakeReconciliationService)
+    monkeypatch.setattr(
+        cli,
+        "CreditPackReconciliationService",
+        FakeCreditPackReconciliationService,
+    )
 
     await cli._reconcile()
 
@@ -324,6 +505,7 @@ async def test_reconcile_cli_uses_database_clock_and_excludes_attempted_accounts
         ("candidates", None, run_started, {"account-1"}),
     ]
     assert ("reconcile", "account-1") in calls
+    assert ("pack-reconcile-due", 100) in calls
     assert calls[-1] == "close"
 
 

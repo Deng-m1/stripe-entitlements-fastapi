@@ -11,7 +11,7 @@ export function optionalE2EBearerToken(
     new TextEncoder().encode(raw).length > maximumBearerBytes
   ) {
     throw new Error(
-      "E2E_DEMO_BEARER_TOKEN must contain at most 8192 visible ASCII bytes.",
+      "E2E_PERSONAL_BEARER_TOKEN must contain at most 8192 visible ASCII bytes.",
     );
   }
   return raw;

@@ -10,6 +10,7 @@ from typing import Any
 
 import asyncpg
 
+from .owner_reference import validate_owner_external_ref
 from .resources import default_migration_directory
 
 MigrationFile = tuple[str, str, str]
@@ -51,17 +52,6 @@ def _load_migrations(root: Path) -> list[MigrationFile]:
             )
         )
     return loaded
-
-
-def _validate_external_ref(external_ref: str) -> str:
-    if (
-        not external_ref
-        or external_ref != external_ref.strip()
-        or len(external_ref.encode("utf-8")) > 512
-        or any(not character.isprintable() for character in external_ref)
-    ):
-        raise ValueError("external_ref must be 1 to 512 visible UTF-8 bytes without padding")
-    return external_ref
 
 
 async def _init_connection(conn: asyncpg.Connection) -> None:
@@ -156,6 +146,10 @@ class Database:
             "stripe_invoice_state",
             "credit_ledger",
             "credit_debits",
+            "credit_pack_orders",
+            "credit_funding_lots",
+            "credit_debit_allocations",
+            "credit_pack_clawback_debts",
             "checkout_claims",
             "billing_plan_changes",
             "billing_funding_allocations",
@@ -192,7 +186,7 @@ class Database:
     async def create_account(
         self, external_ref: str, *, account_id: uuid.UUID | None = None
     ) -> str:
-        external_ref = _validate_external_ref(external_ref)
+        external_ref = validate_owner_external_ref(external_ref)
         account_id = account_id or uuid.uuid4()
         pool = self.require_pool()
         async with pool.acquire() as conn:
@@ -213,7 +207,7 @@ class Database:
         return dict(row) if row is not None else None
 
     async def existing_account_for_external_ref(self, external_ref: str) -> dict[str, Any] | None:
-        external_ref = _validate_external_ref(external_ref)
+        external_ref = validate_owner_external_ref(external_ref)
         pool = self.require_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -224,7 +218,7 @@ class Database:
         return dict(row) if row is not None else None
 
     async def account_for_external_ref(self, external_ref: str) -> dict[str, Any]:
-        external_ref = _validate_external_ref(external_ref)
+        external_ref = validate_owner_external_ref(external_ref)
         pool = self.require_pool()
         async with pool.acquire() as conn:
             for _ in range(2):

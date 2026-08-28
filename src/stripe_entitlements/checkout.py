@@ -29,6 +29,7 @@ class CheckoutReservation:
     interval: str
     expires_at: datetime
     request_key: str
+    request_customer_id: str | None = None
     session_id: str | None = None
     session_url: str | None = None
 
@@ -92,12 +93,9 @@ class CheckoutCoordinator:
         *,
         request_key: str | None = None,
         ttl: timedelta = timedelta(minutes=35),
-        now: datetime | None = None,
     ) -> CheckoutReservation:
         if ttl <= timedelta(0):
             raise ValueError("Checkout claim TTL must be positive")
-        if now is not None and now.tzinfo is None:
-            raise ValueError("Checkout claim time must be timezone-aware")
         plan_key = _validate_visible(plan_key, field="plan_key", max_bytes=64)
         if "_" in plan_key:
             raise ValueError("plan_key cannot contain an underscore")
@@ -110,14 +108,17 @@ class CheckoutCoordinator:
             else _validate_visible(request_key, field="request_key", max_bytes=200)
         )
         async with self.pool.acquire() as conn, conn.transaction():
-            effective_now = now or await conn.fetchval("select now()")
-            assert isinstance(effective_now, datetime)
-            expires_at = effective_now + ttl
             account = await conn.fetchrow(
                 "select * from billing_accounts where id=$1::uuid for update", account_id
             )
             if account is None:
                 raise KeyError("billing account not found")
+            # ``now()`` is the transaction-start time.  Sample the wall clock after
+            # the account row lock so a lock wait cannot shorten a new claim or keep
+            # an already-expired cross-product claim artificially busy.
+            effective_now = await conn.fetchval("select clock_timestamp()")
+            assert isinstance(effective_now, datetime)
+            expires_at = effective_now + ttl
             if account["stripe_subscription_id"] is not None or account["subscription_status"] in {
                 "active",
                 "past_due",
@@ -125,6 +126,16 @@ class CheckoutCoordinator:
                 raise CheckoutActiveSubscriptionError(
                     "an existing subscription must use the plan-change API"
                 )
+            if account["stripe_customer_id"] is None and await conn.fetchval(
+                """select exists(
+                       select 1 from credit_pack_orders
+                        where account_id=$1::uuid and payment_status='pending'
+                          and checkout_status <> 'expired' and claim_expires_at > $2
+                     )""",
+                account_id,
+                effective_now,
+            ):
+                raise CheckoutBusyError("the first Stripe Customer Checkout is already in progress")
             existing = await conn.fetchrow(
                 "select * from checkout_claims where account_id=$1::uuid for update",
                 account_id,
@@ -136,14 +147,15 @@ class CheckoutCoordinator:
                     and existing["plan_interval"] == interval
                 ):
                     return CheckoutReservation(
-                        account_id,
-                        str(existing["claim_token"]),
-                        plan_key,
-                        interval,
-                        existing["expires_at"],
-                        request_key,
-                        existing["session_id"],
-                        existing["session_url"],
+                        account_id=account_id,
+                        claim_token=str(existing["claim_token"]),
+                        plan_key=plan_key,
+                        interval=interval,
+                        expires_at=existing["expires_at"],
+                        request_key=request_key,
+                        request_customer_id=existing["request_customer_id"],
+                        session_id=existing["session_id"],
+                        session_url=existing["session_url"],
                     )
                 raise CheckoutBusyError("an unexpired Checkout claim already exists")
             if existing is not None:
@@ -153,17 +165,24 @@ class CheckoutCoordinator:
             await conn.execute(
                 """insert into checkout_claims
                        (account_id,claim_token,plan_key,plan_interval,expires_at,
-                        client_request_key)
-                     values($1::uuid,$2,$3,$4,$5,$6)""",
+                        client_request_key,request_customer_id)
+                     values($1::uuid,$2,$3,$4,$5,$6,$7)""",
                 account_id,
                 token,
                 plan_key,
                 interval,
                 expires_at,
                 request_key,
+                account["stripe_customer_id"],
             )
         return CheckoutReservation(
-            account_id, str(token), plan_key, interval, expires_at, request_key
+            account_id=account_id,
+            claim_token=str(token),
+            plan_key=plan_key,
+            interval=interval,
+            expires_at=expires_at,
+            request_key=request_key,
+            request_customer_id=account["stripe_customer_id"],
         )
 
     async def attach_session(
@@ -221,20 +240,26 @@ class CheckoutCoordinator:
         request_key: str | None = None,
         customer_email: str | None = None,
     ) -> tuple[str, str]:
+        # Call-time account/email observations can change after Stripe accepts a
+        # request but before this process attaches the Session. Replay only the
+        # Customer/create-mode snapshot committed with the durable claim. As with
+        # credit packs, first-Customer mode omits email rather than retaining PII
+        # solely to reproduce Stripe idempotency parameters.
+        del customer_id, customer_email
         reservation = await self.reserve(account_id, plan_key, interval, request_key=request_key)
         if reservation.session_id and reservation.session_url:
             return reservation.session_id, reservation.session_url
         try:
             session_id, url = await creator.create_checkout_session(
                 account_id=account_id,
-                customer_id=customer_id,
+                customer_id=reservation.request_customer_id,
                 lookup_key=lookup_key,
                 expected_currency=expected_currency,
                 expected_unit_amount=expected_unit_amount,
                 expected_interval=expected_interval,
                 claim_token=reservation.claim_token,
                 expires_at=reservation.expires_at,
-                customer_email=customer_email,
+                customer_email=None,
                 plan_key=plan_key,
                 interval=interval,
             )

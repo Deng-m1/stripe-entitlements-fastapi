@@ -325,6 +325,8 @@ describe("HTTP billing API", () => {
       ...account.credits,
       balance: exact.decimal,
       balance_atoms: exact.atoms,
+      subscription_balance: exact.decimal,
+      subscription_balance_atoms: exact.atoms,
       scale: exact.scale,
     };
     const fetchImpl = vi.fn(async () =>

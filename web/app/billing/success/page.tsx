@@ -11,6 +11,8 @@ interface SuccessPageProps {
   searchParams: Promise<{
     expected_plan?: string;
     expected_interval?: string;
+    expected_credit_pack?: string;
+    checkout_session_id?: string;
   }>;
 }
 
@@ -26,6 +28,8 @@ export default async function BillingSuccessPage({
       : undefined;
   return (
     <SuccessScreen
+      expectedCheckoutSessionId={query.checkout_session_id}
+      expectedCreditPack={query.expected_credit_pack}
       expectedInterval={expectedInterval}
       expectedPlan={query.expected_plan}
     />

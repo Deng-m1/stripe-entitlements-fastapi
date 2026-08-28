@@ -62,5 +62,37 @@
         "api_keys": 25
       }
     }
+  ],
+  "credit_packs": [
+    {
+      "key": "boost-100",
+      "name": "Boost 100",
+      "description": "A small one-time balance for occasional extra jobs.",
+      "currency": "USD",
+      "rank": 10,
+      "credits": "100",
+      "price_usd": 15,
+      "expires_days": 365
+    },
+    {
+      "key": "boost-500",
+      "name": "Boost 500",
+      "description": "A one-time credit balance for bursty product usage.",
+      "currency": "USD",
+      "rank": 20,
+      "credits": "500",
+      "price_usd": 59,
+      "expires_days": 365
+    },
+    {
+      "key": "boost-2000",
+      "name": "Boost 2,000",
+      "description": "A larger one-time balance for high-volume bursts.",
+      "currency": "USD",
+      "rank": 30,
+      "credits": "2000",
+      "price_usd": 199,
+      "expires_days": 365
+    }
   ]
 }

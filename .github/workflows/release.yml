@@ -1,0 +1,531 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions: {}
+
+concurrency:
+  # Moving ``latest`` and ``major.minor`` tags are repository-global state. Serialize
+  # every release so an older workflow that evaluated policy before a newer tag existed
+  # cannot finish last and roll a channel tag backward.
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  verify-and-publish:
+    name: Verify and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # This sole release job creates the GitHub Release, pushes GHCR, and emits an
+    # OIDC-backed registry attestation. CI workflows retain read-only permissions.
+    permissions:
+      attestations: write # Publish provenance for the verified image digest.
+      contents: write # Reserve, upload, and publish the GitHub Release.
+      id-token: write # Exchange OIDC identity for the provenance attestation.
+      packages: write # Push immutable and moving GHCR image tags.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          enable-cache: false
+
+      - name: Verify immutable tag, release vacancy, and Python version
+        id: tag_guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          test "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" = "tag"
+          tag_object="$(git rev-parse "refs/tags/$GITHUB_REF_NAME")"
+          tag_commit="$(git rev-list -n 1 "$GITHUB_REF_NAME")"
+          test "$tag_commit" = "$(git rev-parse HEAD)"
+          git merge-base --is-ancestor "$tag_commit" origin/main
+          remote_tag_object="$(git ls-remote --refs origin \
+            "refs/tags/$GITHUB_REF_NAME" | awk 'NR == 1 {print $1}')"
+          test -n "$remote_tag_object"
+          test "$remote_tag_object" = "$tag_object"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "refusing to overwrite an existing GitHub Release" >&2
+            exit 1
+          fi
+          tag_version="${GITHUB_REF_NAME#v}"
+          project_version="$(python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          print(tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"])
+          PY
+          )"
+          test "$tag_version" = "$project_version"
+          echo "tag_object=$tag_object" >> "$GITHUB_OUTPUT"
+          echo "tag_commit=$tag_commit" >> "$GITHUB_OUTPUT"
+          echo "version=$tag_version" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether this is the newest stable release
+        id: release_policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+
+          current_text = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          stable = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", current_text)
+          current = tuple(map(int, stable.groups())) if stable else None
+          remote = subprocess.check_output(
+              [
+                  "git",
+                  "ls-remote",
+                  "--refs",
+                  "--tags",
+                  "origin",
+                  "refs/tags/v*.*.*",
+              ],
+              text=True,
+          ).splitlines()
+          tags = [
+              line.split()[1].removeprefix("refs/tags/")
+              for line in remote
+              if line.split()
+          ]
+          released = []
+          for tag in tags:
+              match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", tag)
+              if match:
+                  released.append(tuple(map(int, match.groups())))
+          newest = current is not None and current >= max(released, default=current)
+          newest_minor = current is not None and current[2] >= max(
+              (
+                  version[2]
+                  for version in released
+                  if version[:2] == current[:2]
+              ),
+              default=current[2],
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"version={current_text}\n")
+              output.write(f"latest={'true' if newest else 'false'}\n")
+              output.write(f"minor={'true' if newest_minor else 'false'}\n")
+          PY
+
+      - name: Verify backend
+        run: |
+          uv sync --frozen
+          uv run ruff format --check .
+          uv run ruff check .
+          uv run mypy src
+          uv run pytest -m "not real_stripe"
+          uv audit
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Verify reference web application
+        working-directory: web
+        env:
+          NEXT_PUBLIC_ALLOW_INDEXING: "true"
+          NEXT_PUBLIC_SITE_URL: https://billing.example.test
+        run: |
+          npm ci
+          npm audit --omit=dev
+          npm audit
+          npm run lint
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Build Python distributions and checksums
+        env:
+          RELEASE_VERSION: ${{ steps.tag_guard.outputs.version }}
+        run: |
+          scripts/build_distributions.sh dist
+          python - <<'PY'
+          import os
+          import subprocess
+          import tempfile
+          from pathlib import Path
+
+          expected = os.environ["RELEASE_VERSION"]
+          wheels = list(Path("dist").glob("*.whl"))
+          assert len(wheels) == 1, wheels
+          with tempfile.TemporaryDirectory(prefix="stripe-release-wheel-") as temporary:
+              venv = Path(temporary) / "venv"
+              subprocess.run(["uv", "venv", str(venv)], check=True)
+              subprocess.run(
+                  ["uv", "pip", "install", "--python", str(venv / "bin/python"), str(wheels[0])],
+                  check=True,
+              )
+              completed = subprocess.run(
+                  [str(venv / "bin/stripe-entitlements"), "--version"],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              )
+          assert completed.stderr == "", completed.stderr
+          assert completed.stdout.strip() == f"stripe-entitlements {expected}"
+          PY
+          cd dist
+          sha256sum *.whl *.tar.gz > SHA256SUMS
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Resolve lowercase image name
+        id: image
+        shell: bash
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Require a preconfigured public GHCR package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="$GITHUB_REPOSITORY_OWNER"
+          package_name="${GITHUB_REPOSITORY#*/}"
+          owner_type="$(gh api "/users/$owner" --jq .type)"
+          case "$owner_type" in
+            User) package_api="/users/$owner/packages/container/$package_name" ;;
+            Organization) package_api="/orgs/$owner/packages/container/$package_name" ;;
+            *) echo "unsupported GitHub package owner type" >&2; exit 1 ;;
+          esac
+          if ! visibility="$(gh api "$package_api" --jq .visibility)"; then
+            echo "the GHCR package must be bootstrapped and made public before tagging" >&2
+            exit 1
+          fi
+          if [ "$visibility" != "public" ]; then
+            echo "refusing to publish a release into a non-public GHCR package" >&2
+            exit 1
+          fi
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refuse existing immutable OCI tags
+        env:
+          CONTAINER_IMAGE: ${{ steps.image.outputs.name }}
+          RELEASE_VERSION: ${{ steps.tag_guard.outputs.version }}
+          TAG_COMMIT: ${{ steps.tag_guard.outputs.tag_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_tag="${CONTAINER_IMAGE}:${RELEASE_VERSION}"
+          sha_tag="${CONTAINER_IMAGE}:sha-${TAG_COMMIT}"
+          for immutable_tag in "$release_tag" "$sha_tag"; do
+            error_file="$RUNNER_TEMP/immutable-container-inspect.txt"
+            if docker manifest inspect "$immutable_tag" >/dev/null 2>"$error_file"; then
+              echo "refusing to overwrite existing OCI tag $immutable_tag" >&2
+              exit 1
+            fi
+            error_text="$(tr '[:upper:]' '[:lower:]' < "$error_file")"
+            case "$error_text" in
+              *"manifest unknown"*|*"no such manifest"*|*"name unknown"*|*"not found"*) ;;
+              *)
+                echo "could not prove that immutable OCI tag $immutable_tag is vacant" >&2
+                sed -n '1,8p' "$error_file" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+      - uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        id: metadata
+        with:
+          images: ${{ steps.image.outputs.name }}
+          flavor: |
+            latest=false
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ steps.release_policy.outputs.minor }}
+            type=sha,format=long,prefix=sha-
+            type=raw,value=latest,enable=${{ steps.release_policy.outputs.latest }}
+
+      - name: Build the exact OCI release candidate
+        id: container
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          load: true
+          platforms: linux/amd64
+          provenance: false
+          push: false
+          sbom: false
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+
+      - name: Verify migrations and hardened runtime on the release image
+        env:
+          CONTAINER_IMAGE: ${{ steps.image.outputs.name }}
+          RELEASE_VERSION: ${{ steps.tag_guard.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_tag="${CONTAINER_IMAGE}:${GITHUB_REF_NAME#v}"
+          test "$(docker image inspect "$release_tag" --format '{{.Config.User}}')" = "10001:10001"
+          test "$(docker image inspect "$release_tag" --format '{{json .Config.Healthcheck.Test}}')" != "null"
+          python - <<'PY'
+          import os
+          import subprocess
+
+          expected = os.environ["RELEASE_VERSION"]
+          image = f"{os.environ['CONTAINER_IMAGE']}:{expected}"
+          completed = subprocess.run(
+              ["docker", "run", "--rm", image, "stripe-entitlements", "--version"],
+              check=True,
+              capture_output=True,
+              text=True,
+          )
+          assert completed.stderr == "", completed.stderr
+          assert completed.stdout.strip() == f"stripe-entitlements {expected}"
+          PY
+
+          runtime_suffix="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          runtime_network="stripe-release-${runtime_suffix}"
+          runtime_pg="stripe-release-pg-${runtime_suffix}"
+          runtime_app="stripe-release-app-${runtime_suffix}"
+          cleanup_runtime() {
+            docker rm -f "$runtime_app" "$runtime_pg" >/dev/null 2>&1 || true
+            docker network rm "$runtime_network" >/dev/null 2>&1 || true
+          }
+          trap cleanup_runtime EXIT
+          cleanup_runtime
+          docker network create --internal "$runtime_network"
+          docker run -d \
+            --name "$runtime_pg" \
+            --network "$runtime_network" \
+            --tmpfs /var/lib/postgresql/data:rw,nosuid,nodev,size=256m \
+            -e POSTGRES_PASSWORD=release-ci-only \
+            -e POSTGRES_DB=release_ci \
+            postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+          for attempt in $(seq 1 60); do
+            if docker exec "$runtime_pg" pg_isready -U postgres -d release_ci >/dev/null 2>&1; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              docker logs "$runtime_pg"
+              exit 1
+            fi
+            sleep 1
+          done
+
+          runtime_database_url="postgresql://postgres:release-ci-only@${runtime_pg}:5432/release_ci"
+          docker run --rm \
+            --network "$runtime_network" \
+            --user 10001:10001 \
+            -e DATABASE_URL="$runtime_database_url" \
+            "$release_tag" stripe-entitlements migrate
+          schema_contract="$(docker exec "$runtime_pg" psql -U postgres -d release_ci -Atqc \
+            "select to_regclass('credit_pack_orders') is not null,
+                    to_regclass('credit_funding_lots') is not null,
+                    to_regclass('credit_debit_allocations') is not null,
+                    to_regclass('credit_pack_clawback_debts') is not null,
+                    exists(select 1 from information_schema.columns
+                            where table_schema='public'
+                              and table_name='credit_pack_orders'
+                              and column_name='request_customer_id'
+                              and data_type='text' and is_nullable='YES')")"
+          test "$schema_contract" = "t|t|t|t|t"
+
+          docker run -d \
+            --name "$runtime_app" \
+            --network "$runtime_network" \
+            --user 10001:10001 \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            -e DATABASE_URL="$runtime_database_url" \
+            -e STRIPE_SECRET_KEY=sk_test_release_placeholder \
+            -e STRIPE_WEBHOOK_SECRET=whsec_release_placeholder \
+            -e STRIPE_WEBHOOK_API_VERSION=2026-06-24.dahlia \
+            "$release_tag"
+          runtime_ip="$(docker inspect "$runtime_app" \
+            --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')"
+          test -n "$runtime_ip"
+          health_json=""
+          for attempt in $(seq 1 60); do
+            if health_json="$(curl --noproxy '*' --fail --silent --show-error \
+              "http://${runtime_ip}:8000/health" 2>/dev/null)"; then
+              break
+            fi
+            if [ "$(docker inspect "$runtime_app" --format '{{.State.Running}}')" != "true" ] \
+              || [ "$attempt" -eq 60 ]; then
+              docker logs "$runtime_app"
+              exit 1
+            fi
+            sleep 1
+          done
+          python -c \
+            'import json,sys; value=json.loads(sys.argv[1]); assert value["ok"] is True and value["database"] is True, value' \
+            "$health_json"
+
+      - name: Generate the container SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ steps.image.outputs.name }}:${{ steps.release_policy.outputs.version }}
+          format: spdx-json
+          output-file: dist/CONTAINER_SBOM.spdx.json
+
+      - name: Revalidate publication identity and reserve a draft Release
+        env:
+          CONTAINER_IMAGE: ${{ steps.image.outputs.name }}
+          EXPECTED_TAG_OBJECT: ${{ steps.tag_guard.outputs.tag_object }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.tag_guard.outputs.version }}
+          TAG_COMMIT: ${{ steps.tag_guard.outputs.tag_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote_tag_object="$(git ls-remote --refs origin \
+            "refs/tags/$GITHUB_REF_NAME" | awk 'NR == 1 {print $1}')"
+          test "$remote_tag_object" = "$EXPECTED_TAG_OBJECT"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "refusing to overwrite an existing GitHub Release" >&2
+            exit 1
+          fi
+          release_tag="${CONTAINER_IMAGE}:${RELEASE_VERSION}"
+          sha_tag="${CONTAINER_IMAGE}:sha-${TAG_COMMIT}"
+          for immutable_tag in "$release_tag" "$sha_tag"; do
+            error_file="$RUNNER_TEMP/immutable-container-recheck.txt"
+            if docker manifest inspect "$immutable_tag" >/dev/null 2>"$error_file"; then
+              echo "refusing to overwrite existing OCI tag $immutable_tag" >&2
+              exit 1
+            fi
+            error_text="$(tr '[:upper:]' '[:lower:]' < "$error_file")"
+            case "$error_text" in
+              *"manifest unknown"*|*"no such manifest"*|*"name unknown"*|*"not found"*) ;;
+              *)
+                echo "could not re-confirm that immutable OCI tag $immutable_tag is vacant" >&2
+                sed -n '1,8p' "$error_file" >&2
+                exit 1
+                ;;
+            esac
+          done
+          gh release create "$GITHUB_REF_NAME" \
+            --draft \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
+
+      - name: Publish immutable verified OCI image tags
+        id: push_container
+        env:
+          CONTAINER_IMAGE: ${{ steps.image.outputs.name }}
+          CONTAINER_TAGS: ${{ steps.metadata.outputs.tags }}
+          EXPECTED_TAG_OBJECT: ${{ steps.tag_guard.outputs.tag_object }}
+          RELEASE_VERSION: ${{ steps.tag_guard.outputs.version }}
+          TAG_COMMIT: ${{ steps.tag_guard.outputs.tag_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_tag="${CONTAINER_IMAGE}:${RELEASE_VERSION}"
+          sha_tag="${CONTAINER_IMAGE}:sha-${TAG_COMMIT}"
+          grep -Fx "$release_tag" <<< "$CONTAINER_TAGS" >/dev/null
+          grep -Fx "$sha_tag" <<< "$CONTAINER_TAGS" >/dev/null
+          remote_tag_object="$(git ls-remote --refs origin \
+            "refs/tags/$GITHUB_REF_NAME" | awk 'NR == 1 {print $1}')"
+          test "$remote_tag_object" = "$EXPECTED_TAG_OBJECT"
+          docker push "$release_tag"
+          docker push "$sha_tag"
+          release_digest="$(docker buildx imagetools inspect "$release_tag" \
+            | awk '/^Digest:/ {print $2; exit}')"
+          sha_digest="$(docker buildx imagetools inspect "$sha_tag" \
+            | awk '/^Digest:/ {print $2; exit}')"
+          case "$release_digest" in sha256:*) ;; *) exit 1 ;; esac
+          test "$sha_digest" = "$release_digest"
+          echo "digest=$release_digest" >> "$GITHUB_OUTPUT"
+
+      - name: Verify anonymous pull by immutable digest
+        env:
+          CONTAINER_DIGEST: ${{ steps.push_container.outputs.digest }}
+          CONTAINER_IMAGE: ${{ steps.image.outputs.name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          anonymous_config="$(mktemp -d)"
+          cleanup_anonymous_config() {
+            rm -rf -- "$anonymous_config"
+          }
+          trap cleanup_anonymous_config EXIT
+          chmod 700 "$anonymous_config"
+          printf '{"auths":{}}\n' > "$anonymous_config/config.json"
+          anonymous_image="${CONTAINER_IMAGE}@${CONTAINER_DIGEST}"
+          docker --config "$anonymous_config" manifest inspect "$anonymous_image" >/dev/null
+          docker --config "$anonymous_config" pull "$anonymous_image"
+          docker image inspect "$anonymous_image" >/dev/null
+
+      - name: Attest the published container provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.push_container.outputs.digest }}
+          push-to-registry: true
+
+      - name: Record immutable container identity
+        env:
+          CONTAINER_DIGEST: ${{ steps.push_container.outputs.digest }}
+          CONTAINER_IMAGE: ${{ steps.image.outputs.name }}
+        run: |
+          printf '%s@%s\n' "$CONTAINER_IMAGE" "$CONTAINER_DIGEST" \
+            > dist/CONTAINER_DIGEST.txt
+
+      - name: Publish the reserved GitHub Release and distributions
+        env:
+          CONTAINER_DIGEST: ${{ steps.push_container.outputs.digest }}
+          CONTAINER_IMAGE: ${{ steps.image.outputs.name }}
+          EXPECTED_TAG_OBJECT: ${{ steps.tag_guard.outputs.tag_object }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.tag_guard.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote_tag_object="$(git ls-remote --refs origin \
+            "refs/tags/$GITHUB_REF_NAME" | awk 'NR == 1 {print $1}')"
+          test "$remote_tag_object" = "$EXPECTED_TAG_OBJECT"
+          release_tag="${CONTAINER_IMAGE}:${RELEASE_VERSION}"
+          published_digest="$(docker buildx imagetools inspect "$release_tag" \
+            | awk '/^Digest:/ {print $2; exit}')"
+          test "$published_digest" = "$CONTAINER_DIGEST"
+          test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = "true"
+          gh release upload "$GITHUB_REF_NAME" \
+            dist/*.whl \
+            dist/*.tar.gz \
+            dist/SHA256SUMS \
+            dist/CONTAINER_DIGEST.txt \
+            dist/CONTAINER_SBOM.spdx.json
+          gh release edit "$GITHUB_REF_NAME" --draft=false
+
+      - name: Publish newest moving OCI channel tags
+        env:
+          CONTAINER_IMAGE: ${{ steps.image.outputs.name }}
+          CONTAINER_TAGS: ${{ steps.metadata.outputs.tags }}
+          EXPECTED_DIGEST: ${{ steps.push_container.outputs.digest }}
+          RELEASE_VERSION: ${{ steps.tag_guard.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_tag="${CONTAINER_IMAGE}:${RELEASE_VERSION}"
+          published_digest="$(docker buildx imagetools inspect "$release_tag" \
+            | awk '/^Digest:/ {print $2; exit}')"
+          test "$published_digest" = "$EXPECTED_DIGEST"
+          while IFS= read -r tag; do
+            test -n "$tag"
+            case "$tag" in
+              "$release_tag"|*:sha-*) ;;
+              *) docker push "$tag" ;;
+            esac
+          done <<< "$CONTAINER_TAGS"

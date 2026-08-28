@@ -21,13 +21,17 @@ CORRECTNESS_TABLES = (
     "stripe_invoice_state",
     "credit_ledger",
     "credit_debits",
+    "credit_pack_orders",
+    "credit_funding_lots",
+    "credit_debit_allocations",
+    "credit_pack_clawback_debts",
     "checkout_claims",
     "billing_plan_changes",
     "billing_funding_allocations",
     "billing_clawback_debts",
     "billing_incidents",
 )
-V3_SCHEMA_CATALOG_SHA256 = "2a8c55462acdec62bae4abcfc09b0558daca380d9ce131024469034f4fa8abdc"
+V3_SCHEMA_CATALOG_SHA256 = "b003fa5e39cd2163f5b686bb140c78730a0c47afb438f4a9b86cd80cccbcc1bc"
 
 
 async def _create_database(prefix: str) -> tuple[str, str]:
@@ -444,8 +448,77 @@ async def test_baseline_declares_exact_runtime_columns(pool: asyncpg.Pool) -> No
             "account_id",
             "amount",
             "grant_epoch",
+            "kind",
+            "clawback_order_id",
+            "restored_credits",
             "created_at",
             "refunded_at",
+        },
+        "credit_pack_orders": {
+            "id",
+            "account_id",
+            "client_idempotency_key",
+            "stripe_request_key",
+            "pack_key",
+            "pack_credits",
+            "price_amount",
+            "currency",
+            "expires_days",
+            "price_lookup_key",
+            "request_customer_id",
+            "checkout_status",
+            "payment_status",
+            "stripe_checkout_session_id",
+            "stripe_payment_intent_id",
+            "stripe_charge_id",
+            "stripe_customer_id",
+            "session_url",
+            "claim_expires_at",
+            "reconcile_claim_token",
+            "reconcile_claim_expires_at",
+            "last_reconciled_at",
+            "last_reconcile_error",
+            "amount_paid",
+            "amount_refunded",
+            "refunded_credits",
+            "paid_at",
+            "created_at",
+            "updated_at",
+        },
+        "credit_funding_lots": {
+            "id",
+            "order_id",
+            "account_id",
+            "original_credits",
+            "remaining_credits",
+            "expired_credits",
+            "cash_clawed_back_credits",
+            "expires_at",
+            "status",
+            "closed_at",
+            "created_at",
+            "updated_at",
+        },
+        "credit_debit_allocations": {
+            "id",
+            "debit_idempotency_key",
+            "account_id",
+            "source_type",
+            "subscription_grant_epoch",
+            "funding_lot_id",
+            "amount",
+            "refunded_amount",
+            "created_at",
+            "updated_at",
+        },
+        "credit_pack_clawback_debts": {
+            "order_id",
+            "account_id",
+            "target_credits",
+            "collected_credits",
+            "released_credits",
+            "created_at",
+            "updated_at",
         },
         "checkout_claims": {
             "account_id",
@@ -453,6 +526,7 @@ async def test_baseline_declares_exact_runtime_columns(pool: asyncpg.Pool) -> No
             "session_id",
             "plan_key",
             "plan_interval",
+            "request_customer_id",
             "expires_at",
             "client_request_key",
             "session_url",
@@ -607,10 +681,17 @@ async def test_v3_schema_catalog_fingerprint_is_exact(pool: asyncpg.Pool) -> Non
         function_rows = await conn.fetch(
             """select proname,pg_get_function_identity_arguments(oid) as arguments,
                       pg_get_functiondef(oid) as definition
-                 from pg_proc
+                from pg_proc
                 where pronamespace='public'::regnamespace
-                  and proname='prevent_invoice_account_rebind'
-                order by proname,arguments"""
+                  and proname = any($1::text[])
+                order by proname,arguments""",
+            [
+                "assert_credit_pack_state",
+                "enforce_credit_debit_state",
+                "enforce_credit_pack_collection_state",
+                "enforce_credit_pack_state",
+                "prevent_invoice_account_rebind",
+            ],
         )
         comment_rows = await conn.fetch(
             """select c.relname as table_name,a.attname as column_name,
@@ -723,7 +804,9 @@ async def test_baseline_preserves_ownership_causality_and_audit_contracts(
     assert retained == owner_id
     assert invoice_fk is not None and "ON DELETE RESTRICT" in invoice_fk
     assert trigger == "O"
-    assert payload_comment == "Redacted audit snapshot; not the exact signed request body."
+    assert payload_comment == (
+        "Minimal allowlisted operational audit snapshot; never the exact signed request body."
+    )
 
 
 async def test_baseline_declares_all_named_coordination_indexes(pool: asyncpg.Pool) -> None:
@@ -733,6 +816,15 @@ async def test_baseline_declares_all_named_coordination_indexes(pool: asyncpg.Po
         "credit_ledger_invoice_slot_unique",
         "credit_ledger_account_created",
         "credit_debits_account_created",
+        "credit_debits_clawback_order",
+        "credit_pack_orders_account_created",
+        "credit_pack_orders_expired_claims",
+        "credit_pack_orders_reconcile_due",
+        "credit_funding_lots_spendable",
+        "credit_debit_allocations_subscription_unique",
+        "credit_debit_allocations_pack_unique",
+        "credit_debit_allocations_lot",
+        "credit_pack_clawback_debts_outstanding",
         "billing_incidents_unresolved_unique",
         "billing_incidents_unresolved_account_kind_seen",
         "billing_plan_changes_one_pending",
@@ -767,6 +859,15 @@ async def test_baseline_preserves_foreign_key_delete_actions(pool: asyncpg.Pool)
         "stripe_invoice_state_account_id_fkey": "r",
         "credit_ledger_account_id_fkey": "c",
         "credit_debits_account_id_fkey": "c",
+        "credit_debits_clawback_order_fk": "r",
+        "credit_pack_orders_account_id_fkey": "r",
+        "credit_funding_lots_order_account_fk": "r",
+        "credit_funding_lots_account_id_fkey": "r",
+        "credit_debit_allocations_debit_account_fk": "r",
+        "credit_debit_allocations_account_id_fkey": "r",
+        "credit_debit_allocations_lot_account_fk": "r",
+        "credit_pack_debts_order_account_fk": "r",
+        "credit_pack_clawback_debts_account_id_fkey": "r",
         "checkout_claims_account_id_fkey": "c",
         "billing_incidents_account_id_fkey": "n",
         "billing_plan_changes_account_id_fkey": "c",

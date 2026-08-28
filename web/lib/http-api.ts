@@ -7,7 +7,10 @@ import type {
   ChangePreview,
   ChangePreviewRequest,
   CheckoutRequest,
+  CreditPackCheckoutRequest,
+  CreditPackRedirectResponse,
   IdempotentRequestOptions,
+  PortalRedirectResponse,
   RedirectResponse,
 } from "@/lib/types";
 import type { AuthAdapter } from "@/lib/auth";
@@ -112,6 +115,36 @@ function decodeAccountResponse(body: unknown): AccountResponse {
       body.credits.balance_atoms,
       body.credits.scale,
     );
+    const subscription = parseExactCreditAmount(
+      body.credits.subscription_balance,
+      body.credits.subscription_balance_atoms,
+      body.credits.scale,
+    );
+    const purchased = parseExactCreditAmount(
+      body.credits.purchased_balance,
+      body.credits.purchased_balance_atoms,
+      body.credits.scale,
+    );
+    const total = parseExactCreditAmount(
+      body.credits.balance,
+      body.credits.balance_atoms,
+      body.credits.scale,
+    );
+    if (BigInt(subscription.atoms) + BigInt(purchased.atoms) !== BigInt(total.atoms)) {
+      invalidCreditContract();
+    }
+    if (!Array.isArray(body.credits.credit_packs)) invalidCreditContract();
+    let lotAtoms = 0n;
+    for (const lot of body.credits.credit_packs) {
+      if (!isRecord(lot)) invalidCreditContract();
+      const amount = parseExactCreditAmount(
+        lot.remaining,
+        lot.remaining_atoms,
+        body.credits.scale,
+      );
+      lotAtoms += BigInt(amount.atoms);
+    }
+    if (lotAtoms !== BigInt(purchased.atoms)) invalidCreditContract();
     parseExactCreditAmount(
       body.credits.grant_amount,
       body.credits.grant_amount_atoms,
@@ -127,10 +160,24 @@ function decodeAccountResponse(body: unknown): AccountResponse {
 
 function decodeCatalogResponse(body: unknown): CatalogResponse {
   try {
-    if (!isRecord(body) || !Array.isArray(body.plans)) invalidCreditContract();
+    if (
+      !isRecord(body) ||
+      !Array.isArray(body.plans) ||
+      !Array.isArray(body.credit_packs)
+    ) {
+      invalidCreditContract();
+    }
     for (const plan of body.plans) {
       if (!isRecord(plan)) invalidCreditContract();
       validateCreditEntitlements(plan.entitlements, true);
+    }
+    for (const pack of body.credit_packs) {
+      if (!isRecord(pack)) invalidCreditContract();
+      parseExactCreditAmount(
+        pack.credits,
+        pack.credits_atoms,
+        pack.credit_scale,
+      );
     }
     return body as unknown as CatalogResponse;
   } catch (error) {
@@ -301,11 +348,22 @@ export function createHttpBillingApi({
           "Idempotency-Key": idempotencyKey(options?.idempotencyKey),
         },
       }),
+    createCreditPackCheckout: (
+      input: CreditPackCheckoutRequest,
+      options?: IdempotentRequestOptions,
+    ) =>
+      request<CreditPackRedirectResponse>("/api/credit-packs/checkout", {
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: {
+          "Idempotency-Key": idempotencyKey(options?.idempotencyKey),
+        },
+      }),
     createPortal: (
       returnUrl: string,
       options?: IdempotentRequestOptions,
     ) =>
-      request<RedirectResponse>("/api/billing/portal", {
+      request<PortalRedirectResponse>("/api/billing/portal", {
         method: "POST",
         body: JSON.stringify({ return_url: returnUrl }),
         headers: {

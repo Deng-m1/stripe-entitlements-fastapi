@@ -18,8 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           enable-cache: true
       - name: Install locked dependencies
@@ -40,7 +42,7 @@ jobs:
         run: uv audit
       - name: Build and inspect distributions
         run: |
-          uv build --out-dir dist
+          scripts/build_distributions.sh dist
           uv run python - <<'PY'
           import glob
           import tarfile
@@ -51,7 +53,17 @@ jobs:
           assert len(wheel) == 1, wheel
           with zipfile.ZipFile(wheel[0]) as archive:
               names = set(archive.namelist())
+          source_package_files = {
+              path.relative_to("src").as_posix()
+              for path in Path("src/stripe_entitlements").rglob("*")
+              if path.is_file() and "__pycache__" not in path.parts
+          }
+          missing_source_package_files = source_package_files - names
+          assert not missing_source_package_files, sorted(missing_source_package_files)
           required = {
+              "stripe_entitlements/entitlements.py",
+              "stripe_entitlements/internal_api.py",
+              "stripe_entitlements/py.typed",
               "stripe_entitlements/plans.toml",
               "stripe_entitlements/migrations/001_v3_baseline.sql",
           }
@@ -74,9 +86,40 @@ jobs:
           normalized_sdist_names = {
               name.removeprefix(f"{root}/") for name in sdist_names if name != root
           }
-          required_sdist = {"plans.toml", "migrations/001_v3_baseline.sql"}
+          required_sdist = {
+              ".dockerignore",
+              ".env.example",
+              ".github/RELEASE_CHECKLIST.md",
+              ".github/workflows/release.yml",
+              ".gitignore",
+              "Dockerfile",
+              "docker-compose.yml",
+              "uv.lock",
+              "plans.toml",
+              "migrations/001_v3_baseline.sql",
+              "scripts/bootstrap_stripe.py",
+              "scripts/build_distributions.sh",
+              "examples/auth_starters/README.md",
+              "examples/job_outbox/demo.py",
+              "tests/test_job_outbox_example.py",
+              "web/.env.example",
+              "web/package.json",
+              "web/package-lock.json",
+          }
           missing_sdist = required_sdist - normalized_sdist_names
           assert not missing_sdist, sorted(missing_sdist)
+          forbidden_sdist_prefixes = (
+              "web/.next/",
+              "web/node_modules/",
+              "web/playwright-report/",
+              "web/test-results/",
+          )
+          leaked_generated_files = sorted(
+              name
+              for name in normalized_sdist_names
+              if name.startswith(forbidden_sdist_prefixes)
+          )
+          assert not leaked_generated_files, leaked_generated_files[:20]
           packaged_sdist_migrations = {
               name for name in normalized_sdist_names if name.startswith("migrations/")
           }
@@ -91,9 +134,14 @@ jobs:
           uv pip install --python "$test_root/venv/bin/python" "$wheel"
           (
             cd "$test_root"
-            "$test_root/venv/bin/python" - <<'PY'
+            "$test_root/venv/bin/python" - "$GITHUB_WORKSPACE/pyproject.toml" <<'PY'
+          import subprocess
+          import sys
+          import tomllib
+          from importlib.metadata import version
           from pathlib import Path
 
+          from stripe_entitlements import __version__
           from stripe_entitlements.catalog import PlanCatalog
           from stripe_entitlements.resources import (
               default_migration_directory,
@@ -111,6 +159,20 @@ jobs:
               "pro",
               "ultra",
           ]
+          expected = tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["project"][
+              "version"
+          ]
+          assert version("stripe-entitlements-fastapi") == expected
+          assert __version__ == expected
+          cli = Path(sys.executable).with_name("stripe-entitlements")
+          completed = subprocess.run(
+              [str(cli), "--version"],
+              check=True,
+              capture_output=True,
+              text=True,
+          )
+          assert completed.stderr == "", completed.stderr
+          assert completed.stdout.strip() == f"stripe-entitlements {expected}"
           PY
           )
 
@@ -126,7 +188,7 @@ jobs:
             -e POSTGRES_PASSWORD=wheel-ci-only \
             -e POSTGRES_DB=wheel_ci \
             -p 127.0.0.1::5432 \
-            postgres:17-alpine
+            postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
           for attempt in $(seq 1 60); do
             if docker exec "$wheel_pg_container" \
               pg_isready -U postgres -d wheel_ci >/dev/null 2>&1; then
@@ -140,9 +202,6 @@ jobs:
           done
           wheel_pg_port="$(docker port "$wheel_pg_container" 5432/tcp | sed 's/.*://')"
           DATABASE_URL="postgresql://postgres:wheel-ci-only@127.0.0.1:${wheel_pg_port}/wheel_ci" \
-          STRIPE_SECRET_KEY=sk_test_ci_placeholder \
-          STRIPE_WEBHOOK_SECRET=whsec_ci_placeholder \
-          STRIPE_WEBHOOK_API_VERSION=2026-06-24.dahlia \
             "$test_root/venv/bin/stripe-entitlements" migrate
           applied_migrations="$(docker exec "$wheel_pg_container" \
             psql -U postgres -d wheel_ci -Atqc \
@@ -161,12 +220,16 @@ jobs:
                   from information_schema.columns
                  where table_schema='public' and table_name='billing_incidents'
                    and column_name='last_seen_at'),
+               (select data_type='text' and is_nullable='YES'
+                  from information_schema.columns
+                 where table_schema='public' and table_name='credit_pack_orders'
+                   and column_name='request_customer_id'),
                to_regclass('billing_incidents_unresolved_account_kind_seen') is not null,
                to_regclass('billing_plan_changes_one_pending') is not null
              from pg_constraint
             where conrelid='stripe_invoice_state'::regclass
               and conname='stripe_invoice_state_account_id_fkey'")"
-          test "$wheel_schema_contract" = "t|t|t|t|t"
+          test "$wheel_schema_contract" = "t|t|t|t|t|t"
           cleanup_wheel_pg
           trap - EXIT
       - name: Check whitespace
@@ -177,17 +240,40 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Build hardened image
-        run: |
-          docker build \
-            --build-arg PYTHON_IMAGE=public.ecr.aws/docker/library/python:3.12-slim \
-            --tag stripe-entitlements-ci .
+        run: docker build --tag stripe-entitlements-ci .
       - name: Verify migrations and non-root read-only runtime
         run: |
           set -euo pipefail
           test "$(docker image inspect stripe-entitlements-ci --format '{{.Config.User}}')" = "10001:10001"
           test "$(docker image inspect stripe-entitlements-ci --format '{{json .Config.Healthcheck.Test}}')" != "null"
+          python3 - <<'PY'
+          import subprocess
+          import tomllib
+          from pathlib import Path
+
+          expected = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"][
+              "version"
+          ]
+          completed = subprocess.run(
+              [
+                  "docker",
+                  "run",
+                  "--rm",
+                  "stripe-entitlements-ci",
+                  "stripe-entitlements",
+                  "--version",
+              ],
+              check=True,
+              capture_output=True,
+              text=True,
+          )
+          assert completed.stderr == "", completed.stderr
+          assert completed.stdout.strip() == f"stripe-entitlements {expected}"
+          PY
           runtime_suffix="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}"
           runtime_network="stripe-entitlements-ci-${runtime_suffix}"
           runtime_pg="stripe-entitlements-pg-${runtime_suffix}"
@@ -205,7 +291,7 @@ jobs:
             --tmpfs /var/lib/postgresql/data:rw,nosuid,nodev,size=256m \
             -e POSTGRES_PASSWORD=container-ci-only \
             -e POSTGRES_DB=container_ci \
-            postgres:17-alpine
+            postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
           for attempt in $(seq 1 60); do
             if docker exec "$runtime_pg" \
               pg_isready -U postgres -d container_ci >/dev/null 2>&1; then
@@ -223,9 +309,6 @@ jobs:
             --network "$runtime_network" \
             --user 10001:10001 \
             -e DATABASE_URL="$runtime_database_url" \
-            -e STRIPE_SECRET_KEY=sk_test_ci_placeholder \
-            -e STRIPE_WEBHOOK_SECRET=whsec_ci_placeholder \
-            -e STRIPE_WEBHOOK_API_VERSION=2026-06-24.dahlia \
             stripe-entitlements-ci stripe-entitlements migrate
           applied_migrations="$(docker exec "$runtime_pg" \
             psql -U postgres -d container_ci -Atqc \
@@ -244,12 +327,16 @@ jobs:
                   from information_schema.columns
                  where table_schema='public' and table_name='billing_incidents'
                    and column_name='last_seen_at'),
+               (select data_type='text' and is_nullable='YES'
+                  from information_schema.columns
+                 where table_schema='public' and table_name='credit_pack_orders'
+                   and column_name='request_customer_id'),
                to_regclass('billing_incidents_unresolved_account_kind_seen') is not null,
                to_regclass('billing_plan_changes_one_pending') is not null
              from pg_constraint
             where conrelid='stripe_invoice_state'::regclass
               and conname='stripe_invoice_state_account_id_fkey'")"
-          test "$container_schema_contract" = "t|t|t|t|t"
+          test "$container_schema_contract" = "t|t|t|t|t|t"
 
           docker run -d \
             --name "$runtime_app" \
@@ -294,8 +381,10 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
           cache: npm

@@ -82,7 +82,12 @@ function testApi(options: {
     createCheckout: vi.fn(async () => ({
       url: "https://checkout.stripe.com/c/pay/test-session",
     })),
+    createCreditPackCheckout: vi.fn(async () => ({
+      session_id: "cs_test_credit_pack",
+      url: "https://checkout.stripe.com/c/pay/test-credit-pack",
+    })),
     createPortal: vi.fn(async () => ({
+      session_id: "bps_test_portal",
       url: "https://billing.stripe.com/p/session/test-portal",
     })),
     previewPlanChange: vi.fn(async () => changePreview),
@@ -371,6 +376,40 @@ describe("billing screens", () => {
     );
   });
 
+  it("opens hosted one-time Checkout for a server-catalog credit pack", async () => {
+    const user = userEvent.setup();
+    const redirect = vi.fn();
+    const api = testApi({});
+    render(
+      <PricingScreen
+        api={api}
+        billingRedirect={redirect}
+        internalRedirect={vi.fn()}
+      />,
+    );
+
+    await user.click(
+      await screen.findByRole("button", { name: "Buy Boost 100" }),
+    );
+
+    expect(api.createCreditPackCheckout).toHaveBeenCalledWith(
+      {
+        pack_key: "boost-100",
+        success_url: expect.stringMatching(
+          /\/billing\/success\?expected_credit_pack=boost-100$/,
+        ),
+        cancel_url: expect.stringMatching(/\/pricing$/),
+      },
+      { idempotencyKey: expect.any(String) },
+    );
+    expect(redirect).toHaveBeenCalledWith(
+      "https://checkout.stripe.com/c/pay/test-credit-pack",
+    );
+    expect(
+      screen.getByText(/The return page does not grant credits/),
+    ).toBeInTheDocument();
+  });
+
   it("retains the Checkout idempotency key after redirect so cancel-return can reopen the same Session", async () => {
     const user = userEvent.setup();
     const api = testApi({
@@ -625,6 +664,7 @@ describe("billing screens", () => {
       .fn()
       .mockRejectedValueOnce(new Error("temporary Portal failure"))
       .mockResolvedValueOnce({
+        session_id: "bps_test_recovered",
         url: "https://billing.stripe.com/p/session/recovered",
       });
     api.createPortal = createPortal;
@@ -835,6 +875,128 @@ describe("billing screens", () => {
     expect(idempotencyKeyForIntent(previewIntent)).not.toBe(previewKey);
     completeIdempotentIntent(checkoutIntent);
     completeIdempotentIntent(previewIntent);
+  });
+
+  it("accepts a subscription Checkout return with its optional Session identity", async () => {
+    const api = testApi({});
+    api.getAccount = vi.fn(async () => demoAccount("starter", "month"));
+
+    render(
+      <SuccessScreen
+        api={api}
+        expectedCheckoutSessionId="cs_test_subscription_checkout"
+        expectedInterval="month"
+        expectedPlan="starter"
+        maxAttempts={1}
+        pollIntervalMs={0}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Webhook-backed account state is ready",
+      }),
+    ).toBeInTheDocument();
+    expect(api.getAccount).toHaveBeenCalledTimes(1);
+    completeIdempotentIntent("checkout:starter:month");
+    completeIdempotentIntent("preview:starter:month");
+  });
+
+  it("rejects malformed or ambiguous Checkout return targets", async () => {
+    const malformedApi = testApi({});
+    const { unmount } = render(
+      <SuccessScreen
+        api={malformedApi}
+        expectedCheckoutSessionId="not-a-session"
+        expectedInterval="month"
+        expectedPlan="starter"
+        maxAttempts={1}
+        pollIntervalMs={0}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "This billing return cannot be verified",
+      }),
+    ).toBeInTheDocument();
+    expect(malformedApi.getAccount).not.toHaveBeenCalled();
+    unmount();
+
+    const ambiguousApi = testApi({});
+    render(
+      <SuccessScreen
+        api={ambiguousApi}
+        expectedCheckoutSessionId="cs_test_ambiguous"
+        expectedCreditPack="boost-100"
+        expectedInterval="month"
+        expectedPlan="starter"
+        maxAttempts={1}
+        pollIntervalMs={0}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "This billing return cannot be verified",
+      }),
+    ).toBeInTheDocument();
+    expect(ambiguousApi.getAccount).not.toHaveBeenCalled();
+  });
+
+  it("confirms a credit pack only from its exact webhook-projected Checkout lot", async () => {
+    const intent = "credit-pack:boost-100";
+    completeIdempotentIntent(intent);
+    const retainedKey = idempotencyKeyForIntent(intent);
+    const base = demoAccount("starter", "month");
+    const purchased = creditAmountFromDecimal("100");
+    const total = creditAmountFromDecimal("400");
+    const projected: AccountResponse = {
+      ...base,
+      credits: {
+        ...base.credits,
+        balance: total.decimal,
+        balance_atoms: total.atoms,
+        purchased_balance: purchased.decimal,
+        purchased_balance_atoms: purchased.atoms,
+        credit_packs: [
+          {
+            lot_id: "lot-boost-100",
+            pack_key: "boost-100",
+            checkout_session_id: "cs_test_exact_pack",
+            remaining: purchased.decimal,
+            remaining_atoms: purchased.atoms,
+            expires_at: "2027-08-28T00:00:00.000Z",
+          },
+        ],
+      },
+    };
+    let polls = 0;
+    const api = testApi({});
+    api.getAccount = vi.fn(async () => {
+      polls += 1;
+      return polls === 1 ? base : projected;
+    });
+
+    render(
+      <SuccessScreen
+        api={api}
+        expectedCheckoutSessionId="cs_test_exact_pack"
+        expectedCreditPack="boost-100"
+        maxAttempts={3}
+        pollIntervalMs={0}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Webhook-backed account state is ready",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/exact Checkout Session/)).toBeInTheDocument();
+    expect(screen.getAllByText("100 credits").length).toBeGreaterThanOrEqual(1);
+    expect(idempotencyKeyForIntent(intent)).not.toBe(retainedKey);
+    completeIdempotentIntent(intent);
   });
 
   it("restarts webhook polling from the timed-out state", async () => {

@@ -1,11 +1,13 @@
-.git
-.github
-.venv
-.pytest_cache
-.ruff_cache
-.mypy_cache
-__pycache__
-*.pyc
-tests
-test-results
-.env
+# The runtime image is backend-only. Keep the context as an explicit allowlist so
+# local environments, browser builds, evidence, test databases, and secrets cannot
+# inflate or leak into a release build.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!plans.toml
+!migrations/
+!migrations/**
+!src/
+!src/**
