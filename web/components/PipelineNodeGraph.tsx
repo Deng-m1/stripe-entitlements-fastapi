@@ -1,9 +1,16 @@
 /**
- * M4 node graph: the webhook path as plain-language white node cards with
- * mono tech chips, thin colored connectors with dot terminals, and ONE
+ * Pipeline node graph: the webhook path as plain-language white node cards
+ * with mono tech chips, thin connectors with dot terminals, and ONE
  * duplicate-delivery branch terminating in a "no-op (already claimed)" node.
- * Static markup + CSS; no animation (per brief §6).
+ * On the landing the cards sit over the full-width violet gradient band
+ * (brief v3 §3.3) and cascade in with the section's staggered group reveal:
+ * card → connector → card, then the branch and its no-op terminal.
  */
+
+import type { CSSProperties } from "react";
+
+const stagger = (index: number): CSSProperties =>
+  ({ "--stagger": index }) as CSSProperties;
 
 const NODES = [
   {
@@ -39,7 +46,11 @@ export function PipelineNodeGraph() {
   return (
     <div className="node-graph">
       {NODES.map((node, index) => (
-        <div className={`node-card node-${index + 1}`} key={node.title}>
+        <div
+          className={`node-card node-${index + 1} reveal-item`}
+          key={node.title}
+          style={stagger(index * 2)}
+        >
           <p className="node-title">{node.title}</p>
           <span className={`node-chip ${node.chip}`}>{node.tech}</span>
         </div>
@@ -47,12 +58,17 @@ export function PipelineNodeGraph() {
       {CONNECTOR_COLORS.map((color, index) => (
         <span
           aria-hidden="true"
-          className={`node-connector conn-${index + 1} ${color}`}
+          className={`node-connector conn-${index + 1} ${color} reveal-item`}
           key={color + String(index)}
+          style={stagger(index * 2 + 1)}
         />
       ))}
-      <span aria-hidden="true" className="branch-elbow" />
-      <div className="node-card node-noop">
+      <span
+        aria-hidden="true"
+        className="branch-elbow reveal-item"
+        style={stagger(9)}
+      />
+      <div className="node-card node-noop reveal-item" style={stagger(10)}>
         <p className="node-title">
           <span className="branch-label">duplicate redelivery</span>
           no-op — already claimed
