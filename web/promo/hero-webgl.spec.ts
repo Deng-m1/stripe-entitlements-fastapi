@@ -53,10 +53,12 @@ test("the default profile renders the hero through a WebGL context", async ({
   expect(context.height).toBeGreaterThan(0);
 
   // The poster must hand over rather than stay stacked on top of the canvas.
-  const posterOpacity = await layer
-    .locator(".hero-wave-fallback")
-    .evaluate((element) => getComputedStyle(element).opacity);
-  expect(Number(posterOpacity)).toBeLessThan(0.05);
+  // The handover is a 900ms opacity transition that starts when `data-drawn`
+  // flips, so this has to be a retrying assertion: a one-shot read races the
+  // fade and fails on any machine fast enough to reach it mid-transition.
+  await expect(layer.locator(".hero-wave-fallback")).toHaveCSS("opacity", "0", {
+    timeout: 5_000,
+  });
 });
 
 test("the wave keeps moving between frames", async ({ page, baseURL }) => {
