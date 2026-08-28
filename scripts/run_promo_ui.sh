@@ -22,7 +22,15 @@ promo_pgid=""
 pid_start() {
   local pid="${1:-}"
   [[ "$pid" =~ ^[0-9]+$ && -r "/proc/$pid/stat" ]] || return 1
-  awk '{print $22}' "/proc/$pid/stat"
+  # starttime is field 22, but field 2 (comm) is parenthesised and may contain
+  # spaces — Next.js renames itself to "next-server (v16..." once it boots, so
+  # naive whitespace splitting reads a different column before and after that
+  # rename. Cut past the final ") " instead; every field after comm is numeric,
+  # so the greedy match can only land on comm's own closing parenthesis.
+  local stat rest
+  stat="$(< "/proc/$pid/stat")"
+  rest="${stat##*') '}"
+  awk '{print $20}' <<<"$rest"
 }
 
 stop_process_group() {
