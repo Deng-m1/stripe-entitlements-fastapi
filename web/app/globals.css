@@ -31,6 +31,25 @@
   --accent-strong: #c14a15;
   --accent-soft: rgba(227, 90, 31, 0.1);
 
+  /* Interactive iris accent (DESIGN_SYSTEM.md §3.3) — adopted first by the
+     landing's below-the-fold sections; the sitewide teal/orange retirement
+     belongs to the parallel restyle stream. */
+  --iris: #5b4cf5;
+  --iris-strong: #4638c9;
+  --iris-soft: #eeecfe;
+
+  /* 4px spacing scale (DESIGN_SYSTEM.md §4.1). */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-24: 96px;
+  --space-32: 128px;
+
   /* Brand mesh ramp (DESIGN_SYSTEM.md §3.2). Single source of truth for the
      hero's WebGL palette texture, its static poster, and gradient text — the
      same four values are mirrored in lib/hero-wave-palette.ts. The order is
@@ -294,27 +313,28 @@ input {
   margin-inline: 0;
 }
 
-/* Eyebrows speak in the mono voice everywhere, opened by a short
-   settlement-orange rule. */
+/* Eyebrows speak in the mono voice everywhere (DESIGN_SYSTEM.md §2.2:
+   0.75rem mono 500, +0.14em caps), opened by a short mesh-ramp rule. */
 .eyebrow {
   align-items: center;
   color: var(--muted);
   display: flex;
   font-family: var(--font-mono-stack);
-  font-size: 0.7rem;
-  font-weight: 600;
+  font-size: 0.75rem;
+  font-weight: 500;
   gap: 10px;
-  letter-spacing: 0.2em;
-  margin: 0 0 14px;
+  letter-spacing: 0.14em;
+  line-height: 1;
+  margin: 0 0 var(--space-4);
   text-transform: uppercase;
 }
 
 .eyebrow::before {
-  background: var(--accent);
+  background: linear-gradient(90deg, var(--mesh-violet), var(--mesh-pink));
   content: "";
   flex: none;
   height: 2px;
-  width: 18px;
+  width: 20px;
 }
 
 .hero:not(.compact) .eyebrow,

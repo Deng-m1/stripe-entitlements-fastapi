@@ -21,5 +21,12 @@ export const metadata: Metadata = {
 };
 
 export default function PricingPage() {
-  return <PricingScreen initialCatalog={referenceCatalog} />;
+  // The route-level wrapper lets globals.css collapse the shared page
+  // padding so the full-bleed gradient ribbon opens at the very top, even
+  // while the client screen is still in its loading or error state.
+  return (
+    <div className="pricing-route">
+      <PricingScreen initialCatalog={referenceCatalog} />
+    </div>
+  );
 }

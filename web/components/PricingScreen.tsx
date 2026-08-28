@@ -20,6 +20,7 @@ import {
   browserInternalRedirect,
   getBillingApi,
 } from "@/lib/runtime";
+import { REPOSITORY_URL } from "@/lib/site";
 import {
   confirmRequiredStripePayment,
   successUrl,
@@ -222,56 +223,81 @@ export function PricingScreen({
       ? sortedPlans[Math.floor(sortedPlans.length / 2)].key
       : null;
   const compareRows = comparisonRows(sortedPlans);
+  const compareCellClass = (planKey?: string) =>
+    planKey !== undefined && planKey === featuredPlanKey
+      ? "compare-featured"
+      : undefined;
 
   return (
     <div className="pricing-page">
-      <style>{pricingLocalStyles}</style>
-      <section className="hero">
-        <p className="eyebrow">Explicit billing, structured entitlements</p>
-        <h1>Choose a plan without hiding the billing consequences.</h1>
-        <p>
-          Plan identity comes from stable catalog keys. Prices are display and billing
-          data—not tier detection logic.
-        </p>
-      </section>
+      <section className="pricing-hero">
+        <div aria-hidden="true" className="pricing-ribbon" />
+        <div className="shell">
+          <section className="hero">
+            <p className="eyebrow">Explicit billing, structured entitlements</p>
+            <h1>
+              Choose a plan without hiding the{" "}
+              <em className="pricing-accent">billing consequences.</em>
+            </h1>
+            <p>
+              Plan identity comes from stable catalog keys. Prices are display
+              and billing data—not tier detection logic.
+            </p>
+          </section>
 
-      <div
-        className="interval-toggle"
-        aria-label="Billing interval"
-        role="group"
-      >
-        {(["month", "year"] as const).map((value) => (
-          <button
-            aria-pressed={interval === value}
-            className={interval === value ? "active" : ""}
-            key={value}
-            onClick={() => setInterval(value)}
-            type="button"
+          <div
+            className="interval-toggle"
+            aria-label="Billing interval"
+            role="group"
           >
-            {value === "month" ? "Monthly" : "Yearly"}
-            {value === "year" && yearlyToggleBadge ? (
-              <span aria-hidden="true" className="toggle-save">
-                {yearlyToggleBadge}
-              </span>
-            ) : null}
-          </button>
-        ))}
-      </div>
+            {(["month", "year"] as const).map((value) => (
+              <button
+                aria-pressed={interval === value}
+                className={interval === value ? "active" : ""}
+                key={value}
+                onClick={() => setInterval(value)}
+                type="button"
+              >
+                {value === "month" ? "Monthly" : "Yearly"}
+                {value === "year" && yearlyToggleBadge ? (
+                  <span aria-hidden="true" className="toggle-save">
+                    {yearlyToggleBadge}
+                  </span>
+                ) : null}
+              </button>
+            ))}
+          </div>
 
-      {message ? <p className="success-banner" role="status">{message}</p> : null}
-      {!account && !error ? (
-        <p className="account-loading" role="status">
-          Plans are ready. Loading the authenticated account state…
-        </p>
-      ) : null}
-      {error ? (
-        <div className="inline-error" role="alert">
-          <span>{error}</span>
-          <button className="button ghost" onClick={() => void load()} type="button">
-            Try again
-          </button>
+          <ul aria-label="Billing guarantees" className="pricing-microcopy">
+            <li>Webhook-verified entitlements</li>
+            <li>Catalog-priced annual savings</li>
+            <li>Explicit proration policies</li>
+          </ul>
+
+          {message ? (
+            <p className="success-banner" role="status">
+              {message}
+            </p>
+          ) : null}
+          {!account && !error ? (
+            <p className="account-loading" role="status">
+              Plans are ready. Loading the authenticated account state…
+            </p>
+          ) : null}
+          {error ? (
+            <div className="inline-error" role="alert">
+              <span>{error}</span>
+              <button
+                className="button ghost"
+                onClick={() => void load()}
+                type="button"
+              >
+                Try again
+              </button>
+            </div>
+          ) : null}
         </div>
-      ) : null}
+      </section>
 
       <div className="plan-grid">
         {sortedPlans.map((plan, index) => {
@@ -304,8 +330,15 @@ export function PricingScreen({
               <div className="price-block">
                 {interval === "month" ? (
                   <>
-                    <strong>{formatMoney(selectedPrice.unit_amount, selectedPrice.currency)}</strong>
-                    <span>/month</span>
+                    <div className="price-row">
+                      <strong>
+                        {formatMoney(
+                          selectedPrice.unit_amount,
+                          selectedPrice.currency,
+                        )}
+                      </strong>
+                      <span>/month</span>
+                    </div>
                     {savings !== null ? (
                       <small>
                         or {formatMoney(annualEquivalentMonthly(plan), selectedPrice.currency)}/mo with yearly billing
@@ -314,13 +347,15 @@ export function PricingScreen({
                   </>
                 ) : (
                   <>
-                    <strong>
-                      {formatMoney(
-                        annualEquivalentMonthly(plan),
-                        selectedPrice.currency,
-                      )}
-                    </strong>
-                    <span>/mo equivalent</span>
+                    <div className="price-row">
+                      <strong>
+                        {formatMoney(
+                          annualEquivalentMonthly(plan),
+                          selectedPrice.currency,
+                        )}
+                      </strong>
+                      <span>/mo equivalent</span>
+                    </div>
                     <small>
                       {formatMoney(selectedPrice.unit_amount, selectedPrice.currency)} billed
                       yearly
@@ -391,7 +426,11 @@ export function PricingScreen({
               <tr>
                 <th scope="col">What you get</th>
                 {sortedPlans.map((plan) => (
-                  <th key={plan.key} scope="col">
+                  <th
+                    className={compareCellClass(plan.key)}
+                    key={plan.key}
+                    scope="col"
+                  >
                     {plan.name}
                   </th>
                 ))}
@@ -401,7 +440,7 @@ export function PricingScreen({
               <tr>
                 <th scope="row">Monthly price</th>
                 {sortedPlans.map((plan) => (
-                  <td key={plan.key}>
+                  <td className={compareCellClass(plan.key)} key={plan.key}>
                     {formatMoney(
                       plan.prices.month.unit_amount,
                       plan.prices.month.currency,
@@ -413,7 +452,7 @@ export function PricingScreen({
               <tr>
                 <th scope="row">Yearly price</th>
                 {sortedPlans.map((plan) => (
-                  <td key={plan.key}>
+                  <td className={compareCellClass(plan.key)} key={plan.key}>
                     {formatMoney(
                       plan.prices.year.unit_amount,
                       plan.prices.year.currency,
@@ -428,7 +467,7 @@ export function PricingScreen({
                   const planSavings = annualSavings(plan);
                   const percent = annualSavingsPercent(plan);
                   return (
-                    <td key={plan.key}>
+                    <td className={compareCellClass(plan.key)} key={plan.key}>
                       {planSavings === null || percent === null
                         ? "—"
                         : `${formatMoney(planSavings, plan.prices.year.currency)} (${percent}%)`}
@@ -440,7 +479,10 @@ export function PricingScreen({
                 <tr key={row.key}>
                   <th scope="row">{row.label}</th>
                   {row.cells.map((cell, cellIndex) => (
-                    <td key={sortedPlans[cellIndex]?.key ?? cellIndex}>
+                    <td
+                      className={compareCellClass(sortedPlans[cellIndex]?.key)}
+                      key={sortedPlans[cellIndex]?.key ?? cellIndex}
+                    >
                       {typeof cell === "string" ? (
                         cell
                       ) : (
@@ -458,6 +500,28 @@ export function PricingScreen({
           preview; entitlements change only after webhook-verified account state,
           never from the redirect alone.
         </p>
+      </section>
+
+      <section aria-labelledby="pricing-cta-heading" className="pricing-cta">
+        <div>
+          <p className="eyebrow">Webhook truth included</p>
+          <h2 id="pricing-cta-heading">
+            Take the same catalog into production.
+          </h2>
+          <p>
+            Every plan above is enforced by the FastAPI reference backend:
+            signed webhooks, a PostgreSQL event inbox, and idempotent
+            entitlement grants.
+          </p>
+        </div>
+        <div className="pricing-cta-actions">
+          <a className="button primary" href="/account">
+            Open the demo account
+          </a>
+          <a className="button secondary" href={REPOSITORY_URL}>
+            View the source
+          </a>
+        </div>
       </section>
 
       {preview ? (
@@ -574,127 +638,7 @@ function comparisonRows(plans: CatalogPlan[]): ComparisonRow[] {
   });
 }
 
-const pricingLocalStyles = `
-/* Schibsted Grotesk tabular figures give the decimal point a full digit
-   advance, rendering "$19 . 00". Proportional lining figures keep the price
-   compact; the comparison table below keeps tabular-nums for column scans. */
-.pricing-page .price-block strong {
-  font-variant-numeric: normal;
-}
-
-/* A static-positioned scroll container lets the 640px table propagate layout
-   overflow to the document, so phones can pan 154px of dead canvas. Anchoring
-   the wrapper keeps the horizontal scroll inside the card. */
-.pricing-page .comparison-table-wrap {
-  position: relative;
-}
-
-.pricing-page .interval-toggle button {
-  align-items: center;
-  display: inline-flex;
-  gap: 8px;
-}
-
-.pricing-page .toggle-save {
-  background: var(--success-soft);
-  border-radius: 999px;
-  color: var(--success);
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  padding: 2px 8px;
-}
-
-.pricing-page .interval-toggle button.active .toggle-save {
-  background: rgba(250, 246, 239, 0.18);
-  color: var(--paper);
-}
-
-.pricing-page .pricing-featured {
-  border-color: var(--ink);
-  box-shadow: 0 16px 40px rgba(23, 32, 28, 0.1);
-  position: relative;
-}
-
-.pricing-page .pricing-flag {
-  background: var(--accent);
-  border-radius: 999px;
-  color: #fff;
-  font-family: var(--font-mono-stack);
-  font-size: 0.64rem;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  margin: 0;
-  padding: 5px 12px;
-  position: absolute;
-  right: 20px;
-  text-transform: uppercase;
-  top: -13px;
-}
-
-.pricing-page .price-block .saving {
-  background: var(--success-soft);
-  border-radius: 999px;
-  display: inline-block;
-  margin-top: 8px;
-  padding: 3px 10px;
-}
-
-.pricing-page .pricing-inherits {
-  color: var(--text);
-  font-size: 0.85rem;
-  font-weight: 600;
-  margin: 0 0 -16px;
-}
-
-.pricing-page .pricing-compare {
-  margin-top: 72px;
-}
-
-.pricing-page .pricing-compare h2 {
-  font-size: clamp(1.6rem, 3vw, 2.2rem);
-  margin-bottom: 8px;
-}
-
-.pricing-page .pricing-compare > p {
-  color: var(--muted);
-  line-height: 1.65;
-  max-width: 760px;
-}
-
-.pricing-page .comparison-table th[scope="row"] {
-  color: var(--muted);
-  font-weight: 550;
-}
-
-.pricing-page .pricing-included {
-  color: var(--success);
-  font-weight: 700;
-}
-
-.pricing-page .pricing-excluded {
-  color: var(--muted);
-}
-
-.pricing-page .pricing-sr {
-  clip: rect(0 0 0 0);
-  clip-path: inset(50%);
-  height: 1px;
-  overflow: hidden;
-  position: absolute;
-  white-space: nowrap;
-  width: 1px;
-}
-
-.pricing-page .pricing-footnote {
-  color: var(--muted);
-  font-size: 0.85rem;
-  line-height: 1.6;
-  margin: 14px 0 0;
-  max-width: 760px;
-}
-`;
-
 function errorMessage(caught: unknown): string {
   return caught instanceof Error ? caught.message : "Unknown billing error";
 }
+
