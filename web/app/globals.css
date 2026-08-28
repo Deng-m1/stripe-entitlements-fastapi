@@ -14,6 +14,10 @@
   --pill-cream: #f0e2c8;
   --ok-chip: #1f9d55;
   --band-ink: #101513;
+  /* DESIGN_SYSTEM.md §3.5: full-width bands are gradients over this deep
+     violet-navy base, never flat black. First consumer: the /billing/*
+     settlement band. */
+  --band-deep: #0f0a2e;
 
   /* Shared aliases used by app chrome and interactive screens. */
   --bg: var(--paper);
@@ -318,7 +322,7 @@ input {
     .entitlements-section,
     .pending-banner,
     .state-card,
-    .success-card
+    .settlement-card
   )
   .eyebrow::before {
   background: var(--line);
@@ -351,7 +355,7 @@ h2 {
 
 .hero > p:last-child,
 .plan-card p,
-.success-card > p,
+.settlement-card > p,
 .account-card > p,
 .dialog-summary,
 .timing-panel p {
@@ -2089,7 +2093,6 @@ h2 {
 .account-card,
 .entitlement-card,
 .state-card,
-.success-card,
 .pending-banner,
 .entitlements-section {
   background: var(--surface);
@@ -2332,10 +2335,39 @@ h2 {
   grid-template-columns: 1fr 1fr;
 }
 
-.preview-facts div,
-.fact-list div {
+.preview-facts div {
   border-top: 1px solid var(--line);
   padding-block: 12px;
+}
+
+/* Account fact rows read as ledger lines: mono-caps key on the left, a
+   right-aligned mono figure on the right, hairline rules between rows. */
+
+.fact-list div {
+  align-items: baseline;
+  border-top: 1px solid var(--hairline);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  justify-content: space-between;
+  padding-block: 11px;
+}
+
+.fact-list div:first-child {
+  border-top-color: var(--line);
+}
+
+.fact-list dt {
+  flex: none;
+}
+
+.fact-list dd {
+  font-family: var(--font-mono-stack);
+  font-size: 0.84rem;
+  font-weight: 500;
+  margin: 0;
+  min-width: 0;
+  text-align: right;
 }
 
 dt {
@@ -2376,8 +2408,17 @@ dd {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-  justify-content: flex-end;
   margin-top: 22px;
+}
+
+.dialog-actions {
+  justify-content: flex-end;
+}
+
+/* Account actions read left-to-right in priority order, like the landing
+   hero's CTA row. */
+.account-actions {
+  justify-content: flex-start;
 }
 
 .portal-scope-note {
@@ -2389,6 +2430,30 @@ dd {
   text-align: right;
 }
 
+/* ===== /account — workspace surface (DESIGN_SYSTEM.md §5.3) =====
+   Quiet ledger temperament: H2-scale page title with one small mesh-ramp
+   rule as the route's single brand signal, H3-scale card titles, mono
+   tabular figures, and the landing's square-dot chip grammar. */
+
+.account-hero h1 {
+  font-size: clamp(1.9rem, 1.5rem + 1.8vw, 2.75rem);
+  letter-spacing: -0.022em;
+  line-height: 1.08;
+  margin-bottom: 16px;
+}
+
+/* The one decorative gradient allowed on this route: a short rule under the
+   page title, sliced from the hero's mesh ramp. */
+.account-hero h1::after {
+  background: var(--gradient-accent);
+  border-radius: 999px;
+  content: "";
+  display: block;
+  height: 3px;
+  margin-top: 18px;
+  width: 64px;
+}
+
 .account-grid {
   display: grid;
   gap: 18px;
@@ -2396,41 +2461,169 @@ dd {
 }
 
 .account-card {
+  display: flex;
+  flex-direction: column;
   padding: 28px;
 }
 
 .account-card h2 {
-  font-size: 2rem;
+  font-size: 1.375rem;
+  margin-bottom: 12px;
 }
 
+/* The plan name anchors the left card against the credit figure opposite. */
+.subscription-card h2 {
+  font-size: 1.75rem;
+  margin-bottom: 14px;
+}
+
+.subscription-card .fact-list {
+  margin-top: 6px;
+}
+
+.manage-card {
+  margin-top: 18px;
+}
+
+.projection-meta {
+  font-family: var(--font-mono-stack);
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+}
+
+/* Credits card: stat block up top, grant meter and fact rows settle to the
+   bottom edge so the card composes at full grid height instead of leaving
+   a void under the balance (visual review P2-8). */
+
 .credit-balance {
-  color: var(--text) !important;
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
   font-family: var(--font-display-stack);
-  font-size: 3.8rem;
+  font-size: clamp(3rem, 2.5rem + 1.2vw, 3.8rem);
   font-variant-numeric: tabular-nums;
   font-weight: 700;
   letter-spacing: -0.045em;
   line-height: 1;
-  margin-bottom: 5px;
+  margin-bottom: 12px;
 }
 
-.status {
-  border-radius: 999px;
-  display: inline-block;
+.credit-card .credit-balance {
+  color: var(--text);
+}
+
+.credit-balance-unit {
+  color: var(--muted);
   font-family: var(--font-mono-stack);
   font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.credit-card .credit-caption {
+  font-size: 0.9rem;
+  margin-bottom: 0;
+  max-width: 36ch;
+}
+
+.credit-meter {
+  margin: auto 0 0;
+  padding-top: 24px;
+}
+
+.credit-meter-row {
+  align-items: baseline;
+  color: var(--muted);
+  display: flex;
+  font-family: var(--font-mono-stack);
+  font-size: 0.66rem;
+  font-weight: 500;
+  gap: 12px;
+  justify-content: space-between;
+  letter-spacing: 0.1em;
+  margin-bottom: 10px;
+  text-transform: uppercase;
+}
+
+.credit-meter-row span:last-child {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
   letter-spacing: 0.04em;
-  padding: 4px 10px;
 }
 
-.status-active {
-  background: var(--success-soft);
-  color: var(--success);
+/* Settlement orange as a data stroke only, echoing the landing chart. */
+.credit-meter-scale {
+  background: var(--surface-soft);
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  height: 8px;
+  overflow: hidden;
 }
 
-.status-past_due {
-  background: var(--warning-soft);
-  color: var(--warning);
+.credit-meter-fill {
+  background: var(--accent);
+  border-radius: 999px;
+  display: block;
+  height: 100%;
+  transition: width 0.2s var(--ease-out-soft);
+}
+
+.credit-card .fact-list {
+  margin-top: auto;
+  padding-top: 12px;
+}
+
+/* Status chips share the landing ledger's square-dot chip grammar. */
+
+.status {
+  align-items: center;
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--muted);
+  display: inline-flex;
+  font-family: var(--font-mono-stack);
+  font-size: 0.68rem;
+  font-weight: 500;
+  gap: 6px;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  vertical-align: middle;
+}
+
+.status::before {
+  background: var(--grid-dot);
+  border-radius: 2px;
+  content: "";
+  flex: none;
+  height: 7px;
+  width: 7px;
+}
+
+.status-active,
+.status-enforceable {
+  background: var(--pill-mint);
+  border-color: transparent;
+  color: #1e3a2f;
+}
+
+.status-active::before,
+.status-enforceable::before {
+  background: #1e3a2f;
+}
+
+.status-past_due,
+.status-paused {
+  background: var(--pill-cream);
+  border-color: transparent;
+  color: #6b4a12;
+}
+
+.status-past_due::before,
+.status-paused::before {
+  background: #b98a3a;
 }
 
 .pending-banner {
@@ -2441,6 +2634,7 @@ dd {
 }
 
 .pending-banner h2 {
+  font-size: 1.3rem;
   margin-bottom: 8px;
 }
 
@@ -2454,22 +2648,41 @@ dd {
   padding: 28px;
 }
 
+.entitlements-section h2 {
+  font-size: 1.375rem;
+  margin-bottom: 0;
+}
+
 .entitlement-grid {
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  margin-top: 18px;
+  margin-top: 20px;
 }
 
+/* Entitlement tiles borrow the landing node-card grammar (raised paper,
+   thin border, quiet hover) instead of the old flat gray boxes (P2-9). */
+
 .entitlement-card {
-  background: var(--surface-soft);
+  background: var(--paper-raised);
+  border-radius: var(--radius-md);
   box-shadow: none;
-  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 18px;
+  transition: border-color 0.2s ease;
+}
+
+.entitlement-card:hover {
+  border-color: var(--muted);
 }
 
 .entitlement-card p {
   color: var(--muted);
-  margin-bottom: 7px;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  margin: 0;
 }
 
 .entitlement-card strong,
@@ -2478,13 +2691,87 @@ dd {
   display: block;
 }
 
-.entitlement-card small {
-  color: var(--muted);
-  margin-top: 7px;
+.entitlement-card strong {
+  font-size: 1.02rem;
+  letter-spacing: -0.01em;
 }
 
-.state-card,
-.success-card {
+.entitlement-card span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.entitlement-card .entitlement-figure {
+  font-family: var(--font-mono-stack);
+  font-size: 1.05rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.entitlement-unit {
+  color: var(--muted);
+  display: inline;
+  font-size: 0.76rem;
+  font-weight: 500;
+}
+
+.entitlement-card .entitlement-flag {
+  align-items: center;
+  border-radius: 5px;
+  display: inline-flex;
+  font-family: var(--font-mono-stack);
+  font-size: 0.68rem;
+  font-weight: 600;
+  gap: 6px;
+  letter-spacing: 0.05em;
+  padding: 3px 8px;
+  text-transform: uppercase;
+  width: max-content;
+}
+
+.entitlement-flag::before {
+  border-radius: 2px;
+  content: "";
+  flex: none;
+  height: 7px;
+  width: 7px;
+}
+
+.entitlement-flag.is-included {
+  background: var(--pill-mint);
+  color: #1e3a2f;
+}
+
+.entitlement-flag.is-included::before {
+  background: #1e3a2f;
+}
+
+.entitlement-flag.is-excluded {
+  background: var(--surface-soft);
+  color: var(--muted);
+}
+
+.entitlement-flag.is-excluded::before {
+  background: var(--grid-dot);
+}
+
+/* The raw entitlement key closes each tile like a receipt footer; pinned to
+   the bottom so keys align across a row of stretched tiles. */
+.entitlement-card small {
+  border-top: 1px dashed var(--hairline);
+  color: var(--muted);
+  font-family: var(--font-mono-stack);
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  margin-top: auto;
+  overflow-wrap: anywhere;
+  padding-top: 9px;
+  text-transform: uppercase;
+}
+
+.state-card {
   align-items: center;
   display: flex;
   flex-direction: column;
@@ -2500,6 +2787,206 @@ dd {
   text-align: left;
 }
 
+/* ===== Settlement moment (/billing/success, /billing/error) =====
+   DESIGN_SYSTEM.md §5.4: the M5 band grammar applied to the checkout
+   return — a full-bleed gradient band over --band-deep frames one white
+   settlement card (≤ 640px). Zero heavy JS: the band and the medallion
+   are pure CSS over the same mesh ramp the hero samples. */
+
+body:has(.settlement-band) .page {
+  padding-block: 0;
+}
+
+.settlement-band {
+  align-content: center;
+  background:
+    radial-gradient(
+      92rem 46rem at 12% -14%,
+      rgba(122, 90, 248, 0.4),
+      transparent 60%
+    ),
+    radial-gradient(
+      74rem 40rem at 106% 116%,
+      rgba(255, 92, 143, 0.24),
+      transparent 58%
+    ),
+    radial-gradient(
+      40rem 22rem at 88% -8%,
+      rgba(255, 138, 60, 0.12),
+      transparent 70%
+    ),
+    linear-gradient(164deg, #1a1048 0%, var(--band-deep) 52%, #0b0722 100%);
+  display: grid;
+  margin-left: calc(50% - 50vw);
+  min-height: calc(100vh - 150px);
+  min-width: 0;
+  padding-block: 88px;
+  padding-inline: 24px;
+  width: 100vw;
+}
+
+.settlement-inner {
+  margin-inline: auto;
+  max-width: 640px;
+  position: relative;
+  width: 100%;
+}
+
+/* Gradient shadow base (§4.3): a blurred mesh underlay lifts the card off
+   the band — in addition to, not instead of, the layered shadow. */
+.settlement-inner::before {
+  background: radial-gradient(
+    closest-side,
+    rgba(122, 90, 248, 0.5),
+    rgba(255, 92, 143, 0.24) 55%,
+    transparent 78%
+  );
+  content: "";
+  filter: blur(30px);
+  inset: 10% -4% -4%;
+  position: absolute;
+}
+
+.settlement-card {
+  align-items: center;
+  background: var(--paper-raised, var(--surface));
+  border-radius: var(--radius-lg);
+  box-shadow:
+    0 2px 4px rgba(5, 3, 20, 0.35),
+    0 28px 72px rgba(5, 3, 20, 0.55);
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  padding: 46px 44px;
+  position: relative;
+  text-align: center;
+}
+
+.settlement-card h1 {
+  /* §5.4 Display scale, held back so a status sentence fits the 640px card
+     (amendment logged in DESIGN_SYSTEM.md §5.4). */
+  font-size: clamp(2.05rem, 1.6rem + 1.9vw, 2.85rem);
+  letter-spacing: -0.028em;
+  line-height: 1.06;
+  margin-bottom: 0;
+}
+
+.settlement-card .account-actions {
+  justify-content: center;
+}
+
+/* Status marks: neutral while polling, warning when unconfirmed, danger only
+   for unverifiable returns and stopped billing actions (§3.4 semantics). */
+
+.settlement-mark {
+  align-items: center;
+  background: var(--surface-soft);
+  border-radius: 50%;
+  color: var(--muted);
+  display: flex;
+  font-size: 1.7rem;
+  font-weight: 800;
+  height: 62px;
+  justify-content: center;
+  width: 62px;
+}
+
+.settlement-mark.timed_out {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.settlement-mark.invalid,
+.settlement-mark.stopped {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* The celebratory element (§5.4): a static mesh-ramp medallion, shown only
+   once the webhook projection is confirmed — never for the bare redirect. */
+
+.settlement-medallion {
+  align-items: center;
+  background: conic-gradient(
+    from 224deg,
+    var(--mesh-violet),
+    var(--mesh-pink) 32%,
+    var(--mesh-orange) 60%,
+    var(--mesh-lemon) 80%,
+    var(--mesh-violet)
+  );
+  border-radius: 50%;
+  box-shadow: 0 12px 32px rgba(122, 90, 248, 0.4);
+  display: flex;
+  height: 66px;
+  justify-content: center;
+  width: 66px;
+}
+
+.settlement-medallion span {
+  align-items: center;
+  background: var(--paper-raised, var(--surface));
+  border-radius: 50%;
+  color: var(--success);
+  display: flex;
+  font-size: 1.6rem;
+  font-weight: 800;
+  height: 54px;
+  justify-content: center;
+  margin: auto;
+  width: 54px;
+}
+
+/* Settlement status chip: the semantic-color readout on the card. */
+
+.settlement-chip {
+  border-radius: 999px;
+  font-family: var(--font-mono-stack);
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  padding: 6px 14px;
+  text-transform: uppercase;
+}
+
+.settlement-chip.chip-pending {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.settlement-chip.chip-confirmed {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.settlement-chip.chip-stopped {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* Band microcopy under the card — the M5 mono voice on the gradient. */
+
+.settlement-note {
+  color: rgba(240, 238, 252, 0.55);
+  font-family: var(--font-mono-stack);
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  margin: 26px 0 0;
+  position: relative;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.settlement-card code {
+  background: var(--surface-soft);
+  border-radius: 6px;
+  color: var(--muted);
+  font-family: var(--font-mono-stack);
+  font-size: 0.76rem;
+  padding: 4px 10px;
+}
+
 .spinner {
   animation: spin 0.8s linear infinite;
   border: 3px solid var(--line);
@@ -2507,38 +2994,6 @@ dd {
   border-top-color: var(--accent);
   height: 30px;
   width: 30px;
-}
-
-.success-mark {
-  align-items: center;
-  background: var(--warning-soft);
-  border-radius: 50%;
-  color: var(--warning);
-  display: flex;
-  font-size: 1.7rem;
-  font-weight: 800;
-  height: 58px;
-  justify-content: center;
-  width: 58px;
-}
-
-.success-mark.confirmed {
-  background: var(--success-soft);
-  color: var(--success);
-}
-
-.success-mark.timed_out {
-  background: var(--danger-soft);
-  color: var(--danger);
-}
-
-.success-card h1 {
-  font-size: 2.3rem;
-  margin-bottom: 0;
-}
-
-.success-card .account-actions {
-  justify-content: center;
 }
 
 @keyframes spin {
@@ -2751,6 +3206,19 @@ dd {
     padding-block: 64px;
   }
 
+  .settlement-band {
+    padding-block: 56px;
+    padding-inline: 16px;
+  }
+
+  .settlement-card {
+    padding: 32px 22px;
+  }
+
+  .settlement-note {
+    letter-spacing: 0.08em;
+  }
+
   .terminal-body {
     font-size: 0.68rem;
   }
@@ -2823,6 +3291,11 @@ dd {
 
   .matrix-card {
     padding: 16px;
+  }
+
+  .account-card,
+  .entitlements-section {
+    padding: 22px 18px;
   }
 
   .table-scroll-hint {

@@ -128,7 +128,7 @@ export function AccountScreen({
       aria-busy={loading}
       style={{ opacity: loading ? 0.7 : 1, transition: "opacity 160ms ease" }}
     >
-      <section className="hero compact">
+      <section className="hero compact account-hero">
         <p className="eyebrow">Webhook-authoritative account projection</p>
         <h1>Your billing account</h1>
         <p>
@@ -210,7 +210,7 @@ export function AccountScreen({
       ) : null}
 
       <div className="account-grid">
-        <section className="account-card">
+        <section className="account-card subscription-card">
           <p className="eyebrow">Subscription</p>
           <h2>{currentName}</h2>
           {!hasSubscription ? (
@@ -239,7 +239,13 @@ export function AccountScreen({
             </div>
             <div>
               <dt>Product access</dt>
-              <dd>{account.entitlements_enforceable ? "Enforceable" : "Paused"}</dd>
+              <dd>
+                {account.entitlements_enforceable ? (
+                  <span className="status status-enforceable">Enforceable</span>
+                ) : (
+                  <span className="status status-paused">Paused</span>
+                )}
+              </dd>
             </div>
             <div>
               <dt>Current period ends</dt>
@@ -248,15 +254,50 @@ export function AccountScreen({
           </dl>
         </section>
 
-        <section className="account-card">
+        <section aria-label="Credits" className="account-card credit-card">
           <p className="eyebrow">Credits</p>
-          <p className="credit-balance">{account.credits.balance.toLocaleString()}</p>
-          <p>available credits</p>
+          <p className="credit-balance">
+            {account.credits.balance.toLocaleString()}
+            <span className="credit-balance-unit">credits</span>
+          </p>
+          <p className="credit-caption">
+            Spendable balance, projected from paid-invoice webhooks — never from
+            a checkout redirect.
+          </p>
           {account.credits.balance === 0 && !account.credits.next_grant_at ? (
             <p>
               No grant is scheduled. Credit grants start with a paid subscription
               period and are recorded with database-enforced idempotency.
             </p>
+          ) : null}
+          {account.credits.grant_amount > 0 ? (
+            <figure className="credit-meter">
+              <figcaption className="credit-meter-row">
+                <span>Grant remaining</span>
+                <span>
+                  {account.credits.balance.toLocaleString()} /{" "}
+                  {account.credits.grant_amount.toLocaleString()}
+                </span>
+              </figcaption>
+              <div aria-hidden="true" className="credit-meter-scale">
+                <span
+                  className="credit-meter-fill"
+                  style={{
+                    width: `${Math.max(
+                      0,
+                      Math.min(
+                        100,
+                        Math.round(
+                          (account.credits.balance /
+                            account.credits.grant_amount) *
+                            100,
+                        ),
+                      ),
+                    )}%`,
+                  }}
+                />
+              </div>
+            </figure>
           ) : null}
           <dl className="fact-list">
             <div>
@@ -297,7 +338,7 @@ export function AccountScreen({
         )}
       </section>
 
-      <section aria-labelledby="manage-title" className="account-card" style={{ marginTop: 18 }}>
+      <section aria-labelledby="manage-title" className="account-card manage-card">
         <p className="eyebrow">Manage</p>
         <h2 id="manage-title">Plan changes and billing management</h2>
         <p>
@@ -306,21 +347,15 @@ export function AccountScreen({
           invoices, and cancellation.
         </p>
         {loadedAt ? (
-          <p>
+          <p className="projection-meta">
             Projection loaded {formatDate(loadedAt)}. Refreshing re-reads the
             webhook-backed account API and never mutates billing state.
           </p>
         ) : null}
         <div className="account-actions">
-          <button
-            aria-busy={loading}
-            className="button ghost"
-            disabled={loading}
-            onClick={() => void refresh()}
-            type="button"
-          >
-            {loading ? "Refreshing…" : "Refresh projection"}
-          </button>
+          <Link className="button primary" href="/pricing">
+            Review plan changes
+          </Link>
           <button
             aria-busy={portalBusy}
             className="button secondary"
@@ -330,9 +365,15 @@ export function AccountScreen({
           >
             {portalBusy ? "Opening Portal…" : "Open Stripe Billing Portal"}
           </button>
-          <Link className="button primary" href="/pricing">
-            Review plan changes
-          </Link>
+          <button
+            aria-busy={loading}
+            className="button ghost"
+            disabled={loading}
+            onClick={() => void refresh()}
+            type="button"
+          >
+            {loading ? "Refreshing…" : "Refresh projection"}
+          </button>
         </div>
       </section>
     </div>
@@ -343,16 +384,24 @@ function EntitlementCard({ entitlement }: { entitlement: Entitlement }) {
   return (
     <article className="entitlement-card">
       <p>{entitlement.label}</p>
-      <strong>
-        {typeof entitlement.value === "boolean"
-          ? entitlement.value
-            ? "Included"
-            : "Not included"
-          : String(entitlement.value)}{" "}
-        {entitlement.unit ?? ""}
-      </strong>
-      <small>{entitlement.key}</small>
+      {typeof entitlement.value === "boolean" ? (
+        <strong
+          className={`entitlement-flag ${
+            entitlement.value ? "is-included" : "is-excluded"
+          }`}
+        >
+          {entitlement.value ? "Included" : "Not included"}
+        </strong>
+      ) : (
+        <strong className="entitlement-figure">
+          {String(entitlement.value)}
+          {entitlement.unit ? (
+            <span className="entitlement-unit"> {entitlement.unit}</span>
+          ) : null}
+        </strong>
+      )}
       {entitlement.description ? <span>{entitlement.description}</span> : null}
+      <small>{entitlement.key}</small>
     </article>
   );
 }
