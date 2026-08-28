@@ -746,3 +746,115 @@ have caught the unterminated rule at commit time.
   catalog's explicit annual price; if the catalog ever drops a yearly
   price, the toggle hides the pill silently — no visual guard asserts
   that state.
+
+---
+
+## Round 11 — visual review round 4, ten-round merge head — 2026-08-28
+
+- Reviewer: fable 5 (visual review lead, round 4)
+- Baseline reviewed: merge `4faf9b9` (branch `cursor/landing-settlement-field`)
+  — the head that converges rounds 5–10 (settlement band, account closure,
+  white-canvas chrome/type, scroll motion, landing sections, pricing product
+  page) plus the hero shading rework — in an isolated worktree
+- Preview: `next build` + `next start` (production, `http` mode: honest
+  unconfigured-API states) on one port; `next dev` + mock on another for the
+  hydrated pricing/account/success states — the Round 4 protocol
+- Screenshots: `.review/round4/` in the review worktree (evidence pointers,
+  regenerable from any commit) — `prod/` and `prod2/` (before/after this
+  round's fixes; five routes × 1440/390 × first-viewport/full/bottom),
+  `mock/` (hydrated states), `hero/` + `hero2/` (hero rig with
+  `report.json`, before/after), `sections/` (landing section motion frames),
+  `slices/` (390px full-page cuts)
+
+### Issues
+
+#### P1
+
+1. **Poster/live drift, third recurrence (class of Round 3 №4, Round 4 №5).**
+   The four poster assets were last baked at `fc7ae2b` (the crest-band
+   shader); the hero rework `46051b9` changed shading, palette and phase
+   without rebaking, so every reduced-motion / no-WebGL / pre-hydration
+   visitor saw the previous shader generation — including a saturated
+   magenta band bleeding behind the transparent header that the live render
+   never paints there (the nav links sat on hot pink), and a composition
+   the animated canvas immediately contradicts on the poster→canvas fade.
+   Evidence: `hero/desktop-1440-reduced-motion-hero.png` (stale) vs
+   `hero/desktop-1440-late-hero.png` (live).
+   **Fixed: all four assets rebaked** from the merged shader via
+   `scripts/build-hero-wave-poster.mjs`; `hero2/…-reduced-motion-hero.png`
+   is again compositionally interchangeable with the live frame. Process
+   note: the bake belongs in any commit that retunes the shader — this is
+   the third round to relearn that.
+2. **`/pricing` at 390px: the ribbon's pill cap surfaced as a clipped dark
+   blob and the eyebrow sat in the band's glow.** `left/right: -14%` is
+   ~−55px at 390px — less than the pill's 84px cap radius — so the rounded
+   end cap entered the frame as a hard-clipped magenta shape on the left
+   edge, and the stacked four-line headline pushes the mono eyebrow up
+   against the crisp band edge and its 0.38-alpha glow (muted gray on
+   pink/orange, under 3:1). Evidence:
+   `prod/pricing-mobile-first-viewport.png`.
+   **Fixed in the ≤850px block:** caps pulled to −34%, band slimmed and
+   lifted (132px tall at top −70px), glow raised and dimmed to 0.32, and
+   the ≤560px hero padding moved 80→88px for first-line headroom. Desktop
+   geometry untouched (`prod2/pricing-desktop-first-viewport.png`
+   byte-comparable); verified at 390px in
+   `prod2/pricing-mobile-first-viewport.png` — caps off-frame, eyebrow on
+   white.
+3. **The 1440px lockup gate failed on the merged head — a measurement bug,
+   not a rendering regression.** `hero-webgl.spec.ts` counted heading lines
+   with `Range.getClientRects()` over the whole H1; that range also returns
+   the border boxes of the two block-level `.h1-line` spans. The type
+   unification's new metrics separated those container tops from their
+   first line fragment's top (fragment tops 208/279/349/420 at 1440×810,
+   container tops 215/356), so the rounded-top count jumped 4 → 6 while
+   the rendered lockup stayed the intended four lines — every 1440px
+   capture this round concurs. **Fixed:** the counter now walks text nodes
+   and counts only line fragments; the full gate is 6/6 against the
+   production build.
+
+#### P2 (noted, not fixed here)
+
+4. Two price grammars, one product: the landing catalog cards set `$19.00`
+   in wide mono while `/pricing` leads with the display face on
+   proportional figures (Round 10 №2). The catalog cards should adopt the
+   pricing lockup, or `DESIGN_SYSTEM.md` should state the mono-ledger
+   rationale explicitly.
+5. In unconfigured-API production `http` mode the pricing plan CTAs sit at
+   "Loading account…" forever while the inline banner above them already
+   reports the failure; the CTAs could settle into that error state. A
+   demo-rig-only state — invisible in any configured deployment.
+6. The hero terminal's third transcript line rags "late" onto its own line
+   at 1024px (`hero2/laptop-1024-hero.png`).
+7. The wordmark wraps to two lines at 390px and costs the header ~24px
+   (`prod2/landing-mobile-first-viewport.png`).
+
+### Verified green on the merged head
+
+- Rounds 5–10 claims re-verified against the production build: one design
+  system on all five routes (white canvas, Instrument Sans + IBM Plex Mono,
+  iris accents), single-line demo notice at 390px (mock), account
+  two-column workspace with the credits meter (Round 1 P2-8 stays closed),
+  settlement band on both billing returns with correct chip semantics
+  (timeout reads as pending, confirmed earns the medallion), pricing
+  product page with hydrated CTA states (`Current plan` pinned on Starter,
+  preview CTAs live), ledger/matrix/proof composites with staggered
+  reveals and opposed parallax rates.
+- Hero: `drawn=true` with exactly one canvas at 1440/1024/390;
+  reduced-motion mounts no canvas; after the rebake the poster path
+  matches the live composition; full `scripts/run_hero_webgl.sh` gate 6/6
+  against the production build.
+- 0px horizontal overflow at 390px on all six probe routes
+  (`overflow-probe.mjs`, production `http` mode — every banner renders) —
+  measured both before and after this round's CSS fix.
+- vitest 147/147; ESLint and `tsc --noEmit` clean.
+
+### Open items carried forward
+
+- Real-GPU frame budget for the hero remains unasserted (inherited from
+  Round 3; every rig in this log renders on SwiftShader).
+- P2 №4–7 above; the price-grammar unification and the CTA loading state
+  are natural first items for the next polish stream.
+- Poster staleness has now bitten three rounds; if a future round touches
+  the shader again, consider asserting poster freshness (for example a
+  bake stamp committed beside the shader) instead of relying on review to
+  catch the drift.
