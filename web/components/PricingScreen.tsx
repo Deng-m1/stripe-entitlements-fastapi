@@ -574,6 +574,20 @@ function comparisonRows(plans: CatalogPlan[]): ComparisonRow[] {
 }
 
 const pricingLocalStyles = `
+/* Schibsted Grotesk tabular figures give the decimal point a full digit
+   advance, rendering "$19 . 00". Proportional lining figures keep the price
+   compact; the comparison table below keeps tabular-nums for column scans. */
+.pricing-page .price-block strong {
+  font-variant-numeric: normal;
+}
+
+/* A static-positioned scroll container lets the 640px table propagate layout
+   overflow to the document, so phones can pan 154px of dead canvas. Anchoring
+   the wrapper keeps the horizontal scroll inside the card. */
+.pricing-page .comparison-table-wrap {
+  position: relative;
+}
+
 .pricing-page .interval-toggle button {
   align-items: center;
   display: inline-flex;
