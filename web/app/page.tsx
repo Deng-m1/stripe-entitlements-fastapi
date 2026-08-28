@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import type { CSSProperties } from "react";
 import { HeroTerminal } from "@/components/HeroTerminal";
 import { HeroWaveCanvas } from "@/components/HeroWaveCanvas";
 import { LedgerFlow } from "@/components/LedgerFlow";
@@ -149,6 +150,10 @@ const frequentlyAskedQuestions = [
   },
 ];
 
+// Per-item delay for the staggered `data-reveal="group"` entrances.
+const stagger = (index: number): CSSProperties =>
+  ({ "--stagger": index }) as CSSProperties;
+
 const structuredData = {
   "@context": "https://schema.org",
   "@graph": [
@@ -194,7 +199,14 @@ export default function HomePage() {
             <div className="hero-copy">
               <p className="eyebrow">Open-source billing reference</p>
               <h1 id="hero-heading">
-                <span className="h1-line">Billing events are chaos.</span>{" "}
+                {/* "are chaos." is held together: at 1440px the width of
+                    "Billing events are" and the headline column differ by a
+                    few pixels, so font-metric noise used to flip the break
+                    between "…events / are chaos." and "…events are / chaos."
+                    — the latter strands "chaos." as an orphan (review P1-5). */}
+                <span className="h1-line">
+                  Billing events <span className="h1-hold">are chaos.</span>
+                </span>{" "}
                 <span className="h1-line">
                   Your entitlements{" "}
                   <em className="hero-accent">aren&rsquo;t.</em>
@@ -272,14 +284,29 @@ export default function HomePage() {
             </ol>
             <SettlementChart />
           </div>
-          <LedgerFlow />
+          {/* Depth composite (brief §3.3): gradient shadow base and card stack
+              drift at distinct parallax rates; the front card carries the
+              perspective tilt. */}
+          <div className="ledger-stage">
+            <div
+              aria-hidden="true"
+              className="stage-glow ledger-stage-glow parallax-layer"
+              data-depth="-18"
+            />
+            <div className="ledger-stack parallax-layer" data-depth="26">
+              <div aria-hidden="true" className="stage-ghost" />
+              <LedgerFlow />
+            </div>
+          </div>
         </div>
       </section>
 
-      {/* Guarantees — M4 node graph with the duplicate-delivery branch. */}
-      <section aria-labelledby="invariants-heading" className="paper-band">
-        <div className="shell" data-reveal>
-          <div className="section-heading">
+      {/* Guarantees — white node cards layered over the full-width violet
+          gradient band (brief §3.3 / §5.4), with the duplicate-delivery
+          branch ending in the no-op node. */}
+      <section aria-labelledby="invariants-heading" className="pipeline-band">
+        <div className="shell" data-reveal="group">
+          <div className="section-heading reveal-item" style={stagger(0)}>
             <p className="eyebrow">02 · Guarantees, not features</p>
             <h2 id="invariants-heading">
               A Stripe billing reference built on invariants.
@@ -289,17 +316,23 @@ export default function HomePage() {
               transactions project the subscription, entitlement, and credit
               state that product code enforces.
             </p>
-            <a className="button ink" href={REPOSITORY_URL}>
+            <a className="button outline-invert" href={REPOSITORY_URL}>
               Read the code
               <span aria-hidden="true" className="button-arrow">
                 →
               </span>
             </a>
           </div>
-          <PipelineNodeGraph />
+          <div className="band-stage parallax-layer" data-depth="24">
+            <PipelineNodeGraph />
+          </div>
           <ol className="capability-grid">
-            {capabilities.map((capability) => (
-              <li key={capability.title}>
+            {capabilities.map((capability, index) => (
+              <li
+                className="reveal-item"
+                key={capability.title}
+                style={stagger(index + 2)}
+              >
                 <h3>{capability.title}</h3>
                 <p>{capability.body}</p>
               </li>
@@ -320,16 +353,29 @@ export default function HomePage() {
               never has to guess what an upgrade did to an invoice.
             </p>
           </div>
-          <div className="matrix-card">
-            <UpgradeMatrix />
+          {/* Depth-composed matrix card (brief §5.5): mesh glow base behind,
+              faded sibling card, tilted front artifact. */}
+          <div className="matrix-stage">
+            <div
+              aria-hidden="true"
+              className="stage-glow matrix-stage-glow parallax-layer"
+              data-depth="-14"
+            />
+            <div className="matrix-stack parallax-layer" data-depth="22">
+              <div aria-hidden="true" className="stage-ghost" />
+              <div className="matrix-card">
+                <UpgradeMatrix />
+              </div>
+            </div>
           </div>
         </div>
       </section>
 
-      {/* Proof band — M5: the single near-black band on the page. */}
+      {/* Proof band — full-width gradient band over --band-deep (brief §5.6),
+          never flat black. */}
       <section aria-labelledby="gates-heading" className="proof-band">
-        <div className="shell" data-reveal>
-          <div className="proof-heading">
+        <div className="shell" data-reveal="group">
+          <div className="proof-heading reveal-item" style={stagger(0)}>
             <p className="eyebrow">04 · Proof, not promises</p>
             <h2 id="gates-heading">Proven against real Stripe test mode.</h2>
             <p>
@@ -338,7 +384,7 @@ export default function HomePage() {
             </p>
           </div>
           <div className="proof-grid">
-            <div className="proof-artifact">
+            <div className="proof-artifact reveal-item" style={stagger(1)}>
               <table aria-hidden="true" className="proof-table">
                 <tbody>
                   {proofLedger.map((row, index) => (
@@ -352,7 +398,11 @@ export default function HomePage() {
                   ))}
                 </tbody>
               </table>
-              <div aria-label="Settlement report" className="proof-popover">
+              <div
+                aria-label="Settlement report"
+                className="proof-popover"
+                data-depth="26"
+              >
                 <p className="proof-popover-title">Settlement report</p>
                 <dl>
                   <div>
@@ -376,10 +426,16 @@ export default function HomePage() {
               </div>
             </div>
             <div className="proof-gates">
-              <h3>Six gates run the advertised behavior end to end</h3>
+              <h3 className="reveal-item" style={stagger(2)}>
+                Six gates run the advertised behavior end to end
+              </h3>
               <ul className="gate-list">
-                {testGates.map((gate) => (
-                  <li key={gate.key}>
+                {testGates.map((gate, index) => (
+                  <li
+                    className="reveal-item"
+                    key={gate.key}
+                    style={stagger(index + 3)}
+                  >
                     <span aria-hidden="true" className="gate-check" />
                     <div>
                       <code>{gate.command}</code>
@@ -388,7 +444,11 @@ export default function HomePage() {
                   </li>
                 ))}
               </ul>
-              <a className="button outline-invert" href={REPOSITORY_URL}>
+              <a
+                className="button outline-invert reveal-item"
+                href={REPOSITORY_URL}
+                style={stagger(9)}
+              >
                 Run the gates
               </a>
             </div>
@@ -398,8 +458,8 @@ export default function HomePage() {
 
       {/* Catalog teaser + slim SEO table — pure content (tabular SEO surface). */}
       <section aria-labelledby="catalog-heading" className="paper-band">
-        <div className="shell" data-reveal>
-          <div className="section-heading">
+        <div className="shell" data-reveal="group">
+          <div className="section-heading reveal-item" style={stagger(0)}>
             <p className="eyebrow">05 · Bundled reference catalog</p>
             <h2 id="catalog-heading">Three tiers, monthly and annual billing.</h2>
             <p>
@@ -409,13 +469,17 @@ export default function HomePage() {
             </p>
           </div>
           <div className="catalog-tiles">
-            {referencePlans.map((plan) => {
+            {referencePlans.map((plan, index) => {
               const saving = annualSavings(plan);
               const credits = plan.entitlements.find(
                 (item) => item.key === "monthly_credits",
               )?.value;
               return (
-                <div className="catalog-tile" key={plan.key}>
+                <div
+                  className="catalog-tile reveal-item"
+                  key={plan.key}
+                  style={stagger(index + 1)}
+                >
                   <h3>{plan.name}</h3>
                   <p className="catalog-price">
                     {formatMoney(
@@ -436,13 +500,14 @@ export default function HomePage() {
               );
             })}
           </div>
-          <p className="catalog-more">
+          <p className="catalog-more reveal-item" style={stagger(4)}>
             <Link href="/pricing">See the full pricing breakdown →</Link>
           </p>
           <div
             aria-label="Scrollable reference plan comparison"
-            className="comparison-table-wrap"
+            className="comparison-table-wrap reveal-item"
             role="region"
+            style={stagger(5)}
             tabIndex={0}
           >
             <table className="comparison-table">
@@ -501,14 +566,18 @@ export default function HomePage() {
 
       {/* FAQ — pure content, restyled to paper; JSON-LD kept. */}
       <section aria-labelledby="faq-heading" className="paper-band">
-        <div className="shell" data-reveal>
-          <div className="section-heading">
+        <div className="shell" data-reveal="group">
+          <div className="section-heading reveal-item" style={stagger(0)}>
             <p className="eyebrow">06 · Frequently asked questions</p>
             <h2 id="faq-heading">Stripe billing template FAQ</h2>
           </div>
           <div className="faq-list">
-            {frequentlyAskedQuestions.map((item) => (
-              <details key={item.question}>
+            {frequentlyAskedQuestions.map((item, index) => (
+              <details
+                className="reveal-item"
+                key={item.question}
+                style={stagger(index + 1)}
+              >
                 <summary>{item.question}</summary>
                 <p>{item.answer}</p>
               </details>

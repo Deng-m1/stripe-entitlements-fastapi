@@ -463,11 +463,17 @@ h2 {
 
 .hero-wave-fallback {
   opacity: 1;
-  transition: opacity 900ms var(--ease-out-soft);
+  /* No transition in the base state: when the renderer unmounts mid-session
+     (reduced-motion toggled on, WebGL context lost) the canvas disappears in
+     one frame, so the poster must return in the same frame — fading it back
+     in would flash bare paper for 900ms. The fade lives on the drawn state
+     below, so the handover to the live canvas still eases out. */
+  transition: none;
 }
 
 .hero-wave[data-drawn="true"] .hero-wave-fallback {
   opacity: 0;
+  transition: opacity 900ms var(--ease-out-soft);
 }
 
 .paper-hero > .shell {
@@ -521,6 +527,16 @@ h2 {
 
 .h1-line {
   display: block;
+  /* Balance chooses the break that minimises the widest line, which can
+     never strand a lone word — the deterministic fix for the 1440px
+     "chaos." orphan (review P1-5) and a second guard for the laptop-width
+     "Your" strand. Engines without balance fall back to greedy wrapping,
+     where .h1-hold below still holds the fragile pair together. */
+  text-wrap: balance;
+}
+
+.h1-hold {
+  white-space: nowrap;
 }
 
 /* Between the stacked hero and the full desktop shell the display clamp
@@ -828,7 +844,7 @@ h2 {
 .paper-band {
   margin-left: calc(50% - 50vw);
   min-width: 0;
-  padding-block: 104px;
+  padding-block: var(--space-24);
   scroll-margin-top: 90px;
   width: 100vw;
 }
@@ -837,25 +853,71 @@ h2 {
   border-top: 1px solid var(--hairline);
 }
 
-[data-reveal]:not([data-reveal="stage"]) {
+/* ===== Scroll motion, landing sections (brief v3 §3.2) =====
+   Block reveals move the whole [data-reveal] container; "group" reveals
+   stagger .reveal-item children; "stage" keeps the ledger's bespoke
+   connector/row choreography. ScrollReveal.tsx drives all three and the
+   [data-depth] parallax variable below. */
+
+[data-reveal]:not([data-reveal="stage"]):not([data-reveal="group"]) {
   transition:
     opacity 0.7s var(--ease-out-soft),
     transform 0.7s var(--ease-out-soft);
 }
 
-.js-reveal [data-reveal]:not(.is-revealed):not([data-reveal="stage"]) {
+.js-reveal
+  [data-reveal]:not(.is-revealed):not([data-reveal="stage"]):not(
+    [data-reveal="group"]
+  ) {
   opacity: 0;
   transform: translateY(20px);
 }
 
+/* Staggered group entrances. An animation with backwards fill (rather than
+   a transition) keeps each item's --stagger delay out of its own hover
+   transitions, and hands the element back its specified transform (tilts,
+   parallax) once the entrance finishes. */
+
+.js-reveal [data-reveal="group"]:not(.is-revealed) .reveal-item {
+  opacity: 0;
+}
+
+.js-reveal [data-reveal="group"].is-revealed .reveal-item {
+  animation: reveal-rise 0.65s var(--ease-out-soft) backwards;
+  animation-delay: calc(var(--stagger, 0) * 80ms);
+}
+
+@keyframes reveal-rise {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+}
+
+/* Parallax consumers: ScrollReveal writes --parallax-shift onto
+   [data-depth] elements; stacked layers inside one artifact section
+   translate at their own rates (§3.2 requires at least two distinct
+   rates). Desktop-only, matching the JS gate. */
+
+@media (min-width: 851px) {
+  .parallax-layer {
+    transform: translate3d(0, var(--parallax-shift, 0px), 0);
+    will-change: transform;
+  }
+}
+
 .section-heading {
-  margin-bottom: 38px;
+  margin-bottom: var(--space-12);
   max-width: 800px;
 }
 
+/* DESIGN_SYSTEM.md §2.2 H2 scale for landing section heads. */
 .section-heading h2 {
-  font-size: clamp(1.75rem, 3.6vw, 2.7rem);
-  margin-bottom: 14px;
+  font-size: clamp(1.9rem, 1.5rem + 1.8vw, 2.75rem);
+  font-weight: 620;
+  letter-spacing: -0.022em;
+  line-height: 1.08;
+  margin-bottom: var(--space-4);
   text-wrap: balance;
 }
 
@@ -866,8 +928,15 @@ h2 {
   line-height: 1.65;
 }
 
+/* Lede scale under section heads (§2.2). */
+.section-heading > p:not(.eyebrow) {
+  font-size: clamp(1.0625rem, 1rem + 0.4vw, 1.25rem);
+  line-height: 1.55;
+  max-width: 60ch;
+}
+
 .section-heading .button {
-  margin-top: 10px;
+  margin-top: var(--space-3);
 }
 
 /* ===== Sources → ledger (M3) + annotated chart (M1) ===== */
@@ -880,14 +949,18 @@ h2 {
 }
 
 .ledger-intro h2 {
-  font-size: clamp(1.7rem, 3.4vw, 2.4rem);
-  margin-bottom: 14px;
+  font-size: clamp(1.9rem, 1.5rem + 1.8vw, 2.75rem);
+  font-weight: 620;
+  letter-spacing: -0.022em;
+  line-height: 1.08;
+  margin-bottom: var(--space-4);
 }
 
 .section-support {
   color: var(--muted);
-  line-height: 1.65;
-  margin: 0 0 36px;
+  font-size: clamp(1.0625rem, 1rem + 0.4vw, 1.25rem);
+  line-height: 1.55;
+  margin: 0 0 var(--space-8);
   max-width: 44ch;
 }
 
@@ -895,16 +968,37 @@ h2 {
 
 .ledger-steps {
   display: grid;
-  gap: 22px;
+  gap: var(--space-6);
   list-style: none;
-  margin: 0 0 44px;
+  margin: 0 0 var(--space-12);
   padding: 0;
 }
 
+/* Steps cascade in with the stage reveal, one beat apart. */
 .ledger-steps li {
   color: var(--muted);
   display: flex;
-  gap: 14px;
+  gap: var(--space-4);
+  transition:
+    opacity 0.55s var(--ease-out-soft),
+    transform 0.55s var(--ease-out-soft);
+}
+
+.js-reveal [data-reveal="stage"]:not(.is-revealed) .ledger-steps li {
+  opacity: 0;
+  transform: translateY(14px);
+}
+
+.ledger-steps li:nth-child(2) {
+  transition-delay: 0.08s;
+}
+
+.ledger-steps li:nth-child(3) {
+  transition-delay: 0.16s;
+}
+
+.ledger-steps li:nth-child(4) {
+  transition-delay: 0.24s;
 }
 
 .step-marker {
@@ -989,15 +1083,101 @@ h2 {
   top: 12px;
 }
 
-/* The ledger card: sources above, dotted connectors, ordered table below. */
+/* ===== Depth composites (brief §3.3, DESIGN_SYSTEM.md §4.3): gradient
+   shadow base + faded sibling behind + tilted front artifact. The glow and
+   the card stack carry different [data-depth] rates, so they visibly
+   separate while scrolling. ===== */
+
+.ledger-stage,
+.matrix-stage,
+.ledger-stack,
+.matrix-stack {
+  position: relative;
+}
+
+.ledger-stack,
+.matrix-stack {
+  z-index: 1;
+}
+
+.stage-glow {
+  border-radius: 50%;
+  filter: blur(36px);
+  opacity: 0.32;
+  pointer-events: none;
+  position: absolute;
+  z-index: 0;
+}
+
+.ledger-stage-glow {
+  background: radial-gradient(
+    closest-side,
+    var(--mesh-violet) 0%,
+    var(--mesh-pink) 55%,
+    transparent 100%
+  );
+  inset: 6% -2% -4% 4%;
+}
+
+.matrix-stage-glow {
+  background: radial-gradient(
+    closest-side,
+    var(--mesh-pink) 0%,
+    var(--mesh-orange) 60%,
+    transparent 100%
+  );
+  inset: 14% 6% -2% 6%;
+}
+
+/* Faded sibling card (§4.3 stacking: 0.95 scale, offset, ~0.6 opacity). */
+.stage-ghost {
+  background: var(--paper-raised, var(--surface));
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  display: none;
+  inset: 0;
+  opacity: 0.6;
+  pointer-events: none;
+  position: absolute;
+  z-index: 0;
+}
+
+@media (min-width: 851px) {
+  .stage-ghost {
+    display: block;
+  }
+
+  .ledger-stack .stage-ghost {
+    transform: perspective(1400px) rotateX(2deg) rotateY(-3deg)
+      translate(22px, 26px) scale(0.95);
+  }
+
+  /* The front artifact spends the tilt budget (2–4°). */
+  .ledger-stack .ledger-card {
+    transform: perspective(1400px) rotateX(2deg) rotateY(-3deg);
+  }
+
+  .matrix-stack .stage-ghost {
+    transform: perspective(1600px) rotateX(2deg) translate(0, 28px)
+      scale(0.96);
+  }
+
+  .matrix-stack .matrix-card {
+    transform: perspective(1600px) rotateX(2deg);
+  }
+}
+
+/* The ledger card: sources above, dotted connectors, ordered table below.
+   Framed by depth, not a 1px outline (DESIGN_SYSTEM.md §4.2). */
 
 .ledger-card {
   background: var(--paper-raised, var(--surface));
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  box-shadow: var(--shadow-card);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-float);
   margin: 0;
-  padding: 22px 26px 28px;
+  padding: var(--space-6) var(--space-6) var(--space-8);
+  position: relative;
+  z-index: 1;
 }
 
 .ledger-card-label {
@@ -1187,12 +1367,61 @@ h2 {
   background: #b98a3a;
 }
 
-/* ===== Pipeline node graph (M4) ===== */
+/* ===== Pipeline gradient band: white UI cards layered over a full-width
+   violet band (brief §3.3 MUST / §5.4; Stripe's dashboard-section grammar).
+   The band base is --band-deep with mesh-ramp glows — never flat black. ===== */
+
+.pipeline-band {
+  background:
+    radial-gradient(
+      120% 130% at 10% -14%,
+      rgba(122, 90, 248, 0.5),
+      transparent 58%
+    ),
+    radial-gradient(
+      90% 110% at 92% 4%,
+      rgba(255, 92, 143, 0.32),
+      transparent 56%
+    ),
+    radial-gradient(
+      130% 150% at 50% 122%,
+      rgba(70, 56, 201, 0.44),
+      transparent 62%
+    ),
+    var(--band-deep);
+  color: #f6f5ff;
+  margin-left: calc(50% - 50vw);
+  min-width: 0;
+  padding-block: var(--space-32);
+  scroll-margin-top: 90px;
+  width: 100vw;
+}
+
+.pipeline-band .eyebrow {
+  color: rgba(246, 245, 255, 0.68);
+}
+
+.pipeline-band .eyebrow::before {
+  background: linear-gradient(90deg, var(--mesh-pink), var(--mesh-lemon));
+}
+
+.pipeline-band .section-heading h2 {
+  color: #ffffff;
+}
+
+.pipeline-band .section-heading > p:not(.eyebrow) {
+  color: rgba(246, 245, 255, 0.78);
+}
+
+/* ===== Pipeline node graph ===== */
 
 .node-graph {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr) 26px) minmax(0, 1fr);
-  margin-top: 44px;
+}
+
+.band-stage {
+  margin-top: var(--space-12);
 }
 
 .node-card {
@@ -1362,16 +1591,67 @@ h2 {
   text-transform: uppercase;
 }
 
+/* On the gradient band the white cards float on shadow, the connectors and
+   the dashed duplicate branch lighten, and the no-op terminal goes glassy. */
+
+.pipeline-band .node-card {
+  border: 0;
+  box-shadow:
+    0 1px 2px rgba(5, 3, 20, 0.3),
+    0 20px 48px rgba(5, 3, 20, 0.42);
+}
+
+.pipeline-band .node-connector {
+  color: rgba(240, 238, 255, 0.62);
+}
+
+.pipeline-band .branch-elbow {
+  border-color: rgba(240, 238, 255, 0.45);
+}
+
+.pipeline-band .branch-elbow::after {
+  background: rgba(240, 238, 255, 0.62);
+}
+
+.pipeline-band .node-noop {
+  backdrop-filter: blur(6px);
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px dashed rgba(240, 238, 255, 0.5);
+  box-shadow: none;
+  color: #f6f5ff;
+}
+
+.pipeline-band .node-noop .branch-label {
+  color: rgba(246, 245, 255, 0.6);
+}
+
+.pipeline-band .node-noop .chip-plain {
+  border-color: rgba(240, 238, 255, 0.4);
+  color: rgba(246, 245, 255, 0.72);
+}
+
 /* Capability content grid (pure content; feeds the JSON-LD featureList). */
 
 .capability-grid {
   border-top: 1px solid var(--hairline);
   display: grid;
-  gap: 10px 44px;
+  gap: var(--space-3) var(--space-12);
   grid-template-columns: repeat(2, minmax(0, 1fr));
   list-style: none;
-  margin: 56px 0 0;
-  padding: 28px 0 0;
+  margin: var(--space-16) 0 0;
+  padding: var(--space-8) 0 0;
+}
+
+.pipeline-band .capability-grid {
+  border-top-color: rgba(240, 238, 255, 0.22);
+}
+
+.pipeline-band .capability-grid h3 {
+  color: #ffffff;
+}
+
+.pipeline-band .capability-grid p {
+  color: rgba(246, 245, 255, 0.72);
 }
 
 .capability-grid li {
@@ -1392,25 +1672,34 @@ h2 {
 
 .catalog-tiles {
   display: grid;
-  gap: 14px;
+  gap: var(--space-4);
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+/* Depth-framed tiles (§4.2/§4.3): layered shadow instead of a 1px outline,
+   and a lift on hover. */
 .catalog-tile {
   background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  padding: 24px;
-  transition: border-color 0.3s ease;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-8);
+  transition:
+    box-shadow 0.3s ease,
+    transform 0.3s var(--ease-out-soft);
 }
 
 .catalog-tile:hover {
-  border-color: var(--muted);
+  box-shadow: var(--shadow-float);
+  transform: translateY(-4px);
 }
 
+/* DESIGN_SYSTEM.md §2.2 H3 for plan names. */
 .catalog-tile h3 {
-  font-size: 1.02rem;
-  margin: 0 0 12px;
+  font-size: 1.375rem;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  line-height: 1.25;
+  margin: 0 0 var(--space-3);
 }
 
 .catalog-price {
@@ -1444,17 +1733,23 @@ h2 {
 }
 
 .catalog-more a {
-  color: var(--accent);
+  color: var(--iris);
   font-weight: 600;
+}
+
+.catalog-more a:hover {
+  color: var(--iris-strong);
 }
 
 /* Upgrade matrix: static 6 × 6 transition grid inside an M1 paper card. */
 
 .matrix-card {
   background: var(--paper-raised, var(--surface));
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 28px 30px;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-float);
+  padding: var(--space-8);
+  position: relative;
+  z-index: 1;
 }
 
 .upgrade-matrix-layout {
@@ -1580,11 +1875,16 @@ h2 {
   width: 5px;
 }
 
-/* Orange is reserved for the highlighted prorated_delta cell (brief §5.4). */
+/* Orange stays on the highlighted prorated_delta cell (data-visualization
+   semantics); the mesh-ramp glow lifts it off the grid (brief §5.5). */
 
 .upgrade-matrix td.matrix-highlight {
+  box-shadow:
+    0 0 16px rgba(255, 92, 143, 0.45),
+    0 0 40px rgba(122, 90, 248, 0.3);
   outline: 1.5px solid var(--accent);
   outline-offset: -1.5px;
+  z-index: 1;
 }
 
 .upgrade-matrix td.matrix-highlight .matrix-dot {
@@ -1681,35 +1981,54 @@ h2 {
 /* ===== Proof band (M5): the single near-black band on the page ===== */
 
 .proof-band {
-  background: var(--band-ink, #101513);
+  background:
+    radial-gradient(
+      110% 140% at 88% -18%,
+      rgba(122, 90, 248, 0.42),
+      transparent 60%
+    ),
+    radial-gradient(
+      100% 130% at 6% 112%,
+      rgba(255, 92, 143, 0.26),
+      transparent 56%
+    ),
+    var(--band-deep);
   color: #f3f6f3;
   margin-left: calc(50% - 50vw);
   min-width: 0;
-  padding-block: 96px;
+  padding-block: var(--space-32);
   scroll-margin-top: 90px;
   width: 100vw;
 }
 
 .proof-heading {
-  margin: 0 auto 60px;
+  margin: 0 auto var(--space-16);
   max-width: 660px;
   text-align: center;
 }
 
 .proof-band .eyebrow {
-  color: rgba(243, 246, 243, 0.55);
+  color: rgba(243, 246, 243, 0.62);
+}
+
+.proof-band .eyebrow::before {
+  background: linear-gradient(90deg, var(--mesh-pink), var(--mesh-lemon));
 }
 
 .proof-heading h2 {
   color: #ffffff;
-  font-size: clamp(1.8rem, 3.6vw, 2.6rem);
-  margin-bottom: 14px;
+  font-size: clamp(1.9rem, 1.5rem + 1.8vw, 2.75rem);
+  font-weight: 620;
+  letter-spacing: -0.022em;
+  line-height: 1.08;
+  margin-bottom: var(--space-4);
   text-wrap: balance;
 }
 
 .proof-heading p {
-  color: rgba(243, 246, 243, 0.6);
-  line-height: 1.65;
+  color: rgba(243, 246, 243, 0.72);
+  font-size: clamp(1.0625rem, 1rem + 0.4vw, 1.25rem);
+  line-height: 1.55;
   margin: 0;
   text-wrap: balance;
 }
@@ -1766,16 +2085,20 @@ h2 {
   outline-offset: -1px;
 }
 
+/* The popover consumes the parallax variable inside its own centering
+   transform, so it drifts at a different rate than the dimmed table. */
 .proof-popover {
   background: var(--paper-raised, #ffffff);
-  border-radius: 12px;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  border-radius: var(--radius-md);
+  box-shadow:
+    0 24px 64px rgba(0, 0, 0, 0.5),
+    0 0 72px rgba(122, 90, 248, 0.35);
   color: var(--ink, #17201c);
   left: 10%;
   padding: 20px 22px;
   position: absolute;
   top: 50%;
-  transform: translateY(-50%);
+  transform: translateY(calc(-50% + var(--parallax-shift, 0px)));
   width: min(360px, 78%);
 }
 
@@ -1831,9 +2154,11 @@ h2 {
 
 .proof-gates h3 {
   color: #ffffff;
-  font-size: 1.32rem;
-  letter-spacing: -0.01em;
-  margin: 0 0 26px;
+  font-size: 1.375rem;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  line-height: 1.25;
+  margin: 0 0 var(--space-6);
 }
 
 .gate-list {
@@ -1879,14 +2204,14 @@ h2 {
 }
 
 .gate-note {
-  color: rgba(243, 246, 243, 0.55);
+  color: rgba(243, 246, 243, 0.68);
   font-size: 0.82rem;
   line-height: 1.5;
 }
 
-/* Mews' outline mono-caps pill. */
+/* Outline mono-caps pill, shared by both gradient bands. */
 
-.proof-band .button.outline-invert {
+.button.outline-invert {
   background: transparent;
   border: 1px solid rgba(243, 246, 243, 0.6);
   border-radius: 999px;
@@ -1898,7 +2223,7 @@ h2 {
   text-transform: uppercase;
 }
 
-.proof-band .button.outline-invert:hover {
+.button.outline-invert:hover {
   border-color: #ffffff;
 }
 
@@ -2039,15 +2364,18 @@ h2 {
   border-bottom: 1px solid var(--line);
 }
 
+/* FAQ questions read at the §2.2 H4 scale. */
 .faq-list summary {
   align-items: center;
   cursor: pointer;
   display: flex;
-  font-weight: 650;
+  font-size: 1.0625rem;
+  font-weight: 600;
   gap: 18px;
   justify-content: space-between;
+  line-height: 1.4;
   list-style: none;
-  padding: 21px 4px;
+  padding: 20px 4px;
   transition: color 0.2s ease;
 }
 
@@ -2069,11 +2397,11 @@ h2 {
 }
 
 .faq-list summary:hover {
-  color: var(--accent-strong);
+  color: var(--iris-strong);
 }
 
 .faq-list details[open] summary::after {
-  color: var(--accent-strong);
+  color: var(--iris-strong);
   transform: rotate(45deg);
 }
 
@@ -3176,6 +3504,11 @@ body:has(.settlement-band) .page {
     gap: 48px;
   }
 
+  .pipeline-band,
+  .proof-band {
+    padding-block: var(--space-24);
+  }
+
   .proof-grid {
     grid-template-columns: minmax(0, 1fr);
     gap: 24px;
@@ -3229,11 +3562,12 @@ body:has(.settlement-band) .page {
   }
 
   .paper-band {
-    padding-block: 60px;
+    padding-block: var(--space-16);
   }
 
+  .pipeline-band,
   .proof-band {
-    padding-block: 64px;
+    padding-block: var(--space-16);
   }
 
   .settlement-band {
