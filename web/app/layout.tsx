@@ -13,17 +13,23 @@ import {
 } from "@/lib/site";
 import "./globals.css";
 
-const bodyFont = IBM_Plex_Sans({
-  display: "swap",
-  subsets: ["latin"],
-  variable: "--font-body",
-  weight: ["400", "500", "600", "700"],
-});
-
+// Schibsted Grotesk is the display *and* UI face (brief §4). It ships as a
+// 400–900 variable font, so loading it without a `weight` list buys the whole
+// axis in one file and lets the hero set 780 without a second request.
 const displayFont = Schibsted_Grotesk({
   display: "swap",
   subsets: ["latin"],
   variable: "--font-display",
+});
+
+// Kept for long-form prose only (brief §4): Plex Sans holds a lower x-height
+// and looser default tracking, which reads better than a grotesque at FAQ
+// paragraph lengths.
+const proseFont = IBM_Plex_Sans({
+  display: "swap",
+  subsets: ["latin"],
+  variable: "--font-prose",
+  weight: ["400", "500", "600"],
 });
 
 const monoFont = IBM_Plex_Mono({
@@ -95,7 +101,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html
-      className={`${bodyFont.variable} ${displayFont.variable} ${monoFont.variable}`}
+      className={`${displayFont.variable} ${proseFont.variable} ${monoFont.variable}`}
       data-scroll-behavior="smooth"
       lang="en"
     >

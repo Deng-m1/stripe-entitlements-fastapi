@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { HeroTerminal } from "@/components/HeroTerminal";
+import { HeroWaveCanvas } from "@/components/HeroWaveCanvas";
 import { LedgerFlow } from "@/components/LedgerFlow";
 import { PipelineNodeGraph } from "@/components/PipelineNodeGraph";
 import { ScrollReveal } from "@/components/ScrollReveal";
@@ -185,11 +186,16 @@ export default function HomePage() {
       <ScrollReveal />
 
       {/* Hero — M2 composition (left headline, right tilted dark window,
-          event pills) + M6 typography (mono-caps microcopy). */}
+          event pills) + M6 typography (mono-caps microcopy), over the WebGL
+          wave field (brief §6a). */}
       <section aria-labelledby="hero-heading" className="paper-hero">
+        <HeroWaveCanvas />
         <div className="shell">
           <div className="hero-grid">
             <div className="hero-copy">
+              <p className="hero-eyebrow">
+                Open source · Apache-2.0 · FastAPI + PostgreSQL
+              </p>
               <h1 id="hero-heading">
                 <span className="h1-line">Billing events are chaos.</span>{" "}
                 <span className="h1-line">
