@@ -906,6 +906,100 @@ h2 {
   }
 }
 
+/* ===== Scroll progress, sitewide (ScrollMotion.tsx) =====
+   Two registered custom properties carry normalized scroll progress:
+   --scroll-progress covers an element's full traverse of the scrollport
+   (0 entering at the bottom, 0.5 centered, 1 gone past the top) on
+   [data-parallax] elements; --scroll-exit covers only the leave-through-
+   the-top range (0 → 1) on [data-scroll-drift] sections — the hero wave's
+   scroll drift (brief v3 §3.2, "the hero gradient responds to scroll").
+   Browsers with CSS scroll timelines animate the properties natively via
+   the view() timelines below; ScrollMotion.tsx writes the same variables
+   from a rAF scroll listener everywhere else. Every consumer sits behind
+   prefers-reduced-motion: no-preference, so a reduce visitor gets a fully
+   static hero and page — the initial-value poses below are the designed
+   static composition (0.5 is the centered parallax pose, 0 is the parked
+   hero), so no-JS legacy browsers also hold a zero-offset layout. */
+
+@property --scroll-progress {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 0.5;
+}
+
+@property --scroll-exit {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+@keyframes scroll-progress-track {
+  from {
+    --scroll-progress: 0;
+  }
+
+  to {
+    --scroll-progress: 1;
+  }
+}
+
+@keyframes scroll-exit-track {
+  from {
+    --scroll-exit: 0;
+  }
+
+  to {
+    --scroll-exit: 1;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  @supports (animation-timeline: view()) {
+    [data-parallax] {
+      animation-duration: auto;
+      animation-fill-mode: both;
+      animation-name: scroll-progress-track;
+      animation-timeline: view(block);
+      animation-timing-function: linear;
+    }
+
+    [data-scroll-drift] {
+      animation-duration: auto;
+      animation-fill-mode: both;
+      animation-name: scroll-exit-track;
+      animation-range: exit;
+      animation-timeline: view(block);
+      animation-timing-function: linear;
+    }
+  }
+
+  /* Hero scroll drift: the wave layer lags the scroll (down-right) and
+     thins as the hero exits. Wrapper transform only — the shader and its
+     uniforms never see scroll. The poster inside inherits the same drift,
+     so the reduced-capability path that keeps the poster stays coherent. */
+  [data-scroll-drift] .hero-wave {
+    opacity: calc(1 - var(--scroll-exit, 0) * 0.42);
+    transform: translate3d(
+      calc(var(--scroll-exit, 0) * 2.5%),
+      calc(var(--scroll-exit, 0) * 112px),
+      0
+    );
+    will-change: transform, opacity;
+  }
+
+  /* Hero counterpart rate: the terminal floats ahead of the scroll while
+     the wave behind it lags — two visibly distinct rates in the hero. Zero
+     offset at the viewport-centered pose keeps the designed composition. */
+  .hero-artifact[data-parallax] {
+    transform: translate3d(
+      0,
+      calc((0.5 - var(--scroll-progress, 0.5)) * 2 * 18px),
+      0
+    );
+    will-change: transform;
+  }
+}
+
 .section-heading {
   margin-bottom: var(--space-12);
   max-width: 800px;

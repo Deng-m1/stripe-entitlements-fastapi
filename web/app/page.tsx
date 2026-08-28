@@ -191,8 +191,15 @@ export default function HomePage() {
       <ScrollReveal />
 
       {/* Hero — WebGL mesh-gradient wave behind the headline column
-          (brief v3 §3.1), with the static poster as the SSR frame. */}
-      <section aria-labelledby="hero-heading" className="paper-hero">
+          (brief v3 §3.1), with the static poster as the SSR frame.
+          data-scroll-drift feeds ScrollMotion's --scroll-exit contract
+          (§3.2): the wave wrapper drifts and thins as the hero leaves the
+          viewport — wrapper CSS only, the shader never sees scroll. */}
+      <section
+        aria-labelledby="hero-heading"
+        className="paper-hero"
+        data-scroll-drift
+      >
         <HeroWaveCanvas />
         <div className="shell">
           <div className="hero-grid">
@@ -231,7 +238,10 @@ export default function HomePage() {
                 <li>Deterministic upgrades</li>
               </ul>
             </div>
-            <div className="hero-artifact">
+            {/* data-parallax: the terminal floats ahead of the scroll on
+                ScrollMotion's --scroll-progress contract while the wave
+                behind it lags — the hero's two distinct rates. */}
+            <div className="hero-artifact" data-parallax>
               <HeroTerminal />
             </div>
           </div>

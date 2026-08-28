@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Bricolage_Grotesque, Instrument_Sans, Spline_Sans_Mono } from "next/font/google";
 import type { ReactNode } from "react";
 import { DemoNotice } from "@/components/DemoNotice";
+import { ScrollMotion } from "@/components/ScrollMotion";
 import { SiteHeader } from "@/components/SiteHeader";
 import {
   absoluteSiteUrl,
@@ -102,6 +103,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       lang="en"
     >
       <body>
+        {/* Sitewide scroll-progress driver (--scroll-progress /
+            --scroll-exit); renders nothing. Reveals stay per-page in
+            ScrollReveal. */}
+        <ScrollMotion />
         <SiteHeader />
         <DemoNotice />
         <main className="shell page">{children}</main>
