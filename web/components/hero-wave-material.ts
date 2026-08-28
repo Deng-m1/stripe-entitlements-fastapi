@@ -40,6 +40,10 @@ const WAVE_FIELD_GLSL = /* glsl */ `
 // Deliberately high spatial frequency relative to the sheet: a low-frequency
 // field behaves like a tide and slides the whole palette up and down with it,
 // which turns a stable violet-to-amber hero into a colour cycle.
+// Every time coefficient is a multiple of 0.01, so the whole field repeats
+// exactly every 200π seconds of uTime. The render loop wraps uTime on that
+// period, which keeps sin() away from the large arguments where float32
+// precision (and with it the wave's shape) degrades on long sessions.
 float waveField(vec2 p) {
   float w = 0.0;
   w += sin(p.x * 2.05 + uTime * 0.42) * 0.48;
@@ -59,7 +63,9 @@ float sheetEnvelope(vec2 p) {
 
 float displacement(vec2 p) {
   vec2 pointer = uPointer * uSheetSize * 0.5;
-  float reach = distance(p, pointer) * 1.35;
+  // A wider Gaussian than round 2 (1.35 → 1.05): the swell should read as the
+  // sheet leaning toward the visitor, not as a poke mark under the cursor.
+  float reach = distance(p, pointer) * 1.05;
   float swell = exp(-reach * reach) * uPointerStrength;
   return (waveField(p) + swell) * uAmplitude * sheetEnvelope(p);
 }
@@ -108,6 +114,7 @@ void main() {
 
 const FRAGMENT_SHADER = /* glsl */ `
 uniform sampler2D uPalette;
+uniform float uTime;
 uniform vec3 uKeyLight;
 uniform vec3 uFillLight;
 uniform vec3 uSheenColor;
@@ -115,6 +122,7 @@ uniform vec3 uRimColor;
 uniform float uSpecularStrength;
 uniform float uShininess;
 uniform float uRimStrength;
+uniform float uCrestGlow;
 uniform float uOpacity;
 uniform float uRampOrigin;
 uniform float uRampScale;
@@ -141,7 +149,9 @@ void main() {
   float keyWrap = clamp(dot(normal, key) * 0.5 + 0.5, 0.0, 1.0);
   float fillWrap = clamp(dot(normal, fill) * 0.5 + 0.5, 0.0, 1.0);
   float specular = pow(clamp(dot(normal, normalize(key + view)), 0.0, 1.0), uShininess);
-  float rim = pow(1.0 - clamp(dot(normal, view), 0.0, 1.0), 2.6);
+  // A tighter rim exponent than round 2 (2.6 → 3.4) hugs the turning crest
+  // instead of tracing the whole silhouette as a drawn outline.
+  float rim = pow(1.0 - clamp(dot(normal, view), 0.0, 1.0), 3.4);
 
   // Violet at the far corner, lemon at the near one. The sheet is overscaled
   // past the layer and its outer band is dissolved by the alpha term below, so
@@ -151,10 +161,13 @@ void main() {
   // margins and the hero never leaves the magenta middle.
   float diagonal = vUv.x * 0.66 + (1.0 - vUv.y) * 0.34;
   // Position and the baked folds own the ramp; the travelling lift only
-  // nudges it, so the hero keeps one identity while the surface moves.
+  // nudges it, so the hero keeps one identity while the surface moves. A very
+  // slow, very shallow shimmer (period-exact with the wave field) lets hues
+  // breathe along the band without ever cycling the palette.
+  float shimmer = 0.024 * sin(uTime * 0.05 + vUv.x * 2.1 + vUv.y * 1.3);
   float ramp = clamp(
     (diagonal - uRampOrigin) * uRampScale +
-      vFold * 0.26 + vLift * 0.07 + normal.y * 0.1,
+      vFold * 0.26 + vLift * 0.05 + normal.y * 0.1 + shimmer,
     0.0,
     1.0
   );
@@ -165,6 +178,11 @@ void main() {
   // spent on transparency instead (see the alpha term below).
   vec3 shaded = base * (0.8 + 0.26 * keyWrap + 0.18 * lambert);
   shaded += base * 0.1 * fillWrap;
+  // Stripe's ribbon carries a luminous, near-white core along each crest top —
+  // the "silk" read. Mixing toward a lightened copy of the local ramp colour
+  // (not plain white) keeps the highlight in the band's own hue family.
+  float crestCore = smoothstep(0.58, 1.02, vFold * 1.08 + vLift * 0.24);
+  shaded = mix(shaded, mix(base, vec3(1.0), 0.6), crestCore * uCrestGlow);
   shaded += srgbToLinear(uSheenColor) * specular * uSpecularStrength;
   // Rim light peaks exactly on silhouettes. Over a dark canvas that reads as
   // glow; over paper it outlines the sheet, so it is kept low enough to warm
@@ -186,9 +204,15 @@ void main() {
   // The transition band stays short on purpose: saturated ramp colours at
   // 10–40% alpha over warm paper grey out into a dirty mauve, so a long fade
   // reads as smudges on the page rather than as a translucent ribbon edge.
+  // Round 3 tightened the window (0.14–0.52 → 0.18–0.44) so band edges read
+  // as silk folds rather than fog, cut the travelling lift's weight so the
+  // silhouette keeps one identity while the surface moves (the lift used to
+  // open and close whole bands), and added a static width modulation along
+  // the band so the ribbons taper organically the way Stripe's do.
+  float widthVar = 0.07 * sin(vUv.x * 6.3 + vUv.y * 2.4 + 0.8);
   alpha *= mix(
     1.0,
-    smoothstep(0.14, 0.52, vFold * 1.3 + vLift * 0.45),
+    smoothstep(0.18, 0.44, vFold * 1.32 + vLift * 0.18 + widthVar),
     uTroughFade
   );
   alpha *= 0.92 + 0.08 * keyWrap;
@@ -209,18 +233,19 @@ export const HeroWaveMaterial = shaderMaterial(
     uAmplitude: 0.2,
     uSheetSize: new Vector2(3.4, 2.05),
     uPointer: new Vector2(0, 0),
-    uPointerStrength: 0.5,
+    uPointerStrength: 0.55,
     uPalette: null as Texture | null,
     uKeyLight: new Vector3(-0.42, 0.78, 0.62),
     uFillLight: new Vector3(0.68, -0.36, 0.5),
     uSheenColor: new Color("#fff3d6"),
-    uRimColor: new Color("#ffd0f0"),
-    uSpecularStrength: 0.52,
-    uShininess: 92,
-    uRimStrength: 0.12,
+    uRimColor: new Color("#ffddf2"),
+    uSpecularStrength: 0.6,
+    uShininess: 130,
+    uRimStrength: 0.16,
+    uCrestGlow: 0.4,
     uOpacity: 1,
-    uRampOrigin: 0.3,
-    uRampScale: 1.75,
+    uRampOrigin: 0.28,
+    uRampScale: 1.9,
     uTroughFade: 0.97,
   },
   VERTEX_SHADER,
@@ -253,6 +278,7 @@ type HeroWaveMaterialElement = Omit<
   uSpecularStrength?: number;
   uShininess?: number;
   uRimStrength?: number;
+  uCrestGlow?: number;
   uOpacity?: number;
   uRampOrigin?: number;
   uRampScale?: number;

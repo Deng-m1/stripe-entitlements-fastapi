@@ -47,6 +47,15 @@ function prefersLessData(): boolean {
   return connection?.saveData === true;
 }
 
+function rendererAllowed(): boolean {
+  return (
+    typeof window.matchMedia === "function" &&
+    !window.matchMedia("(prefers-reduced-motion: reduce)").matches &&
+    !prefersLessData() &&
+    supportsWebGl()
+  );
+}
+
 export function HeroWaveCanvas() {
   const stage = useRef<HTMLDivElement>(null);
   const pointer = useRef<PointerTarget>({ x: 0, y: 0 });
@@ -56,18 +65,39 @@ export function HeroWaveCanvas() {
   const [tier, setTier] = useState(() => waveQualityTier(1440));
   const [drawn, setDrawn] = useState(false);
 
+  // Whenever the renderer is (re)denied, `drawn` must release with it: the
+  // `data-drawn` handover is reversible, and leaving it latched after the
+  // canvas unmounts would keep the poster at opacity 0 with no canvas behind
+  // it — the hero would vanish to bare paper.
+  const applyRendererState = useCallback((allowed: boolean) => {
+    setEnabled(allowed);
+    if (!allowed) setDrawn(false);
+  }, []);
+
   // Motion consent and renderer capability. Re-evaluated when the visitor
   // changes their reduced-motion preference mid-session.
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
     const query = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const evaluate = () => {
-      setEnabled(!query.matches && !prefersLessData() && supportsWebGl());
-    };
+    const evaluate = () => applyRendererState(rendererAllowed());
     evaluate();
     query.addEventListener("change", evaluate);
     return () => query.removeEventListener("change", evaluate);
-  }, []);
+  }, [applyRendererState]);
+
+  // GPU resets and context eviction land here. Fall back to the poster now;
+  // re-probe once, after the driver has had a moment, so a transient reset
+  // restores the live wave and a genuinely gone GPU keeps the poster.
+  const contextProbe = useRef<number | undefined>(undefined);
+  const handleContextLost = useCallback(() => {
+    applyRendererState(false);
+    window.clearTimeout(contextProbe.current);
+    contextProbe.current = window.setTimeout(
+      () => applyRendererState(rendererAllowed()),
+      1_500,
+    );
+  }, [applyRendererState]);
+  useEffect(() => () => window.clearTimeout(contextProbe.current), []);
 
   // Subdivision follows the rendered width, so a phone never builds a sheet
   // sized for a 27-inch display.
@@ -117,6 +147,9 @@ export function HeroWaveCanvas() {
 
   // Pointer tracking is bound to the window, not the canvas: the canvas is
   // pointer-transparent so the headline and CTAs above it stay clickable.
+  // When the pointer leaves the window (or the window loses focus) the target
+  // returns to rest, so the swell drifts home instead of freezing wherever
+  // the cursor happened to exit — Stripe's wave settles the same way.
   useEffect(() => {
     if (!enabled) return;
     const track = (event: PointerEvent) => {
@@ -133,8 +166,22 @@ export function HeroWaveCanvas() {
         Math.min(1.6, 1 - ((event.clientY - bounds.top) / bounds.height) * 2),
       );
     };
+    const rest = () => {
+      pointer.current.x = 0;
+      pointer.current.y = 0;
+    };
+    const trackExit = (event: PointerEvent) => {
+      if (!event.relatedTarget) rest();
+    };
     window.addEventListener("pointermove", track, { passive: true });
-    return () => window.removeEventListener("pointermove", track);
+    window.addEventListener("pointerout", trackExit, { passive: true });
+    window.addEventListener("blur", rest);
+    return () => {
+      window.removeEventListener("pointermove", track);
+      window.removeEventListener("pointerout", trackExit);
+      window.removeEventListener("blur", rest);
+      rest();
+    };
   }, [enabled]);
 
   const handleDrawn = useCallback(() => setDrawn(true), []);
@@ -164,6 +211,7 @@ export function HeroWaveCanvas() {
       {enabled ? (
         <HeroWaveScene
           active={visible && pageVisible}
+          onContextLost={handleContextLost}
           onDrawn={handleDrawn}
           pointer={pointer}
           segmentsX={tier.segmentsX}

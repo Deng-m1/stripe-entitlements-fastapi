@@ -32,20 +32,22 @@ export const MESH_STOPS = {
 
 /**
  * The ramp the hero samples. The four anchors sit at their design-system
- * values; the interleaved stops only shape *where* the ramp spends its length,
- * pulling extra resolution into the violet-to-pink crossover that the fold
- * crests occupy on screen. A deep violet leads in so the sheet has somewhere
- * darker than `--mesh-violet` to fall away to.
+ * values; the interleaved stops only shape *where* the ramp spends its length.
+ * Round 3 rebalanced it against the stripe.com/zh-us capture: the magenta
+ * middle used to own almost half the ramp and the hero read as one pink wash,
+ * so pink now peaks earlier and the warm half (coral → orange → amber →
+ * lemon) gets a third of the length. A deeper indigo leads in so the sheet
+ * has somewhere darker than `--mesh-violet` to fall away to.
  */
 export const HERO_WAVE_PALETTE: readonly PaletteStop[] = [
-  { offset: 0.0, color: [86, 46, 214] },
-  { offset: 0.16, color: MESH_STOPS.violet },
-  { offset: 0.32, color: [166, 78, 240] },
-  { offset: 0.46, color: [223, 83, 197] },
-  { offset: 0.58, color: MESH_STOPS.pink },
-  { offset: 0.7, color: [255, 108, 98] },
-  { offset: 0.82, color: MESH_STOPS.orange },
-  { offset: 0.92, color: [255, 175, 55] },
+  { offset: 0.0, color: [70, 40, 210] },
+  { offset: 0.14, color: MESH_STOPS.violet },
+  { offset: 0.3, color: [168, 80, 242] },
+  { offset: 0.44, color: [226, 84, 196] },
+  { offset: 0.55, color: MESH_STOPS.pink },
+  { offset: 0.67, color: [255, 110, 96] },
+  { offset: 0.78, color: MESH_STOPS.orange },
+  { offset: 0.9, color: [255, 178, 54] },
   { offset: 1.0, color: MESH_STOPS.lemon },
 ];
 

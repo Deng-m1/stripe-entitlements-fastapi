@@ -51,7 +51,19 @@ export interface HeroWaveSceneProps {
   active: boolean;
   /** Fires once the renderer has actually put pixels on the canvas. */
   onDrawn: () => void;
+  /** Fires when the browser revokes the WebGL context (GPU reset, eviction). */
+  onContextLost: () => void;
 }
+
+/**
+ * Exact repeat period of the shader's wave field: every time coefficient in
+ * `waveField`/the ramp shimmer is a multiple of 0.01, so 200π seconds later
+ * every sin() argument has advanced by a whole number of turns. Wrapping
+ * uTime on this period is invisible on screen and keeps the float32 sine
+ * arguments small on long-lived tabs, where precision loss would otherwise
+ * warp the wave.
+ */
+export const WAVE_TIME_PERIOD = Math.PI * 200;
 
 function toBufferGeometry(data: WaveGeometryData): BufferGeometry {
   const geometry = new BufferGeometry();
@@ -159,6 +171,7 @@ function WaveSheet({
   segmentsY,
   pointer,
   onDrawn,
+  onContextLost,
 }: Omit<HeroWaveSceneProps, "active">) {
   const material = useRef<HeroWaveMaterialImpl>(null);
   const geometry = useWaveGeometry(segmentsX, segmentsY);
@@ -166,14 +179,25 @@ function WaveSheet({
   const eased = useRef({ x: 0, y: 0 });
   const drawnFrames = useRef(0);
   const viewport = useThree((state) => state.viewport);
+  const gl = useThree((state) => state.gl);
+
+  // A lost context leaves a blank canvas behind; the host has to know so it
+  // can bring the poster back instead of showing bare paper.
+  useEffect(() => {
+    const canvas = gl.domElement;
+    const handleLost = () => onContextLost();
+    canvas.addEventListener("webglcontextlost", handleLost);
+    return () => canvas.removeEventListener("webglcontextlost", handleLost);
+  }, [gl, onContextLost]);
 
   useFrame((_, delta) => {
     const impl = material.current;
     if (!impl) return;
 
     // Clamped so a tab returning from the background advances the wave by one
-    // frame instead of by the whole time it spent hidden.
-    impl.uTime += Math.min(delta, 1 / 30);
+    // frame instead of by the whole time it spent hidden; wrapped on the
+    // field's exact repeat period so long sessions never lose sine precision.
+    impl.uTime = (impl.uTime + Math.min(delta, 1 / 30)) % WAVE_TIME_PERIOD;
 
     // Frame-rate independent exponential easing toward the live pointer.
     const blend = 1 - Math.pow(0.0016, delta);
@@ -239,6 +263,7 @@ export function HeroWaveScene({
   pointer,
   active,
   onDrawn,
+  onContextLost,
 }: HeroWaveSceneProps) {
   const ceiling = useMemo(
     () => Math.min(2, typeof window === "undefined" ? 1 : window.devicePixelRatio),
@@ -270,6 +295,7 @@ export function HeroWaveScene({
         onIncline={() => setDpr(ceiling)}
       />
       <WaveSheet
+        onContextLost={onContextLost}
         onDrawn={onDrawn}
         pointer={pointer}
         segmentsX={segmentsX}
