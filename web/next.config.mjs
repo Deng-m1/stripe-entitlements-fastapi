@@ -21,6 +21,10 @@ validatePublicBillingBuildEnvironment(
   process.env.NEXT_PUBLIC_DEMO_BEARER_TOKEN,
 );
 
+const allowedDevOrigins = ["127.0.0.1"];
+const previewDevOrigin = process.env.NEXT_ALLOWED_DEV_ORIGIN?.trim();
+if (previewDevOrigin) allowedDevOrigins.push(previewDevOrigin);
+
 /** @type {import("next").NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -28,7 +32,7 @@ const nextConfig = {
   // Without this, a dev preview opened via 127.0.0.1 serves HTML but never
   // hydrates (no errors; effects and clicks are silently dead), which breaks
   // every mock-mode review of /pricing and /account. Dev-only setting.
-  allowedDevOrigins: ["127.0.0.1"],
+  allowedDevOrigins,
   async headers() {
     return [
       {

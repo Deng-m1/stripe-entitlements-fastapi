@@ -1,6 +1,10 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HeroWaveCanvas } from "@/components/HeroWaveCanvas";
+
+vi.mock("@/components/HeroWaveScene", () => ({
+  HeroWaveScene: () => <canvas data-testid="hero-wave-scene" />,
+}));
 
 /**
  * jsdom has no WebGL and no IntersectionObserver, which is exactly the
@@ -24,6 +28,7 @@ function withMatchMedia(reducedMotion: boolean) {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -58,6 +63,26 @@ describe("HeroWaveCanvas", () => {
     expect(container.querySelector(".hero-wave")).not.toHaveAttribute(
       "data-drawn",
     );
+  });
+
+  it("loads the renderer when WebGL is available and motion is allowed", async () => {
+    withMatchMedia(false);
+    vi.stubGlobal("WebGLRenderingContext", class WebGLRenderingContext {});
+    const context = {
+      getExtension: vi.fn(() => ({ loseContext: vi.fn() })),
+    } as unknown as WebGL2RenderingContext;
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
+      ((contextId: string) =>
+        contextId === "webgl2"
+          ? context
+          : null) as typeof HTMLCanvasElement.prototype.getContext,
+    );
+
+    render(<HeroWaveCanvas />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("hero-wave-scene")).toBeInTheDocument();
+    });
   });
 
   it("keeps the renderer unmounted when reduced motion is requested", () => {

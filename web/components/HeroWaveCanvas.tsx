@@ -1,6 +1,5 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PointerTarget } from "@/components/HeroWaveScene";
 import { waveQualityTier } from "@/lib/hero-wave-geometry";
@@ -19,10 +18,8 @@ import { waveQualityTier } from "@/lib/hero-wave-geometry";
  * own hero wave.
  */
 
-const HeroWaveScene = dynamic(
-  () => import("@/components/HeroWaveScene").then((module) => module.HeroWaveScene),
-  { ssr: false },
-);
+type HeroWaveSceneComponent =
+  typeof import("@/components/HeroWaveScene").HeroWaveScene;
 
 function supportsWebGl(): boolean {
   if (typeof WebGLRenderingContext === "undefined") return false;
@@ -60,6 +57,7 @@ export function HeroWaveCanvas() {
   const stage = useRef<HTMLDivElement>(null);
   const pointer = useRef<PointerTarget>({ x: 0, y: 0 });
   const [enabled, setEnabled] = useState(false);
+  const [Scene, setScene] = useState<HeroWaveSceneComponent | null>(null);
   const [visible, setVisible] = useState(true);
   const [pageVisible, setPageVisible] = useState(true);
   const [tier, setTier] = useState(() => waveQualityTier(1440));
@@ -84,6 +82,29 @@ export function HeroWaveCanvas() {
     query.addEventListener("change", evaluate);
     return () => query.removeEventListener("change", evaluate);
   }, [applyRendererState]);
+
+  // Load the renderer only after the capability/consent gate has passed.
+  // An explicit import is used instead of next/dynamic here because a client-
+  // only dynamic component toggled on from a hydration effect can remain in a
+  // pending Suspense boundary under Next development servers. In that state
+  // the loader entry arrives but its Three.js/R3F chunks are never requested,
+  // leaving capable browsers on the poster indefinitely.
+  useEffect(() => {
+    if (!enabled || Scene) return;
+    let current = true;
+    void import("@/components/HeroWaveScene")
+      .then((module) => {
+        if (current) setScene(() => module.HeroWaveScene);
+      })
+      .catch(() => {
+        // A renderer chunk failure is a degradation condition, not a reason to
+        // replace the usable poster with an application error boundary.
+        if (current) applyRendererState(false);
+      });
+    return () => {
+      current = false;
+    };
+  }, [Scene, applyRendererState, enabled]);
 
   // GPU resets and context eviction land here. Fall back to the poster now;
   // re-probe once, after the driver has had a moment, so a transient reset
@@ -208,8 +229,8 @@ export function HeroWaveCanvas() {
             encoded at its delivery sizes, so next/image adds nothing. */}
         <img alt="" decoding="async" fetchPriority="high" src="/hero-wave-desktop.png" />
       </picture>
-      {enabled ? (
-        <HeroWaveScene
+      {enabled && Scene ? (
+        <Scene
           active={visible && pageVisible}
           onContextLost={handleContextLost}
           onDrawn={handleDrawn}
