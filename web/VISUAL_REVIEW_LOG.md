@@ -128,3 +128,55 @@ survive the restyle; overflow still 0 px at 390 px on all three pages.
 Open items carried to the next round: P1-5 hero rag (re-check after the WebGL
 hero lands), P2-7 demo banner height on mobile, P2-8 sparse credits card,
 P2-10 terminal legibility at 390 px.
+
+---
+
+## Round 3 — WebGL hero landing — 2026-08-28
+
+- Stream: WebGL hero implementation
+- Reviewed at: branch `cursor/landing-settlement-field`, isolated worktree,
+  `next build` + `next start` (production, not dev — the fallback handover and
+  the dynamically imported renderer chunk both behave differently under the
+  dev overlay)
+- Screenshots: `/tmp/hero-webgl-v1/` — `{desktop-1440,laptop-1024,mobile-390}`
+  plus `desktop-1440-late` (phase stability) and
+  `desktop-1440-reduced-motion` (poster path), each as full page and hero crop,
+  with `report.json` recording per-viewport `drawn` / canvas count / renderer
+- Renderer under review: `ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device
+  (Subzero)), SwiftShader driver)` — software rasterisation, so the frame
+  timings here say nothing about a GPU-backed visitor
+
+### Fixed this round
+
+1. **Neither end of the brand ramp reached the screen.** The palette ramp was
+   spread across the whole sheet while the alpha term dissolved its outer
+   band, so violet and lemon landed inside the dissolved margins and the hero
+   rendered as a magenta-to-coral wash. Ramp re-origined onto the window that
+   survives the dissolve.
+2. **The sheet drew its own outline.** Rim light peaks on silhouettes, which
+   reads as glow over a dark canvas and as a drawn edge over paper; combined
+   with a narrow trough window it put a ruled diagonal across the hero at
+   1024 px. Rim reduced, edge and trough falloffs widened.
+3. **The 390 px wave was a corner smudge.** The stacked breakpoint inherited a
+   mask whose job is to clear a headline column that does not exist in a
+   stacked layout; it multiplied with the shader's own left dissolve. The band
+   now keeps a lateral gradient that never reaches full transparency.
+4. **The baked poster contained page content.** The capture took a locator
+   screenshot of a layer whose negative insets overhang the section below, so
+   the following section's copy and cards were baked into the fallback every
+   visitor on the poster path saw. The capture now isolates the layer.
+
+### Verified green
+
+- WebGL context, animation, and both degradation paths are gated by
+  `promo/hero-webgl.spec.ts` (`scripts/run_hero_webgl.sh`), not by eye.
+- Reduced-motion poster and live render are visually interchangeable at
+  1440 px, which is the point of baking the poster from the renderer itself.
+
+### Known gaps
+
+- `THREE.Clock` deprecation warning originates inside `@react-three/fiber`;
+  nothing in this repo constructs it.
+- Frame cost is unmeasured on real GPUs. `PerformanceMonitor` drops DPR on
+  decline, but no budget has been asserted against hardware.
+- P1-5 (hero headline rag at 1440 px) is still open and now unblocked.
