@@ -308,3 +308,71 @@ P2-10 terminal legibility at 390 px.
   the hero ribbon must be re-read against the new white canvas — the trough
   dissolve currently melts into warm paper `#faf6ef`, and pure white will
   slightly raise the band's apparent contrast.
+
+---
+
+## Round 5 — settlement moment (/billing/success, /billing/error) — 2026-08-28
+
+- Stream: billing-route settlement redesign (fable 5)
+- Reviewed at: commit `ea1086b` (branch `cursor/landing-settlement-field`),
+  isolated worktrees — `next build` + `next start` on one port (production,
+  http mode: honest failure states) and `next dev` + mock on another
+  (hydrated polling/confirmed states)
+- Screenshots: `/tmp/billing-v2/` — 14 shots via the new
+  `scripts/billing-shots.mjs` rig covering every reachable screen state:
+  `error-{payment-failed,payment-canceled,authentication-failed,fallback}`,
+  `success-{invalid,timedout-banner,polling,timedout,confirmed}` at
+  1440×900 and 390×844
+
+### What changed
+
+1. **Both billing returns now sit on one M5 settlement band.** A full-bleed
+   gradient band over the new `--band-deep: #0f0a2e` token (§3.5 — violet
+   radial top-left, pink radial bottom-right, faint orange glint; never flat
+   black) frames a single white settlement card (≤ 640px) with a blurred
+   mesh gradient shadow base under it (§4.3). Pure CSS — the §5.4
+   zero-heavy-JS clause holds; no canvas, no new client JS.
+2. **Status chips carry the semantics.** Mono-caps chip on the card:
+   `Webhook verified` (`--success`) only after the projection is confirmed;
+   `Awaiting webhook`/`Unconfirmed` (`--warning`) while polling or timed
+   out; `Unverifiable`/`No state change` (`--danger`) for invalid returns
+   and stopped billing actions. The old mark misfiled timed-out as danger —
+   a timed-out poll is pending, not failed (§3.4).
+3. **The celebratory element is earned, not assumed.** The §5.4 mesh-ramp
+   medallion (conic ring, white core, `--success` check) renders only in the
+   webhook-confirmed state; the bare redirect keeps a neutral mark.
+4. **CTA grammar per §5.4:** one filled primary (`View account` /
+   `Review account`) + one outline secondary (`Back to pricing`); a
+   timed-out return promotes the safe retry (`Check account state again`)
+   to the primary slot.
+5. **Display hold-back documented:** the card H1 uses
+   `clamp(2.05rem, 1.6rem + 1.9vw, 2.85rem)`; the unmoderated §2.2 clamp
+   shatters a status sentence inside the 640px card. Logged as a §5.4
+   amendment in `DESIGN_SYSTEM.md` together with the band framing, chip
+   semantics, and the accent-token note (CTAs bind to `--accent`, so the
+   routes inherit iris automatically when the §3.3 migration lands).
+
+### Verified green
+
+- 0 px horizontal overflow at 390 px on all six probe routes against the
+  production build in http mode (worst historical mode — every banner
+  renders), including the two `/billing/error` routes newly added to
+  `scripts/overflow-probe.mjs`; every `billing-shots.mjs` capture also
+  reports 0 px at both widths.
+- Computed-style probes on the running build: band shows the layered
+  violet/pink gradient over `#0f0a2e`; card is a centered 640px white plane;
+  medallion is the conic mesh ring with `--success` check; chips resolve to
+  the semantic token pairs; error card at 390px is 358px wide with the H1 on
+  two lines.
+- Unit suite 139/139, ESLint, `tsc --noEmit` clean; SuccessScreen behavior
+  (polling, idempotency-key completion, restart) untouched — all existing
+  headings and copy asserted by `BillingScreens.test.tsx` unchanged.
+
+### Open items
+
+- The settlement band should be re-read against the white-canvas/iris
+  restyle when that stream lands — the band gradient already samples the
+  mesh ramp, but the card CTAs will flip from settlement orange to iris via
+  the shared token.
+- `visual-review-pages.mjs` now includes `/billing/error?code=payment_failed`
+  so future full-site rounds cover both settlement routes.
