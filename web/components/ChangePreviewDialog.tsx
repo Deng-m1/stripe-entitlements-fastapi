@@ -23,10 +23,10 @@ const previewRouteStyles = `
 }
 
 .preview-route-to {
-  background: #eef3ff;
-  border-color: #c5d3f4;
+  background: var(--accent-soft);
+  border-color: rgba(227, 90, 31, 0.35);
   color: var(--text);
-  font-weight: 740;
+  font-weight: 650;
 }
 
 .preview-route-arrow {

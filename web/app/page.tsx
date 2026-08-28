@@ -185,17 +185,14 @@ export default function HomePage() {
       />
       <ScrollReveal />
 
-      {/* Hero — M2 composition (left headline, right tilted dark window,
-          event pills) + M6 typography (mono-caps microcopy), over the WebGL
-          wave field (brief §6a). */}
+      {/* Hero — WebGL mesh-gradient wave behind the headline column
+          (brief v3 §3.1), with the static poster as the SSR frame. */}
       <section aria-labelledby="hero-heading" className="paper-hero">
         <HeroWaveCanvas />
         <div className="shell">
           <div className="hero-grid">
             <div className="hero-copy">
-              <p className="hero-eyebrow">
-                Open source · Apache-2.0 · FastAPI + PostgreSQL
-              </p>
+              <p className="eyebrow">Open-source billing reference</p>
               <h1 id="hero-heading">
                 <span className="h1-line">Billing events are chaos.</span>{" "}
                 <span className="h1-line">
@@ -250,7 +247,7 @@ export default function HomePage() {
       >
         <div className="shell ledger-grid">
           <div className="ledger-intro">
-            <p className="eyebrow">How it works</p>
+            <p className="eyebrow">01 · How it works</p>
             <h2 id="ledger-heading">
               Out-of-order events in. An ordered ledger out.
             </h2>
@@ -283,7 +280,7 @@ export default function HomePage() {
       <section aria-labelledby="invariants-heading" className="paper-band">
         <div className="shell" data-reveal>
           <div className="section-heading">
-            <p className="eyebrow">Guarantees, not features</p>
+            <p className="eyebrow">02 · Guarantees, not features</p>
             <h2 id="invariants-heading">
               A Stripe billing reference built on invariants.
             </h2>
@@ -315,7 +312,7 @@ export default function HomePage() {
       <section aria-labelledby="matrix-heading" className="paper-band">
         <div className="shell" data-reveal>
           <div className="section-heading">
-            <p className="eyebrow">The upgrade matrix</p>
+            <p className="eyebrow">03 · The upgrade matrix</p>
             <h2 id="matrix-heading">All 36 plan transitions, defined.</h2>
             <p>
               Three plans, two intervals, no undefined cell. Every source state
@@ -333,7 +330,7 @@ export default function HomePage() {
       <section aria-labelledby="gates-heading" className="proof-band">
         <div className="shell" data-reveal>
           <div className="proof-heading">
-            <p className="eyebrow">Proof, not promises</p>
+            <p className="eyebrow">04 · Proof, not promises</p>
             <h2 id="gates-heading">Proven against real Stripe test mode.</h2>
             <p>
               The payment lifecycle has automated gates against real Stripe
@@ -403,7 +400,7 @@ export default function HomePage() {
       <section aria-labelledby="catalog-heading" className="paper-band">
         <div className="shell" data-reveal>
           <div className="section-heading">
-            <p className="eyebrow">Bundled reference catalog</p>
+            <p className="eyebrow">05 · Bundled reference catalog</p>
             <h2 id="catalog-heading">Three tiers, monthly and annual billing.</h2>
             <p>
               Prices are explicit billing data. Stable plan rank controls
@@ -506,7 +503,7 @@ export default function HomePage() {
       <section aria-labelledby="faq-heading" className="paper-band">
         <div className="shell" data-reveal>
           <div className="section-heading">
-            <p className="eyebrow">Frequently asked questions</p>
+            <p className="eyebrow">06 · Frequently asked questions</p>
             <h2 id="faq-heading">Stripe billing template FAQ</h2>
           </div>
           <div className="faq-list">

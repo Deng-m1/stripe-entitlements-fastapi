@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Mono, IBM_Plex_Sans, Schibsted_Grotesk } from "next/font/google";
+import { Bricolage_Grotesque, Instrument_Sans, Spline_Sans_Mono } from "next/font/google";
 import type { ReactNode } from "react";
 import { DemoNotice } from "@/components/DemoNotice";
 import { SiteHeader } from "@/components/SiteHeader";
@@ -13,30 +13,26 @@ import {
 } from "@/lib/site";
 import "./globals.css";
 
-// Schibsted Grotesk is the display *and* UI face (brief §4). It ships as a
-// 400–900 variable font, so loading it without a `weight` list buys the whole
-// axis in one file and lets the hero set 780 without a second request.
-const displayFont = Schibsted_Grotesk({
+// Site typography (tokens in globals.css): a characterful grotesque for
+// display work, a quiet grotesque for body copy, and a mono for ledger
+// figures, eyebrows, and microcopy. All three load as variable fonts.
+const bodyFont = Instrument_Sans({
+  display: "swap",
+  subsets: ["latin"],
+  variable: "--font-body",
+});
+
+const displayFont = Bricolage_Grotesque({
+  axes: ["opsz"],
   display: "swap",
   subsets: ["latin"],
   variable: "--font-display",
 });
 
-// Kept for long-form prose only (brief §4): Plex Sans holds a lower x-height
-// and looser default tracking, which reads better than a grotesque at FAQ
-// paragraph lengths.
-const proseFont = IBM_Plex_Sans({
-  display: "swap",
-  subsets: ["latin"],
-  variable: "--font-prose",
-  weight: ["400", "500", "600"],
-});
-
-const monoFont = IBM_Plex_Mono({
+const monoFont = Spline_Sans_Mono({
   display: "swap",
   subsets: ["latin"],
   variable: "--font-mono",
-  weight: ["400", "500", "600"],
 });
 
 export const metadata: Metadata = {
@@ -101,7 +97,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html
-      className={`${displayFont.variable} ${proseFont.variable} ${monoFont.variable}`}
+      className={`${bodyFont.variable} ${displayFont.variable} ${monoFont.variable}`}
       data-scroll-behavior="smooth"
       lang="en"
     >

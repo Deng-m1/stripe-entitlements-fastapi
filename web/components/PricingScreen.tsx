@@ -376,6 +376,7 @@ export function PricingScreen({
       </div>
 
       <section aria-labelledby="plan-comparison-heading" className="pricing-compare">
+        <p className="eyebrow">Catalog truth</p>
         <h2 id="plan-comparison-heading">Compare plans</h2>
         <p>
           Every value below comes from the same catalog the billing server enforces.
@@ -598,31 +599,37 @@ const pricingLocalStyles = `
   background: var(--success-soft);
   border-radius: 999px;
   color: var(--success);
-  font-size: 0.72rem;
-  font-weight: 780;
+  font-size: 0.7rem;
+  font-weight: 700;
   letter-spacing: 0.02em;
   padding: 2px 8px;
 }
 
+.pricing-page .interval-toggle button.active .toggle-save {
+  background: rgba(250, 246, 239, 0.18);
+  color: var(--paper);
+}
+
 .pricing-page .pricing-featured {
-  border-color: var(--brand);
-  box-shadow: 0 18px 45px rgba(32, 85, 214, 0.16);
+  border-color: var(--ink);
+  box-shadow: 0 16px 40px rgba(23, 32, 28, 0.1);
   position: relative;
 }
 
 .pricing-page .pricing-flag {
-  background: var(--brand);
+  background: var(--accent);
   border-radius: 999px;
   color: #fff;
-  font-size: 0.7rem;
-  font-weight: 780;
-  letter-spacing: 0.08em;
+  font-family: var(--font-mono-stack);
+  font-size: 0.64rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
   margin: 0;
-  padding: 4px 12px;
+  padding: 5px 12px;
   position: absolute;
   right: 20px;
   text-transform: uppercase;
-  top: -12px;
+  top: -13px;
 }
 
 .pricing-page .price-block .saving {
@@ -636,12 +643,12 @@ const pricingLocalStyles = `
 .pricing-page .pricing-inherits {
   color: var(--text);
   font-size: 0.85rem;
-  font-weight: 740;
+  font-weight: 600;
   margin: 0 0 -16px;
 }
 
 .pricing-page .pricing-compare {
-  margin-top: 56px;
+  margin-top: 72px;
 }
 
 .pricing-page .pricing-compare h2 {
@@ -657,12 +664,12 @@ const pricingLocalStyles = `
 
 .pricing-page .comparison-table th[scope="row"] {
   color: var(--muted);
-  font-weight: 650;
+  font-weight: 550;
 }
 
 .pricing-page .pricing-included {
   color: var(--success);
-  font-weight: 800;
+  font-weight: 700;
 }
 
 .pricing-page .pricing-excluded {
