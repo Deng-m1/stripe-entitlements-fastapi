@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e:stripe": "playwright test --config=playwright.stripe.config.ts",
-    "test:promo": "playwright test --config=playwright.promo.config.ts"
+    "test:promo": "playwright test --config=playwright.promo.config.ts",
+    "test:hero": "playwright test --config=playwright.hero.config.ts"
   },
   "dependencies": {
     "@react-three/drei": "10.7.8",
