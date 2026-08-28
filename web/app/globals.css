@@ -56,7 +56,7 @@
   --warning-soft: #f9f0dc;
   --danger: #b3261c;
   --danger-soft: #fdecea;
-  --radius-lg: 14px;
+  --radius-lg: 16px;
   --radius-md: 10px;
   --radius-sm: 8px;
   --shadow-card:
@@ -69,6 +69,14 @@
   --font-mono-stack:
     var(--font-mono, "Spline Sans Mono"), ui-monospace, "SFMono-Regular",
     Menlo, Consolas, monospace;
+  --shadow-float:
+    0 2px 4px rgba(23, 32, 28, 0.07),
+    0 24px 56px rgba(23, 32, 28, 0.13);
+  /* DESIGN_SYSTEM.md 2.2 Display scale, shared verbatim by the landing hero
+     and the /pricing route title so both H1s provably set from one token. */
+  --type-display: clamp(2.75rem, 2rem + 3.2vw, 4.25rem);
+  --type-display-tracking: -0.028em;
+  --type-display-leading: 1.04;
   --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
   font-family: var(--font-body-stack);
 }
@@ -483,11 +491,11 @@ h2 {
 }
 
 .hero-copy h1 {
-  /* DESIGN_SYSTEM.md §2.2 Display scale. */
-  font-size: clamp(2.75rem, 2rem + 3.2vw, 4.25rem);
+  /* DESIGN_SYSTEM.md 2.2 Display scale (one token shared with /pricing). */
+  font-size: var(--type-display);
   font-weight: 640;
-  letter-spacing: -0.028em;
-  line-height: 1.04;
+  letter-spacing: var(--type-display-tracking);
+  line-height: var(--type-display-leading);
   margin: 0 0 24px;
 }
 
@@ -2365,7 +2373,9 @@ h2 {
   font-family: var(--font-mono-stack);
   font-size: 0.84rem;
   font-weight: 500;
-  margin: 0;
+  /* margin-left keeps a wrapped value hugging the right edge, matching the
+     unwrapped rows above it. */
+  margin: 0 0 0 auto;
   min-width: 0;
   text-align: right;
 }
@@ -3333,4 +3343,440 @@ body:has(.settlement-band) .page {
 
 body:has(.landing-page) .page {
   padding-block: 0;
+}
+
+/* ===== /pricing product page (DESIGN_SYSTEM.md 5.2) ===== */
+
+body:has(.pricing-route) .page {
+  padding-block: 0 84px;
+}
+
+.pricing-hero {
+  margin-left: calc(50% - 50vw);
+  overflow: clip;
+  padding-block: 118px 46px;
+  position: relative;
+  width: 100vw;
+}
+
+.pricing-hero .shell {
+  position: relative;
+  z-index: 1;
+}
+
+.pricing-hero .hero {
+  margin-bottom: 36px;
+}
+
+.pricing-hero h1 {
+  font-size: var(--type-display);
+  letter-spacing: var(--type-display-tracking);
+  line-height: var(--type-display-leading);
+}
+
+.pricing-hero .hero > p:not(.eyebrow) {
+  font-size: 1.12rem;
+  letter-spacing: -0.004em;
+  line-height: 1.62;
+}
+
+/* The slim gradient ribbon (DESIGN_SYSTEM.md 5.2): one crisp mesh-ramp band
+   exiting both viewport edges plus its blurred glow, masked out before the
+   headline baseline so ink-on-paper contrast never depends on it. */
+.pricing-ribbon {
+  inset: 0;
+  mask-image: linear-gradient(to bottom, #000 52%, transparent 94%);
+  pointer-events: none;
+  position: absolute;
+}
+
+.pricing-ribbon::before,
+.pricing-ribbon::after {
+  background: var(--gradient-accent);
+  border-radius: 999px;
+  content: "";
+  height: 168px;
+  left: -14%;
+  position: absolute;
+  right: -14%;
+  top: -86px;
+  transform: rotate(-3.4deg);
+}
+
+.pricing-ribbon::before {
+  filter: blur(46px);
+  height: 214px;
+  opacity: 0.38;
+  top: -64px;
+}
+
+.pricing-ribbon::after {
+  opacity: 0.92;
+}
+
+/* Pricing's one gradient phrase uses the warm two-thirds of the mesh ramp
+   so the tail never lands on the low-contrast lemon stop. */
+.pricing-accent {
+  color: var(--accent);
+  font-style: normal;
+}
+
+@supports (background-clip: text) or (-webkit-background-clip: text) {
+  .pricing-accent {
+    -webkit-background-clip: text;
+    background-clip: text;
+    background-image: linear-gradient(
+      96deg,
+      var(--mesh-violet) 0%,
+      var(--mesh-pink) 55%,
+      var(--mesh-orange) 100%
+    );
+    color: transparent;
+  }
+}
+
+.pricing-hero .interval-toggle {
+  box-shadow: var(--shadow-card);
+  margin-bottom: 24px;
+}
+
+.pricing-page .interval-toggle button {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+}
+
+.pricing-page .toggle-save {
+  background: var(--success-soft);
+  border-radius: 999px;
+  color: var(--success);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 2px 8px;
+}
+
+.pricing-page .interval-toggle button.active .toggle-save {
+  background: rgba(250, 246, 239, 0.18);
+  color: var(--paper);
+}
+
+/* Mono-caps guarantee strip: the same voice as the landing hero microcopy. */
+.pricing-microcopy {
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-family: var(--font-mono-stack);
+  font-size: 0.68rem;
+  font-weight: 600;
+  gap: 8px 16px;
+  justify-content: center;
+  letter-spacing: 0.18em;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  text-transform: uppercase;
+}
+
+.pricing-microcopy li {
+  align-items: center;
+  display: inline-flex;
+  gap: 16px;
+}
+
+.pricing-microcopy li + li::before {
+  background: var(--accent);
+  border-radius: 50%;
+  content: "";
+  height: 4px;
+  width: 4px;
+}
+
+.pricing-hero :is(.success-banner, .inline-error, .account-loading) {
+  margin: 26px auto 0;
+}
+
+.pricing-page .plan-grid {
+  gap: 22px;
+  margin-top: 34px;
+}
+
+.pricing-page .plan-card {
+  padding: 30px;
+  position: relative;
+}
+
+/* Desktop silhouette: the featured tier stands a step taller than its
+   neighbours while all three keep one baseline. */
+@media (min-width: 851px) {
+  .pricing-page .plan-card:not(.pricing-featured) {
+    margin-top: 26px;
+  }
+}
+
+.pricing-page .pricing-featured {
+  background:
+    linear-gradient(var(--surface), var(--surface)) padding-box,
+    linear-gradient(
+        120deg,
+        rgba(122, 90, 248, 0.62),
+        rgba(255, 92, 143, 0.55) 38%,
+        rgba(255, 138, 60, 0.55) 72%,
+        rgba(255, 212, 77, 0.62)
+      )
+      border-box;
+  border-color: transparent;
+  box-shadow: var(--shadow-float);
+}
+
+.pricing-page .pricing-featured:hover {
+  border-color: transparent;
+}
+
+/* Gradient shadow base (DESIGN_SYSTEM.md 4.3): only the featured tier gets
+   the blurred mesh underlay in addition to the layered shadow. */
+.pricing-page .pricing-featured::before {
+  background: var(--gradient-accent);
+  border-radius: inherit;
+  content: "";
+  filter: blur(30px);
+  inset: 18px -10px -6px;
+  opacity: 0.17;
+  position: absolute;
+  z-index: -1;
+}
+
+.pricing-page .pricing-flag {
+  background: var(--ink);
+  border-radius: 999px;
+  box-shadow: 0 10px 22px rgba(23, 32, 28, 0.28);
+  color: var(--paper);
+  font-family: var(--font-mono-stack);
+  font-size: 0.64rem;
+  font-weight: 600;
+  left: 50%;
+  letter-spacing: 0.16em;
+  margin: 0;
+  padding: 6px 14px;
+  position: absolute;
+  text-transform: uppercase;
+  top: -14px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  z-index: 1;
+}
+
+.pricing-page .pricing-inherits {
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  margin: 0 0 -14px;
+}
+
+/* Price lockup: the figure leads on the display face with proportional
+   lining figures (Bricolage's tabular decimal point takes a full digit
+   advance and would render "$19 . 00"); the interval rides the baseline in
+   the mono voice. Comparison figures below keep tabular-nums for scans. */
+.pricing-page .price-block {
+  border-bottom: 1px solid var(--hairline);
+  display: grid;
+  gap: 3px;
+  min-height: 118px;
+  padding-bottom: 18px;
+}
+
+.pricing-page .price-row {
+  align-items: baseline;
+  display: flex;
+  gap: 9px;
+}
+
+.pricing-page .price-row strong {
+  font-family: var(--font-display-stack);
+  font-size: 2.85rem;
+  font-variant-numeric: normal;
+  font-weight: 640;
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+
+.pricing-page .price-row > span {
+  color: var(--muted);
+  font-family: var(--font-mono-stack);
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.pricing-page .price-block small {
+  color: var(--muted);
+  display: block;
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.pricing-page .price-block .saving {
+  background: var(--success-soft);
+  border-radius: 999px;
+  color: var(--success);
+  font-weight: 700;
+  justify-self: start;
+  margin-top: 6px;
+  padding: 3px 10px;
+}
+
+.pricing-page .pricing-compare {
+  margin-top: 84px;
+}
+
+.pricing-page .pricing-compare h2 {
+  font-size: clamp(1.7rem, 3vw, 2.3rem);
+  margin-bottom: 10px;
+}
+
+.pricing-page .pricing-compare > p {
+  color: var(--muted);
+  line-height: 1.65;
+  max-width: 760px;
+}
+
+/* A static-positioned scroll container lets the 640px table propagate
+   layout overflow to the document; anchoring the wrapper keeps the
+   horizontal pan inside the card. */
+.pricing-page .comparison-table-wrap {
+  position: relative;
+}
+
+.pricing-page .comparison-table th,
+.pricing-page .comparison-table td {
+  padding: 15px 18px;
+}
+
+.pricing-page .comparison-table th[scope="row"] {
+  color: var(--muted);
+  font-weight: 550;
+}
+
+/* Sunken stripes on the row axis; the featured tint rides the column. */
+.pricing-page .comparison-table tbody tr:nth-child(even) {
+  background: var(--surface-soft);
+}
+
+.pricing-page .comparison-table .compare-featured {
+  background: rgba(227, 90, 31, 0.055);
+}
+
+.pricing-page .comparison-table thead th.compare-featured {
+  background: var(--accent-soft);
+  box-shadow: inset 0 2px 0 var(--accent);
+  color: var(--text);
+}
+
+.pricing-page .pricing-included {
+  color: var(--success);
+  font-weight: 700;
+}
+
+.pricing-page .pricing-excluded {
+  color: var(--muted);
+}
+
+.pricing-page .pricing-sr {
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+.pricing-page .pricing-footnote {
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.6;
+  margin: 14px 0 0;
+  max-width: 760px;
+}
+
+/* Closing CTA: quiet hairline-opened band, one orange fill on the page. */
+.pricing-cta {
+  align-items: center;
+  border-top: 1px solid var(--hairline);
+  display: grid;
+  gap: 28px 64px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin-top: 84px;
+  padding-top: 56px;
+}
+
+.pricing-cta h2 {
+  font-size: clamp(1.55rem, 2.6vw, 2.1rem);
+  margin-bottom: 10px;
+}
+
+.pricing-cta > div > p:last-child {
+  color: var(--muted);
+  line-height: 1.65;
+  margin: 0;
+  max-width: 52ch;
+}
+
+.pricing-cta-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+@media (max-width: 850px) {
+  .pricing-hero {
+    padding-block: 92px 40px;
+  }
+
+  /* Phones scan the table by panning; pin the row-header column so every
+     value keeps its label. Stripes need opaque paint on the pinned cells. */
+  .pricing-page .comparison-table thead th:first-child,
+  .pricing-page .comparison-table tbody th[scope="row"] {
+    box-shadow: inset -1px 0 0 var(--line);
+    left: 0;
+    position: sticky;
+    z-index: 2;
+  }
+
+  .pricing-page .comparison-table tbody th[scope="row"] {
+    background: var(--surface);
+  }
+
+  .pricing-page .comparison-table tbody tr:nth-child(even) th[scope="row"] {
+    background: var(--surface-soft);
+  }
+
+  .pricing-cta {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .pricing-hero {
+    padding-block: 80px 32px;
+  }
+
+  .pricing-page .plan-grid {
+    margin-top: 30px;
+  }
+
+  .pricing-page .price-row strong {
+    font-size: 2.4rem;
+  }
+
+  .pricing-page .comparison-table th,
+  .pricing-page .comparison-table td {
+    padding: 13px 14px;
+  }
+
+  .pricing-page .table-scroll-hint {
+    margin-bottom: 10px;
+  }
 }
