@@ -37,11 +37,27 @@ export function createSocialImage(): ImageResponse {
       <div
         style={{
           backgroundImage: [
-            `radial-gradient(46% 82% at 74% 6%, ${MESH_VIOLET}cc, transparent 68%)`,
-            `radial-gradient(42% 76% at 92% 34%, ${MESH_PINK}c4, transparent 66%)`,
-            `radial-gradient(40% 70% at 70% 62%, ${MESH_ORANGE}b0, transparent 68%)`,
-            `radial-gradient(34% 58% at 96% 76%, ${MESH_LEMON}a8, transparent 70%)`,
+            `radial-gradient(42% 80% at 80% 4%, ${MESH_VIOLET}cc, transparent 68%)`,
+            `radial-gradient(38% 72% at 96% 32%, ${MESH_PINK}c4, transparent 66%)`,
+            `radial-gradient(34% 62% at 80% 66%, ${MESH_ORANGE}b0, transparent 68%)`,
+            `radial-gradient(30% 54% at 100% 82%, ${MESH_LEMON}a8, transparent 70%)`,
           ].join(", "),
+          display: "flex",
+          height: "100%",
+          left: 0,
+          position: "absolute",
+          top: 0,
+          width: "100%",
+        }}
+      />
+      {/* Where the four ramp stops overlap at low alpha they average out to a
+          grey wash. Fading white back across the copy column keeps the ink on
+          the pristine canvas the system asks for and leaves the atmosphere in
+          the corner the hero's wave occupies. */}
+      <div
+        style={{
+          backgroundImage:
+            "linear-gradient(96deg, #ffffff 30%, rgba(255, 255, 255, 0.72) 52%, rgba(255, 255, 255, 0) 76%)",
           display: "flex",
           height: "100%",
           left: 0,
