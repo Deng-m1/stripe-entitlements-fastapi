@@ -9,6 +9,8 @@ __pycache__/
 *.py[cod]
 dist/
 build/
+!/typescript/src/build/
+!/typescript/src/build/copy-resources.ts
 node_modules/
 /typescript/node_modules
 /web/node_modules

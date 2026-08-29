@@ -54,6 +54,10 @@ describe("real browser runner frontend boundary", () => {
   it("migrates with the selected implementation and builds the private TypeScript host", () => {
     const migration = markedBlock("E2E_BACKEND_MIGRATION");
 
+    expect(runner).toContain(
+      'e2e_typescript_build_dir="$e2e_repo_root/typescript/node_modules/.cache/stripe-entitlements-e2e-$e2e_run_id"',
+    );
+    expect(runner).toContain('rm -rf -- "$e2e_typescript_build_dir"');
     expect(migration).toContain(
       'if [[ "$e2e_backend_implementation" == "python" ]]',
     );
@@ -165,9 +169,13 @@ describe("real browser runner frontend boundary", () => {
   });
 
   it("builds and serves the production bundle instead of using next dev", () => {
+    const packageBuild = markedBlock("E2E_TYPESCRIPT_PACKAGE_BUILD_ENV");
     const build = markedBlock("E2E_FRONTEND_BUILD_ENV");
     const start = markedBlock("E2E_FRONTEND_START_ENV");
 
+    expect(packageBuild).toContain("exec env -i");
+    expect(packageBuild).toContain("npm run build");
+    expect(runner.indexOf(packageBuild)).toBeLessThan(runner.indexOf(build));
     expect(build).toContain("exec env -i");
     expect(build).toContain("./node_modules/.bin/next build");
     expect(start).toContain("exec env -i");
@@ -182,8 +190,15 @@ describe("real browser runner frontend boundary", () => {
     expect(productionHttpsServer).toContain("app.getRequestHandler()");
   });
 
+  it("reasserts editable Checkout identity immediately before every payment submit", () => {
+    expect(stripeBrowserSpec).toMatch(
+      /async function submitCheckout\(page: Page\): Promise<void> \{[\s\S]*?await fillCheckoutIdentity\(page\);[\s\S]*?await submit\.click\(\);/u,
+    );
+  });
+
   it("keeps server secrets and signed auth outside build and start environments", () => {
     for (const block of [
+      markedBlock("E2E_TYPESCRIPT_PACKAGE_BUILD_ENV"),
       markedBlock("E2E_FRONTEND_BUILD_ENV"),
       markedBlock("E2E_FRONTEND_START_ENV"),
     ]) {

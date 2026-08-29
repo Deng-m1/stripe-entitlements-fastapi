@@ -9,7 +9,7 @@
       production evidence.
 - [ ] Bind every pass claim to the exact commit. The uncommitted 0.4.0 candidate passed
       1,254 Python tests with 10 `real_stripe` tests deselected, 804 TypeScript tests across
-      50 files, and 207 Web tests across 19 files. Those counts are working-tree evidence,
+      50 files, and 208 Web tests across 19 files. Those counts are working-tree evidence,
       not a release identity; rerun all applicable artifact, container, Stripe-network,
       and four browser/backend-policy gates on the final commit. Keep older
       239/7/60/2 and 270/9/62/2 results historical, and do not relabel the failed

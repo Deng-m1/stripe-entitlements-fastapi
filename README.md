@@ -584,7 +584,7 @@ not prove the current tree against Stripe's network.
 
 The current uncommitted 0.4.0 working tree passed 1,254 network-free Python tests against
 disposable PostgreSQL 17 (with 10 `real_stripe` tests deselected), 804 native TypeScript
-tests across 50 files under its full coverage/build gate, and 207 reference-Web tests
+tests across 50 files under its full coverage/build gate, and 208 reference-Web tests
 across 19 files. Python lint/type checking/audit, both TypeScript npm audits, and Web
 lint/type checking/npm audits also passed. These working-tree results are not yet bound
 to a final commit. The clean Web production build, final Python/npm distributions, container,

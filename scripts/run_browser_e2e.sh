@@ -59,7 +59,7 @@ e2e_external_ref="v1:user:${e2e_user_id}"
 e2e_description="stripe-entitlements-browser-e2e-$e2e_run_id"
 e2e_pg_container="stripe-entitlements-browser-e2e-pg-$$"
 e2e_tmp_dir="$(mktemp -d /tmp/stripe-entitlements-browser-e2e.XXXXXX)"
-e2e_typescript_build_dir="$e2e_tmp_dir/typescript-e2e"
+e2e_typescript_build_dir="$e2e_repo_root/typescript/node_modules/.cache/stripe-entitlements-e2e-$e2e_run_id"
 e2e_endpoint_state="$e2e_tmp_dir/webhook.json"
 e2e_cleanup_manifest="$e2e_tmp_dir/cleanup-manifest.json"
 e2e_account_state="$e2e_tmp_dir/account.json"
@@ -365,6 +365,16 @@ e2e_cleanup() {
       fi
       ;;
   esac
+  if [[ "$e2e_typescript_build_dir" != \
+        "$e2e_repo_root/typescript/node_modules/.cache/stripe-entitlements-e2e-$e2e_run_id" ]]; then
+    echo "browser E2E TypeScript build directory has an unsafe path" >&2
+    e2e_cleanup_failed=1
+  elif [[ -e "$e2e_typescript_build_dir" || -L "$e2e_typescript_build_dir" ]]; then
+    if ! rm -rf -- "$e2e_typescript_build_dir"; then
+      echo "browser E2E TypeScript build cleanup failed" >&2
+      e2e_cleanup_failed=1
+    fi
+  fi
   if ! rm -f "$e2e_endpoint_state" "$e2e_auth_state" "$e2e_jwks_state" \
       "$e2e_loopback_key" "$e2e_cloudflared_config"; then
     echo "browser E2E credential-state cleanup failed" >&2
@@ -907,6 +917,27 @@ if stat.S_IMODE(manifest_path.stat().st_mode) != 0o600:
     raise RuntimeError("cleanup manifest mode is not exactly 0600")
 '
 # E2E_CLEANUP_MANIFEST_SEED_END
+
+# The checked-in Web application consumes the native TypeScript backend as a local
+# package. A clean npm install exposes that package before its generated `dist/`
+# exports exist, while the normal `npm run build` path creates them in `prebuild`.
+# The E2E runner invokes Next directly to keep the build environment explicit, so it
+# must reproduce that package build under its own secret-free allowlist first.
+# E2E_TYPESCRIPT_PACKAGE_BUILD_ENV_BEGIN
+if ! (
+  cd typescript
+  exec env -i \
+    PATH="$e2e_child_path" \
+    HOME="$e2e_child_home" \
+    TMPDIR="$e2e_child_tmp" \
+    LANG="$e2e_child_lang" \
+    NODE_ENV=production \
+    npm run build
+) >"$e2e_tmp_dir/typescript-package-build.log" 2>&1; then
+  echo "TypeScript package build failed; inspect the retained typescript-package-build.log" >&2
+  exit 1
+fi
+# E2E_TYPESCRIPT_PACKAGE_BUILD_ENV_END
 
 # E2E_FRONTEND_BUILD_ENV_BEGIN
 if ! (

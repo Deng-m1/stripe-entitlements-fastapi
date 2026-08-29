@@ -1131,6 +1131,10 @@ async function selectCardPaymentMethodIfPresented(page: Page): Promise<void> {
 }
 
 async function submitCheckout(page: Page): Promise<void> {
+  // Hosted Checkout can remount and clear an editable contact field after card or
+  // payment-method interaction. Reassert the identity immediately before every
+  // submission so a local "Required" validation cannot masquerade as a card result.
+  await fillCheckoutIdentity(page);
   // Some Checkout configurations opt into Link by default after email/card input.
   // Leaving it checked introduces an unrelated phone/OTP flow and prevents the card
   // decline or 3DS PaymentIntent from being submitted.
