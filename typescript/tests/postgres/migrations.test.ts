@@ -3,13 +3,14 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { CORRECTNESS_TABLES, Database } from "../../src/database.js";
 import { defaultMigrationDirectory } from "../../src/resources.js";
 import {
   createDisposableDatabase,
   dropDisposableDatabase,
+  postgresDatabase,
 } from "../support/postgres-setup.js";
 
 const BASELINE = "001_v3_baseline.sql";
@@ -75,6 +76,78 @@ describe("migration runner", () => {
     } finally {
       await database.close();
       await dropDisposableDatabase(temporary.name);
+    }
+  });
+
+  test("waits for test-owned sessions to close before dropping a database", async () => {
+    const temporary = await createDisposableDatabase("ts_migration_drop_wait");
+    const database = new Database(temporary.dsn);
+    let drop: Promise<void> | undefined;
+    try {
+      await database.connect();
+      drop = dropDisposableDatabase(temporary.name);
+      const earlyResult = await Promise.race([
+        drop.then(() => "dropped" as const),
+        new Promise<"waiting">((resolve) =>
+          setTimeout(() => resolve("waiting"), 50),
+        ),
+      ]);
+      expect(earlyResult).toBe("waiting");
+
+      await database.close();
+      await drop;
+      const remaining = await postgresDatabase().query<{
+        readonly count: string;
+      }>("select count(*)::text as count from pg_database where datname=$1", [
+        temporary.name,
+      ]);
+      expect(remaining.rows[0]?.count).toBe("0");
+    } finally {
+      await database.close();
+      await dropDisposableDatabase(temporary.name);
+      await drop;
+    }
+  });
+
+  test("reports a leaked session instead of force-dropping its database", async () => {
+    const temporary = await createDisposableDatabase("ts_migration_drop_leak");
+    const database = new Database(temporary.dsn);
+    try {
+      await database.connect();
+      await expect(
+        dropDisposableDatabase(temporary.name, 50),
+      ).rejects.toMatchObject({ code: "55006" });
+
+      const stillConnected = await database.query<{ readonly value: number }>(
+        "select 1 as value",
+      );
+      expect(stillConnected.rows[0]?.value).toBe(1);
+      const remaining = await postgresDatabase().query<{
+        readonly count: string;
+      }>("select count(*)::text as count from pg_database where datname=$1", [
+        temporary.name,
+      ]);
+      expect(remaining.rows[0]?.count).toBe("1");
+    } finally {
+      await database.close();
+      await dropDisposableDatabase(temporary.name);
+    }
+  });
+
+  test("does not retry unrelated database administration failures", async () => {
+    const failure = Object.assign(new Error("connection failed"), {
+      code: "08006",
+    });
+    const query = vi
+      .spyOn(postgresDatabase(), "query")
+      .mockRejectedValueOnce(failure);
+    try {
+      await expect(
+        dropDisposableDatabase("ts_migration_drop_failure_probe"),
+      ).rejects.toBe(failure);
+      expect(query).toHaveBeenCalledTimes(1);
+    } finally {
+      query.mockRestore();
     }
   });
 
