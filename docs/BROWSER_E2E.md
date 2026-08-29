@@ -49,6 +49,13 @@ The opt-in Playwright gate drives the real Next.js UI and a real Stripe-hosted
     a terminal refund only on the failed Job, and subscription/pack provenance that
     sums to the final browser projection.
 
+Every browser POST that can touch Stripe—subscription Checkout, credit-pack Checkout,
+Portal creation, plan-change preview, and plan-change confirmation—carries
+`X-Stripe-Mode-Requirement: test`. Both runtimes reject the request before Stripe I/O
+when the backend cannot satisfy that assertion. This is a per-request safety belt; it
+does not replace the shell's `sk_test_` guard or the browser's pre-write `/health`
+attestation.
+
 The redirect and either SCA completion are never treated as entitlement proof. The browser
 test captures the application's authenticated `GET /api/account` response. The full
 runner additionally requires exactly five identity-bound essential Events in
@@ -153,16 +160,30 @@ Portal policy before the run:
 uv run python scripts/bootstrap_stripe.py --verify-only
 ```
 
-Then invoke the orchestrator once per policy from the repository root:
+Then invoke the orchestrator once per backend and policy from the repository root. The
+default backend remains `python`; `typescript` builds and starts the native Node host.
+All four runs execute the same Playwright spec and final PostgreSQL verifier:
 
 ```bash
 case "$STRIPE_SECRET_KEY" in sk_test_*) ;; *) exit 2 ;; esac
 case "$STRIPE_PUBLISHABLE_KEY" in pk_test_*) ;; *) exit 2 ;; esac
 E2E_STRIPE_EVENT_API_VERSION=2026-06-24.dahlia \
+E2E_BACKEND_IMPLEMENTATION=python \
 E2E_TRANSITION_POLICY=full_period_reset \
   scripts/run_browser_e2e.sh
 
 E2E_STRIPE_EVENT_API_VERSION=2026-06-24.dahlia \
+E2E_BACKEND_IMPLEMENTATION=python \
+E2E_TRANSITION_POLICY=prorated_delta \
+  scripts/run_browser_e2e.sh
+
+E2E_STRIPE_EVENT_API_VERSION=2026-06-24.dahlia \
+E2E_BACKEND_IMPLEMENTATION=typescript \
+E2E_TRANSITION_POLICY=full_period_reset \
+  scripts/run_browser_e2e.sh
+
+E2E_STRIPE_EVENT_API_VERSION=2026-06-24.dahlia \
+E2E_BACKEND_IMPLEMENTATION=typescript \
 E2E_TRANSITION_POLICY=prorated_delta \
   scripts/run_browser_e2e.sh
 ```
@@ -211,11 +232,13 @@ The runner:
 
 - starts a disposable, memory-backed PostgreSQL 17 container on a loopback-only random
   port;
-- checks PostgreSQL from the host, then applies the real migrations;
+- checks PostgreSQL from the host, then applies the real migrations with the selected
+  backend CLI;
 - creates one ephemeral RSA key in memory, persists only its public JWKS and two
   mode-`0600` short-lived JWTs, and gives the account a canonical
   `v1:user:<UUID>` Personal Auth subject;
-- starts the host with `APP_ENV=production`, `PersonalJwtAuthAdapter`, an HTTPS JWKS
+- starts the selected FastAPI or native TypeScript host with `APP_ENV=production`,
+  `PersonalJwtAuthAdapter`, an HTTPS JWKS
   URL, and a separate workload-audience verifier; no demo adapter is configured;
 - verifies the shared Stripe test catalog and resolves the dedicated safe Portal
   configuration before creating any run-owned Stripe object;
@@ -259,6 +282,8 @@ The runner:
   overall run if any cleanup step fails;
 - treats `E2E_OUTPUT_DIR` as an artifact root, creates and prints a unique child for
   every run, and never recursively deletes the caller-supplied root;
+- writes `evidence.json` only after the browser journey, final PostgreSQL verifier,
+  process/account/Stripe cleanup, and retained-artifact secret scan all pass; and
 - removes the disposable database and local processes.
 
 The runner builds and launches the directly tracked Next.js production process rather
@@ -289,7 +314,11 @@ does not pass this variable into Chromium.
 
 The runner reports `E2E passed` only after the final database verifier and every cleanup
 step succeed. On success the private temporary directory is removed and the unique
-artifact child remains at the printed path. On failure, the runner removes the
+artifact child remains at the printed path. Its mode-`0600` `evidence.json` binds the
+run ID, Git commit and dirty flag, selected backend and transition policy, webhook
+transport, request/Event API versions, and passed browser/database/cleanup statuses.
+The file is written atomically from a strict allowlist and rescanned before success is
+reported. On failure, no success evidence is written and the runner removes the
 signing-secret state, JWT/JWKS files, and loopback private key. Before reporting either
 success or failure it rewrites every retained service log and browser artifact through a
 fail-closed scan for Stripe restricted/secret keys, webhook secrets, JWTs, Stripe client
@@ -364,20 +393,21 @@ recovery manifest, final database/Event verification, and strict teardown, use
 
 Optional variables:
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `E2E_WEBHOOK_TIMEOUT_MS` | `180000` | Account-projection deadline; 10–600 seconds |
-| `E2E_CUSTOMER_EMAIL` | `browser-checkout@example.test` | Fills an editable Checkout email field |
-| `E2E_HEADLESS` | headless | Set to `0` for local visual diagnosis |
-| `E2E_POSTGRES_IMAGE` | `postgres:17-alpine` | Trusted PostgreSQL 17 image override for the full runner |
-| `E2E_DECLINE_STABILITY_SECONDS` | `10` | DB/Stripe decline barrier; 10–60 seconds |
-| `E2E_TRANSITION_POLICY` | `full_period_reset` in the full runner | Upgrade template; run both values for release evidence |
-| `E2E_UPGRADE_PAYMENT_METHOD` | `pm_card_authenticationRequired` | Allowlisted upgrade fixture; default exercises Stripe.js SCA |
-| `E2E_STORAGE_STATE` | unset locally; required remotely | Private mode-`0600` Playwright auth state for the exact isolated subject |
-| `E2E_WEBHOOK_TRANSPORT` | `endpoint` | `endpoint` for release evidence or explicit `stripe_cli` signed forwarding for local diagnosis/recording |
-| `E2E_RECORD_VIDEO` | `0` | Set to `1` to retain one Playwright video per page |
-| `E2E_DEMO_PAUSE_MS` | `0` | Recording-only scene hold, 0–5,000 ms; assertions do not depend on it |
-| `E2E_OUTPUT_DIR` | policy-specific ignored root | Artifact root; the runner creates and prints a unique per-run child and never deletes the root |
+| Variable                        | Default                                  | Purpose                                                                                                  |
+| ------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `E2E_WEBHOOK_TIMEOUT_MS`        | `180000`                                 | Account-projection deadline; 10–600 seconds                                                              |
+| `E2E_CUSTOMER_EMAIL`            | `browser-checkout@example.test`          | Fills an editable Checkout email field                                                                   |
+| `E2E_HEADLESS`                  | headless                                 | Set to `0` for local visual diagnosis                                                                    |
+| `E2E_POSTGRES_IMAGE`            | `postgres:17-alpine`                     | Trusted PostgreSQL 17 image override for the full runner                                                 |
+| `E2E_DECLINE_STABILITY_SECONDS` | `10`                                     | DB/Stripe decline barrier; 10–60 seconds                                                                 |
+| `E2E_TRANSITION_POLICY`         | `full_period_reset` in the full runner   | Upgrade template; run both values for release evidence                                                   |
+| `E2E_BACKEND_IMPLEMENTATION`    | `python`                                 | Backend runtime; accepts only `python` or `typescript`, and release evidence runs both                   |
+| `E2E_UPGRADE_PAYMENT_METHOD`    | `pm_card_authenticationRequired`         | Allowlisted upgrade fixture; default exercises Stripe.js SCA                                             |
+| `E2E_STORAGE_STATE`             | unset locally; required remotely         | Private mode-`0600` Playwright auth state for the exact isolated subject                                 |
+| `E2E_WEBHOOK_TRANSPORT`         | `endpoint`                               | `endpoint` for release evidence or explicit `stripe_cli` signed forwarding for local diagnosis/recording |
+| `E2E_RECORD_VIDEO`              | `0`                                      | Set to `1` to retain one Playwright video per page                                                       |
+| `E2E_DEMO_PAUSE_MS`             | `0`                                      | Recording-only scene hold, 0–5,000 ms; assertions do not depend on it                                    |
+| `E2E_OUTPUT_DIR`                | backend-and-policy-specific ignored root | Artifact root; the runner creates and prints a unique per-run child and never deletes the root           |
 
 The Playwright Node harness requires a test secret and database DSN for server-side
 Checkout ownership, decline stability, and upgrade-payment preparation checks; it

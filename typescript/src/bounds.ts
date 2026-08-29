@@ -1,0 +1,5 @@
+export const POSTGRES_BIGINT_MAX = 9_223_372_036_854_775_807n;
+export const JSON_SAFE_INTEGER_MAX = Number.MAX_SAFE_INTEGER;
+export const CATALOG_PRICE_MAJOR_UNIT_MAX = Math.floor(
+  Number.MAX_SAFE_INTEGER / 100,
+);

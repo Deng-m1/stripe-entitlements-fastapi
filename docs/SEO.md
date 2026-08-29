@@ -30,6 +30,12 @@ states. Do not turn “tests exist” into “Stripe was verified”: current lo
 opt-in test-mode network evidence, historical runs, and live-production evidence must
 remain visibly separate.
 
+The repository may also describe two native backend choices: Python/FastAPI and
+TypeScript/Node/Next.js. TypeScript is an independent implementation over the same
+PostgreSQL schema and invariants, not a browser SDK or proxy to Python. Search copy must
+not call the two implementations interchangeable across arbitrary versions; a deployment
+normally chooses one reviewed runtime.
+
 ## Canonical deployment configuration
 
 Preview, local, and staging deployments fail closed to `noindex`. Enable public indexing
@@ -44,13 +50,13 @@ NEXT_PUBLIC_ALLOW_INDEXING=true
 fragment. Loopback HTTP is accepted only outside production. Indexing requires all
 three conditions: the explicit flag, a valid HTTPS origin, and `NODE_ENV=production`.
 
-| Route | Index policy | Reason |
-| --- | --- | --- |
-| `/` | index when explicitly enabled | Server-rendered project landing and FAQ |
-| `/pricing` | index when explicitly enabled | Reference monthly/yearly catalog |
-| `/account` | always noindex | Authenticated account state |
-| `/billing/success` | always noindex | User-specific payment return state |
-| `/billing/error` | always noindex | User-specific error state |
+| Route              | Index policy                  | Reason                                  |
+| ------------------ | ----------------------------- | --------------------------------------- |
+| `/`                | index when explicitly enabled | Server-rendered project landing and FAQ |
+| `/pricing`         | index when explicitly enabled | Reference monthly/yearly catalog        |
+| `/account`         | always noindex                | Authenticated account state             |
+| `/billing/success` | always noindex                | User-specific payment return state      |
+| `/billing/error`   | always noindex                | User-specific error state               |
 
 The deployment generates `robots.txt`, `sitemap.xml`, a web manifest, canonical URLs,
 Open Graph/Twitter images, and JSON-LD for the visible software/FAQ content. When
@@ -81,8 +87,9 @@ transition timing.
 Before publishing, apply the description and topics recorded in
 `.github/REPOSITORY_METADATA.md`. The README title and first paragraph intentionally use
 natural developer search phrases such as “Stripe subscription billing”, “FastAPI Stripe
-integration”, “PostgreSQL entitlements”, “fractional credit ledger”, “Stripe credit
-packs”, and “Next.js pricing” without hiding scope limits or stuffing keywords.
+integration”, “TypeScript Stripe billing”, “Next.js Stripe backend”, “PostgreSQL
+entitlements”, “fractional credit ledger”, “Stripe credit packs”, and “Next.js pricing”
+without hiding scope limits or stuffing keywords.
 
 The public title/description/FAQ should naturally cover the two selectable plan-change
 templates, monthly and yearly tiers, positive annual-savings display, Stripe webhooks,

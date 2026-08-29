@@ -1,0 +1,240 @@
+{
+  "subscription": {
+    "schema": "stripe.checkout.session.create",
+    "version": 1,
+    "kind": "subscription",
+    "request_api_version": "2026-06-24.dahlia",
+    "idempotency_key": "checkout:00000000-0000-4000-8000-000000000001:11111111-1111-4111-8111-111111111111",
+    "customer_mode": "existing",
+    "resolved_price": {
+      "price_id": "price_golden_subscription",
+      "lookup_key": "ent_starter_month",
+      "currency": "usd",
+      "unit_amount": 1900,
+      "price_type": "recurring",
+      "interval": "month",
+      "product_line": "golden-product",
+      "offering_key": "starter"
+    },
+    "params": {
+      "mode": "subscription",
+      "client_reference_id": "00000000-0000-4000-8000-000000000001",
+      "line_items": [{ "price": "price_golden_subscription", "quantity": 1 }],
+      "subscription_data": {
+        "metadata": {
+          "claim_token": "11111111-1111-4111-8111-111111111111",
+          "account_id": "00000000-0000-4000-8000-000000000001",
+          "product_line": "golden-product"
+        }
+      },
+      "success_url": "https://golden.example.test/success?checkout_session_id={CHECKOUT_SESSION_ID}",
+      "cancel_url": "https://golden.example.test/pricing",
+      "expires_at": 1800000000,
+      "metadata": {
+        "claim_token": "11111111-1111-4111-8111-111111111111",
+        "account_id": "00000000-0000-4000-8000-000000000001",
+        "product_line": "golden-product"
+      },
+      "customer": "cus_golden"
+    }
+  },
+  "credit_pack": {
+    "schema": "stripe.checkout.session.create",
+    "version": 1,
+    "kind": "credit_pack",
+    "request_api_version": "2025-12-15.clover",
+    "idempotency_key": "credit-pack:22222222-2222-4222-8222-222222222222",
+    "customer_mode": "create",
+    "resolved_price": {
+      "price_id": "price_golden_pack",
+      "lookup_key": "ent_pack_boost-100",
+      "currency": "usd",
+      "unit_amount": 99999999,
+      "price_type": "one_time",
+      "interval": null,
+      "product_line": "golden-product",
+      "offering_key": "boost-100"
+    },
+    "params": {
+      "mode": "payment",
+      "payment_method_types": ["card"],
+      "client_reference_id": "00000000-0000-4000-8000-000000000001",
+      "line_items": [{ "price": "price_golden_pack", "quantity": 1 }],
+      "payment_intent_data": {
+        "metadata": {
+          "billing_kind": "credit_pack",
+          "pack_schema_version": "1",
+          "product_line": "golden-product",
+          "credit_pack_order_id": "22222222-2222-4222-8222-222222222222",
+          "account_id": "00000000-0000-4000-8000-000000000001",
+          "pack_key": "boost-100",
+          "pack_credits": "100.125",
+          "price_amount": "99999999",
+          "currency": "usd",
+          "expires_days": "365",
+          "lookup_key": "ent_pack_boost-100"
+        }
+      },
+      "success_url": "https://golden.example.test/success?checkout_session_id={CHECKOUT_SESSION_ID}",
+      "cancel_url": "https://golden.example.test/pricing",
+      "expires_at": 1800000000,
+      "metadata": {
+        "billing_kind": "credit_pack",
+        "pack_schema_version": "1",
+        "product_line": "golden-product",
+        "credit_pack_order_id": "22222222-2222-4222-8222-222222222222",
+        "account_id": "00000000-0000-4000-8000-000000000001",
+        "pack_key": "boost-100",
+        "pack_credits": "100.125",
+        "price_amount": "99999999",
+        "currency": "usd",
+        "expires_days": "365",
+        "lookup_key": "ent_pack_boost-100"
+      },
+      "customer_creation": "always"
+    }
+  },
+  "plan_full_period_reset": {
+    "schema": "stripe.plan_change.request",
+    "version": 1,
+    "kind": "plan_change_immediate",
+    "request_api_version": "2026-06-24.dahlia",
+    "idempotency_key": "plan-change:33333333-3333-4333-8333-333333333333:apply",
+    "product_line": "golden-product",
+    "context": {
+      "subscription_id": "sub_golden_plan",
+      "subscription_item_id": "si_golden_plan",
+      "current_price_id": "price_golden_starter_month",
+      "current_lookup_key": "ent_starter_month",
+      "target_price_id": "price_golden_pro_month",
+      "target_interval": "month",
+      "current_period_start": 1800000000,
+      "current_period_end": 1802592000,
+      "schedule_id": null,
+      "subscription_status": "active",
+      "cancel_at_period_end": false,
+      "pending_update": false
+    },
+    "price_evidence": {
+      "source_price_id": "price_golden_starter_month",
+      "source_lookup_key": "ent_starter_month",
+      "source_plan_key": "starter",
+      "source_currency": "usd",
+      "source_unit_amount": 1900,
+      "target_price_id": "price_golden_pro_month",
+      "target_lookup_key": "ent_pro_month",
+      "target_plan_key": "pro",
+      "target_currency": "usd",
+      "target_unit_amount": 4900
+    },
+    "policy": "full_period_reset",
+    "params": {
+      "items": [
+        {
+          "id": "si_golden_plan",
+          "price": "price_golden_pro_month"
+        }
+      ],
+      "billing_cycle_anchor": "now",
+      "proration_behavior": "none",
+      "payment_behavior": "pending_if_incomplete",
+      "expand": ["latest_invoice.confirmation_secret"]
+    }
+  },
+  "plan_prorated_delta": {
+    "schema": "stripe.plan_change.request",
+    "version": 1,
+    "kind": "plan_change_immediate",
+    "request_api_version": "2026-06-24.dahlia",
+    "idempotency_key": "plan-change:33333333-3333-4333-8333-333333333333:apply",
+    "product_line": "golden-product",
+    "context": {
+      "subscription_id": "sub_golden_plan",
+      "subscription_item_id": "si_golden_plan",
+      "current_price_id": "price_golden_starter_month",
+      "current_lookup_key": "ent_starter_month",
+      "target_price_id": "price_golden_pro_month",
+      "target_interval": "month",
+      "current_period_start": 1800000000,
+      "current_period_end": 1802592000,
+      "schedule_id": null,
+      "subscription_status": "active",
+      "cancel_at_period_end": false,
+      "pending_update": false
+    },
+    "price_evidence": {
+      "source_price_id": "price_golden_starter_month",
+      "source_lookup_key": "ent_starter_month",
+      "source_plan_key": "starter",
+      "source_currency": "usd",
+      "source_unit_amount": 1900,
+      "target_price_id": "price_golden_pro_month",
+      "target_lookup_key": "ent_pro_month",
+      "target_plan_key": "pro",
+      "target_currency": "usd",
+      "target_unit_amount": 4900
+    },
+    "policy": "prorated_delta",
+    "params": {
+      "items": [
+        {
+          "id": "si_golden_plan",
+          "price": "price_golden_pro_month"
+        }
+      ],
+      "proration_behavior": "always_invoice",
+      "proration_date": 1800000123,
+      "payment_behavior": "pending_if_incomplete",
+      "expand": ["latest_invoice.confirmation_secret"]
+    }
+  },
+  "plan_scheduled": {
+    "schema": "stripe.plan_change.request",
+    "version": 1,
+    "kind": "plan_change_schedule",
+    "request_api_version": "2026-06-24.dahlia",
+    "idempotency_key": "plan-change:33333333-3333-4333-8333-333333333333:schedule",
+    "product_line": "golden-product",
+    "context": {
+      "subscription_id": "sub_golden_plan",
+      "subscription_item_id": "si_golden_plan",
+      "current_price_id": "price_golden_starter_month",
+      "current_lookup_key": "ent_starter_month",
+      "target_price_id": "price_golden_pro_year",
+      "target_interval": "year",
+      "current_period_start": 1800000000,
+      "current_period_end": 1802592000,
+      "schedule_id": null,
+      "subscription_status": "active",
+      "cancel_at_period_end": false,
+      "pending_update": false
+    },
+    "price_evidence": {
+      "source_price_id": "price_golden_starter_month",
+      "source_lookup_key": "ent_starter_month",
+      "source_plan_key": "starter",
+      "source_currency": "usd",
+      "source_unit_amount": 1900,
+      "target_price_id": "price_golden_pro_year",
+      "target_lookup_key": "ent_pro_year",
+      "target_plan_key": "pro",
+      "target_currency": "usd",
+      "target_unit_amount": 35300
+    },
+    "policy": "full_period_reset",
+    "params": {
+      "create": { "from_subscription": "sub_golden_plan" },
+      "configure": {
+        "boundary": 1802592000,
+        "target_price_id": "price_golden_pro_year",
+        "target_interval": "year",
+        "end_behavior": "release",
+        "proration_behavior": "none",
+        "metadata": {
+          "product_line": "golden-product",
+          "plan_change_key": "plan-change:33333333-3333-4333-8333-333333333333:schedule"
+        }
+      }
+    }
+  }
+}

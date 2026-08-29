@@ -1,8 +1,19 @@
-# Deploy Next.js and FastAPI together on Vercel
+# Deploy Next.js with FastAPI or native TypeScript on Vercel
 
 Railway, Kubernetes, and a separately hosted API are optional. The repository includes
-a stable Vercel Services deployment that builds the existing Next.js reference UI and
-the existing Python billing core as two services in one Vercel project:
+two Vercel configurations that preserve the same URLs and PostgreSQL billing contract:
+
+| Config                   | Backend                | Services                                                |
+| ------------------------ | ---------------------- | ------------------------------------------------------- |
+| `vercel.json`            | Python/FastAPI         | separate Next.js and FastAPI services behind one domain |
+| `vercel.typescript.json` | native TypeScript/Node | one Next.js service with App Router billing handlers    |
+
+Choose one configuration for a deployment; do not deploy both webhook processors merely
+as an experiment. Both require managed PostgreSQL, Stripe, a real identity provider,
+explicit migrations, and scheduler/incident operations.
+
+The split Python topology builds the existing Next.js reference UI and billing core as
+two services in one Vercel project:
 
 ```text
 one Vercel deployment and domain
@@ -26,6 +37,50 @@ PostgreSQL remains required. Vercel Functions are stateless compute and cannot r
 the database, Stripe, the identity provider, backups, or object storage for product
 files. Use a managed PostgreSQL provider with TLS, connection limits suitable for
 serverless traffic, point-in-time recovery, and a region close to the Vercel Functions.
+
+## Native TypeScript topology
+
+[`vercel.typescript.json`](../vercel.typescript.json) points Vercel at `web/` as one
+Next.js service. The checked-in Node Route Handlers delegate to the independent
+`@tosea/stripe-entitlements` runtime:
+
+```text
+one Vercel deployment and domain
+└── application  web/                         Next.js / Node
+      ├── /api/*                              TypeScript billing handler
+      ├── /webhooks/stripe                    raw signed webhook handler
+      ├── /health                             billing health
+      ├── /api/cron/*                         bounded secured workers
+      └── all pages/assets                    reference UI
+              │
+              └── managed PostgreSQL primary
+```
+
+This topology does not start or forward to FastAPI. The npm package uses the canonical
+root schema and catalog and implements the projector, plan changes, credits, packs,
+authentication, and workers natively. Route files export `runtime = "nodejs"`, disable
+caching, and set a bounded duration. Stripe and `pg` are not supported on Edge.
+
+Until an exact npm release is published, the source checkout uses
+`@tosea/stripe-entitlements: file:../typescript`; Vercel's build runs the local package
+build before Next.js. For a downstream repository, install an exact reviewed npm
+artifact and retain the three explicit Route Handler modules shown in the
+[TypeScript guide](../typescript/README.md#use-the-native-nextjs-backend).
+
+Use the same environment matrix below. Migrate with the TypeScript CLI before traffic:
+
+```bash
+cd typescript
+npm ci
+npx stripe-entitlements migrate
+npx stripe-entitlements doctor --stripe-network
+```
+
+Set the Vercel project to use `vercel.typescript.json` (or copy that reviewed file to
+`vercel.json` in a downstream repository). The Cron paths and `CRON_SECRET` contract are
+identical to the Python topology. Run the browser gate with
+`E2E_BACKEND_IMPLEMENTATION=typescript` once for each transition policy before promoting
+the deployment.
 
 ## What the checked-in configuration does
 
@@ -73,10 +128,11 @@ uv run --env-file .env python scripts/bootstrap_stripe.py --verify-only
 uv run --env-file .env stripe-entitlements doctor --stripe-network
 ```
 
-The database must be new for the released 0.3 schema lineage. Do not make application
-startup apply migrations: concurrent Functions are not a schema-deployment mechanism.
-Run the least-privilege migration command explicitly before traffic and before deploying
-code that requires a later migration.
+A fresh 0.4.0 database applies 001 and 002; an existing v0.3 database applies only 002
+after the remote-mutation writers are quiesced. A v0.2.x migration history still requires
+the documented 0.3 lineage reset. Do not make application startup apply migrations:
+concurrent Functions are not a schema-deployment mechanism. Run the least-privilege
+migration command explicitly before traffic and before deploying code that requires it.
 
 ## 2. Configure production authentication
 
@@ -121,6 +177,10 @@ Set the following server variables for each environment:
 
 ```dotenv
 DATABASE_URL=postgresql://...                         # managed PostgreSQL, TLS
+DATABASE_POOL_MIN=0                                  # retain no idle serverless floor
+DATABASE_POOL_MAX=4                                  # derive from the global connection budget
+DATABASE_POOL_IDLE_TIMEOUT_MS=10000
+DATABASE_CONNECT_TIMEOUT_MS=10000
 STRIPE_SECRET_KEY=sk_test_...                         # test/staging only
 STRIPE_WEBHOOK_SECRET=whsec_...
 STRIPE_API_VERSION=2026-06-24.dahlia
@@ -154,13 +214,13 @@ real browser authentication adapter.
 
 Use separate values by environment:
 
-| Resource | Preview | Staging | Production |
-| --- | --- | --- | --- |
-| PostgreSQL | isolated disposable database | staging database | production HA database |
-| Stripe key/catalog | test-mode isolated prefix | test mode | live mode |
-| Webhook endpoint/secret | isolated test endpoint | stable test endpoint | new live endpoint |
-| Portal configuration | test | test | independently bootstrapped live configuration |
-| indexing | disabled | disabled | enabled only on the canonical domain |
+| Resource                | Preview                      | Staging              | Production                                    |
+| ----------------------- | ---------------------------- | -------------------- | --------------------------------------------- |
+| PostgreSQL              | isolated disposable database | staging database     | production HA database                        |
+| Stripe key/catalog      | test-mode isolated prefix    | test mode            | live mode                                     |
+| Webhook endpoint/secret | isolated test endpoint       | stable test endpoint | new live endpoint                             |
+| Portal configuration    | test                         | test                 | independently bootstrapped live configuration |
+| indexing                | disabled                     | disabled             | enabled only on the canonical domain          |
 
 Never point an arbitrary pull-request preview at the production database, live Stripe
 key, or production webhook secret. Vercel Preview variables are shared unless you make
@@ -251,8 +311,12 @@ keep the evidence layers separate as described in [`TESTING.md`](TESTING.md).
 The FastAPI service is safe across multiple warm instances because correctness lives in
 PostgreSQL, not process memory. Cold starts and function termination can still interrupt
 a request; Stripe retries webhook 5xx, callers replay durable idempotency keys, and Cron
-returns a retryable failure. Configure database pool/connection limits for concurrent
-Functions and monitor saturation.
+returns a retryable failure. Each warm instance owns a pool. Set `DATABASE_POOL_MAX`
+from the database-wide connection budget divided by the maximum warm-instance count;
+`DATABASE_POOL_MIN=0` is appropriate when idle instances should retain no floor. Bound
+idle and connect waits with `DATABASE_POOL_IDLE_TIMEOUT_MS` and
+`DATABASE_CONNECT_TIMEOUT_MS`, then monitor saturation. Both the FastAPI and native
+TypeScript runtimes validate and apply these four settings.
 
 Long-running conversion, video, AI, or file-processing jobs should not be placed inside
 these billing Functions merely because the frontend is on Vercel. Keep product work in

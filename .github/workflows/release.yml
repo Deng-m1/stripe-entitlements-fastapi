@@ -18,7 +18,7 @@ jobs:
   verify-and-publish:
     name: Verify and publish
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     # This sole release job creates the GitHub Release, pushes GHCR, and emits an
     # OIDC-backed registry attestation. CI workflows retain read-only permissions.
     permissions:
@@ -36,7 +36,7 @@ jobs:
         with:
           enable-cache: false
 
-      - name: Verify immutable tag, release vacancy, and Python version
+      - name: Verify immutable tag, release vacancy, and coordinated versions
         id: tag_guard
         env:
           GH_TOKEN: ${{ github.token }}
@@ -58,14 +58,7 @@ jobs:
             exit 1
           fi
           tag_version="${GITHUB_REF_NAME#v}"
-          project_version="$(python - <<'PY'
-          import tomllib
-          from pathlib import Path
-
-          print(tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"])
-          PY
-          )"
-          test "$tag_version" = "$project_version"
+          python scripts/check_release_versions.py "$tag_version"
           echo "tag_object=$tag_object" >> "$GITHUB_OUTPUT"
           echo "tag_commit=$tag_commit" >> "$GITHUB_OUTPUT"
           echo "version=$tag_version" >> "$GITHUB_OUTPUT"
@@ -133,6 +126,14 @@ jobs:
           node-version: 22
           package-manager-cache: false
 
+      - name: Verify TypeScript billing core
+        working-directory: typescript
+        run: |
+          npm ci
+          npm audit --omit=dev
+          npm audit
+          npm run check
+
       - name: Verify reference web application
         working-directory: web
         env:
@@ -147,11 +148,12 @@ jobs:
           npm test
           npm run build
 
-      - name: Build Python distributions and checksums
+      - name: Build Python distributions
         env:
           RELEASE_VERSION: ${{ steps.tag_guard.outputs.version }}
         run: |
           scripts/build_distributions.sh dist
+          python scripts/verify_python_distributions.py dist
           python - <<'PY'
           import os
           import subprocess
@@ -177,8 +179,81 @@ jobs:
           assert completed.stderr == "", completed.stderr
           assert completed.stdout.strip() == f"stripe-entitlements {expected}"
           PY
+
+      - name: Build, install, and migrate with the npm distribution
+        working-directory: typescript
+        env:
+          RELEASE_VERSION: ${{ steps.tag_guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          archive_name="$(npm pack --pack-destination ../dist --silent)"
+          test "$archive_name" = \
+            "tosea-stripe-entitlements-${RELEASE_VERSION}.tgz"
+          archive="$GITHUB_WORKSPACE/dist/$archive_name"
+          test -s "$archive"
+          package_root="$(mktemp -d)"
+          npm install --prefix "$package_root" "$archive"
+          installed="$package_root/node_modules/@tosea/stripe-entitlements"
+          test -x "$package_root/node_modules/.bin/stripe-entitlements"
+          test -f "$installed/.env.example"
+          test "$(node -p "require('$installed/package.json').version")" = "$RELEASE_VERSION"
+          cmp ../LICENSE "$installed/LICENSE"
+          cmp ../NOTICE "$installed/NOTICE"
+          cmp ../plans.toml "$installed/dist/plans.toml"
+          packaged_migrations="$(find "$installed/dist/migrations" -maxdepth 1 \
+            -type f -name '*.sql' -printf '%f\n' | sort)"
+          test "$packaged_migrations" = \
+            $'001_v3_baseline.sql\n002_stripe_request_snapshots.sql'
+          cmp ../migrations/001_v3_baseline.sql \
+            "$installed/dist/migrations/001_v3_baseline.sql"
+          cmp ../migrations/002_stripe_request_snapshots.sql \
+            "$installed/dist/migrations/002_stripe_request_snapshots.sql"
+          test "$("$package_root/node_modules/.bin/stripe-entitlements" --version)" = \
+            "stripe-entitlements $RELEASE_VERSION"
+          (
+            cd "$package_root"
+            node --input-type=module <<'JS'
+          import {
+            CREDIT_SCALE,
+            CreditAmount,
+            PlanCatalog,
+          } from "@tosea/stripe-entitlements";
+          import { createBillingFetchHandler } from "@tosea/stripe-entitlements/http";
+          import {
+            createNextBillingRouteHandler,
+            runtime,
+          } from "@tosea/stripe-entitlements/next";
+          import { parseNodeBillingCommand } from "@tosea/stripe-entitlements/node";
+
+          if (CREDIT_SCALE !== 1_000_000n) throw new Error("credit scale drift");
+          if (CreditAmount.parse("0.125").atoms !== 125_000n) {
+            throw new Error("fractional credit import failed");
+          }
+          if (typeof PlanCatalog.fromToml !== "function") {
+            throw new Error("catalog package export is unavailable");
+          }
+          if (typeof createBillingFetchHandler !== "function") {
+            throw new Error("HTTP package export is unavailable");
+          }
+          if (typeof createNextBillingRouteHandler !== "function" || runtime !== "nodejs") {
+            throw new Error("Next.js package export is unavailable");
+          }
+          if (typeof parseNodeBillingCommand !== "function") {
+            throw new Error("Node package export is unavailable");
+          }
+          JS
+          )
+          ../scripts/verify_npm_migration_smoke.sh "$archive" "$RELEASE_VERSION"
+
+      - name: Generate distribution checksums
+        run: |
+          set -euo pipefail
           cd dist
-          sha256sum *.whl *.tar.gz > SHA256SUMS
+          shopt -s nullglob
+          distributions=(*.whl *.tar.gz *.tgz)
+          test "${#distributions[@]}" -eq 3
+          sha256sum "${distributions[@]}" > SHA256SUMS
+          sha256sum --check SHA256SUMS
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
@@ -329,6 +404,19 @@ jobs:
             --user 10001:10001 \
             -e DATABASE_URL="$runtime_database_url" \
             "$release_tag" stripe-entitlements migrate
+          applied_migrations="$(docker exec "$runtime_pg" \
+            psql -U postgres -d release_ci -Atqc \
+            "select string_agg(filename, ',' order by filename) from schema_migrations")"
+          test "$applied_migrations" = \
+            "001_v3_baseline.sql,002_stripe_request_snapshots.sql"
+          canonical_migration_history="$(sha256sum \
+            migrations/001_v3_baseline.sql \
+            migrations/002_stripe_request_snapshots.sql | \
+            awk '{sub("^migrations/", "", $2); print $2 "|" $1}')"
+          applied_migration_history="$(docker exec "$runtime_pg" \
+            psql -U postgres -d release_ci -Atqc \
+            "select filename||'|'||sha256 from schema_migrations order by filename")"
+          test "$applied_migration_history" = "$canonical_migration_history"
           schema_contract="$(docker exec "$runtime_pg" psql -U postgres -d release_ci -Atqc \
             "select to_regclass('credit_pack_orders') is not null,
                     to_regclass('credit_funding_lots') is not null,
@@ -338,8 +426,16 @@ jobs:
                             where table_schema='public'
                               and table_name='credit_pack_orders'
                               and column_name='request_customer_id'
-                              and data_type='text' and is_nullable='YES')")"
-          test "$schema_contract" = "t|t|t|t|t"
+                              and data_type='text' and is_nullable='YES'),
+                    (select count(*)=6 from information_schema.columns
+                      where table_schema='public'
+                        and table_name in (
+                          'checkout_claims','credit_pack_orders','billing_plan_changes'
+                        )
+                        and column_name in (
+                          'request_snapshot_version','stripe_request_snapshot'
+                        ))")"
+          test "$schema_contract" = "t|t|t|t|t|t"
 
           docker run -d \
             --name "$runtime_app" \
@@ -501,12 +597,30 @@ jobs:
             | awk '/^Digest:/ {print $2; exit}')"
           test "$published_digest" = "$CONTAINER_DIGEST"
           test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = "true"
-          gh release upload "$GITHUB_REF_NAME" \
-            dist/*.whl \
-            dist/*.tar.gz \
-            dist/SHA256SUMS \
-            dist/CONTAINER_DIGEST.txt \
+          (cd dist && sha256sum --check SHA256SUMS)
+          shopt -s nullglob
+          release_assets=(
+            dist/*.whl
+            dist/*.tar.gz
+            dist/*.tgz
+            dist/SHA256SUMS
+            dist/CONTAINER_DIGEST.txt
             dist/CONTAINER_SBOM.spdx.json
+          )
+          test "${#release_assets[@]}" -eq 6
+          for asset in "${release_assets[@]}"; do
+            test -f "$asset"
+          done
+          gh release upload "$GITHUB_REF_NAME" "${release_assets[@]}"
+          expected_assets="$(printf '%s\n' "${release_assets[@]##*/}" | sort)"
+          observed_assets=""
+          for attempt in $(seq 1 5); do
+            observed_assets="$(gh release view "$GITHUB_REF_NAME" --json assets \
+              --jq '.assets[].name' | sort)"
+            test "$observed_assets" = "$expected_assets" && break
+            sleep 2
+          done
+          test "$observed_assets" = "$expected_assets"
           gh release edit "$GITHUB_REF_NAME" --draft=false
 
       - name: Publish newest moving OCI channel tags

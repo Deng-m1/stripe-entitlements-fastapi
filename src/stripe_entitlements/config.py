@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
-from typing import Any, Literal
+from typing import Any, Literal, Self
 from urllib.parse import urlsplit
 
-from pydantic import field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .resources import default_plan_catalog_path
@@ -53,6 +53,10 @@ class DatabaseSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str
+    database_pool_min: int = Field(default=1, ge=0, le=100)
+    database_pool_max: int = Field(default=20, ge=1, le=100)
+    database_pool_idle_timeout_ms: int = Field(default=10_000, ge=1_000, le=600_000)
+    database_connect_timeout_ms: int = Field(default=10_000, ge=1_000, le=120_000)
 
     @field_validator("database_url")
     @classmethod
@@ -61,6 +65,12 @@ class DatabaseSettings(BaseSettings):
         if not value.startswith(("postgresql://", "postgres://")):
             raise ValueError("DATABASE_URL must use PostgreSQL")
         return value
+
+    @model_validator(mode="after")
+    def _database_pool_bounds(self) -> Self:
+        if self.database_pool_min > self.database_pool_max:
+            raise ValueError("DATABASE_POOL_MIN must not exceed DATABASE_POOL_MAX")
+        return self
 
 
 class Settings(DatabaseSettings):

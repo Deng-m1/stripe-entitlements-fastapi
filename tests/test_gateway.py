@@ -11,6 +11,9 @@ from scripts.bootstrap_stripe import _mode, _safe_portal, ensure_pack_price, ens
 from stripe_entitlements.checkout import CheckoutCreationRejected
 from stripe_entitlements.plan_changes import PlanChangeContext
 from stripe_entitlements.stripe_gateway import StripeGateway
+from stripe_entitlements.stripe_request_snapshots import (
+    build_plan_change_request_snapshot,
+)
 from tests.builders import event, resolved_price
 
 
@@ -1158,7 +1161,9 @@ async def test_credit_pack_checkout_uses_strict_one_time_price_and_payment_mode(
     assert captured["mode"] == "payment"
     assert captured["payment_method_types"] == ["card"]
     assert captured["customer_creation"] == "always"
-    assert captured["customer_email"] == "buyer@example.test"
+    # Mutable login PII is deliberately omitted so an unknown Stripe result can
+    # replay the exact durable first-Customer request without retaining email.
+    assert "customer_email" not in captured
     assert captured["line_items"] == [{"price": price.id, "quantity": 1}]
     assert captured["idempotency_key"] == ("credit-pack:00000000-0000-0000-0000-000000000111")
     metadata = captured["payment_intent_data"]["metadata"]  # type: ignore[index]
@@ -1416,6 +1421,132 @@ async def test_subscription_snapshot_marks_paginated_items_incomplete(monkeypatc
     assert snapshot.lookup_key is None
     assert snapshot.quantity is None
     assert snapshot.resolved_price is None
+
+
+async def test_frozen_plan_change_uses_one_api_version_for_verify_and_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_api_version = "2026-06-24.dahlia"
+    frozen_api_version = "2025-12-15.clover"
+    gateway = StripeGateway(
+        "sk_test_dummy",
+        "whsec_test",
+        api_version=current_api_version,
+    )
+    context = PlanChangeContext(
+        "sub_frozen_version",
+        "si_frozen_version",
+        "price_starter_month",
+        "ent_starter_month",
+        "price_pro_month",
+        "month",
+        datetime.fromtimestamp(1_800_000_000, tz=UTC),
+        datetime.fromtimestamp(1_802_592_000, tz=UTC),
+        None,
+        "active",
+        False,
+        False,
+    )
+    snapshot = build_plan_change_request_snapshot(
+        context,
+        timing="immediate",
+        policy="full_period_reset",
+        proration_date=None,
+        idempotency_key="plan-change:frozen-version:apply",
+        request_api_version=frozen_api_version,
+        product_line="example-entitlements",
+        source_lookup_key="ent_starter_month",
+        target_lookup_key="ent_pro_month",
+        source_plan_key="starter",
+        target_plan_key="pro",
+        source_currency="usd",
+        target_currency="usd",
+        source_unit_amount=1900,
+        target_unit_amount=4900,
+    )
+    subscription_retrieves: list[dict[str, object]] = []
+    price_retrieves: list[dict[str, object]] = []
+    mutations: list[dict[str, object]] = []
+
+    def retrieve_subscription(subscription_id: str, **kwargs: object) -> StripeObject:
+        subscription_retrieves.append({"subscription_id": subscription_id, **kwargs})
+        return StripeObject(
+            id=subscription_id,
+            livemode=False,
+            status="active",
+            cancel_at_period_end=False,
+            schedule=None,
+            pending_update=None,
+            items={
+                "has_more": False,
+                "data": [
+                    {
+                        "id": "si_frozen_version",
+                        "quantity": 1,
+                        "current_period_start": 1_800_000_000,
+                        "current_period_end": 1_802_592_000,
+                        "price": "price_starter_month",
+                    }
+                ],
+            },
+        )
+
+    def retrieve_price(price_id: str, **kwargs: object) -> StripeObject:
+        price_retrieves.append({"price_id": price_id, **kwargs})
+        return StripeObject(**{**resolved_price("starter", "month"), "id": price_id})
+
+    def modify_subscription(subscription_id: str, **kwargs: object) -> StripeObject:
+        mutations.append({"subscription_id": subscription_id, **kwargs})
+        return StripeObject(
+            id=subscription_id,
+            livemode=False,
+            status="active",
+            pending_update=None,
+            latest_invoice={
+                "id": "in_frozen_version",
+                "hosted_invoice_url": "https://invoice.test/frozen-version",
+                "confirmation_secret": None,
+            },
+        )
+
+    monkeypatch.setattr(
+        "stripe_entitlements.stripe_gateway.stripe.Subscription.retrieve",
+        retrieve_subscription,
+    )
+    monkeypatch.setattr(
+        "stripe_entitlements.stripe_gateway.stripe.Price.retrieve",
+        retrieve_price,
+    )
+    monkeypatch.setattr(
+        "stripe_entitlements.stripe_gateway.stripe.Subscription.modify",
+        modify_subscription,
+    )
+
+    observed = await gateway.verify_plan_change_request_snapshot(snapshot)
+    await gateway.execute_plan_change_request_snapshot(snapshot)
+
+    assert observed.current_lookup_key == "ent_starter_month"
+    assert gateway.api_version == current_api_version
+    assert subscription_retrieves == [
+        {
+            "subscription_id": "sub_frozen_version",
+            "api_key": "sk_test_dummy",
+            "stripe_version": frozen_api_version,
+            "expand": ["latest_invoice.confirmation_secret"],
+        }
+    ]
+    assert price_retrieves == [
+        {
+            "price_id": "price_starter_month",
+            "expand": ["product", "currency_options"],
+            "api_key": "sk_test_dummy",
+            "stripe_version": frozen_api_version,
+        }
+    ]
+    assert len(mutations) == 1
+    assert mutations[0]["stripe_version"] == frozen_api_version
+    assert mutations[0]["api_key"] == "sk_test_dummy"
+    assert mutations[0]["idempotency_key"] == "plan-change:frozen-version:apply"
 
 
 async def test_dahlia_item_period_and_immediate_preview_shape(monkeypatch) -> None:

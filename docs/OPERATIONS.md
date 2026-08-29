@@ -8,14 +8,16 @@ Initialize a fresh PostgreSQL database before deploying matching API/worker code
 uv run stripe-entitlements migrate
 ```
 
-This command loads only `DATABASE_URL`. Run it as a least-privilege schema-init Job
+This command loads only `DATABASE_URL` and optional `DATABASE_POOL_*` bounds. Run it as a least-privilege schema-init Job
 without Stripe API or webhook credentials; the API and workers still require their full
 runtime configuration.
 
-`001_v3_baseline.sql` creates the complete fourteen-table correctness model, all constraints,
-coordination indexes, the immutable Invoice-owner trigger, and causal incident defaults in
-one transaction. It creates final state directly: no historical backfill, table rewrite,
-foreign-key rebuild, or compatibility-only payload digest column is involved.
+Fresh v0.4.0 installations apply `001_v3_baseline.sql` and then
+`002_stripe_request_snapshots.sql`. The baseline creates the complete fourteen-table
+correctness model, all constraints, coordination indexes, the immutable Invoice-owner
+trigger, and causal incident defaults in one transaction. Migration 002 atomically adds
+versioned Stripe request snapshots to `checkout_claims`, `credit_pack_orders`, and
+`billing_plan_changes`; it performs no guessed backfill.
 
 The baseline is intentionally fresh-install-only. Version 0.3 does not support an in-place
 upgrade from databases initialized by v0.2.x tags. Drop and recreate old development,
@@ -28,6 +30,19 @@ migration rows so a previous backward-compatible replica can remain healthy duri
 rolling deploys. Starting from the released 0.3 baseline, add migrations rather than
 editing it. Do not send authenticated billing traffic to a process until every migration
 bundled with that version has been applied.
+
+For the 0.3 → 0.4 cutover, `NULL` snapshot versions deliberately identify legacy rows,
+`0` identifies a new reservation before any remote mutation, and `1` identifies a strict
+frozen request. A v0.4 same-key retry reuses the v1 Price, URLs, Customer/create mode,
+product line, request API version, parameters, and Stripe idempotency key. It never fills a
+legacy row from the current catalog or deployment settings.
+
+Although 002 is additive at the SQL level, do not run v0.3 and v0.4 Checkout/credit-pack/
+plan-change writers concurrently. Quiesce those mutation endpoints, apply 002, deploy all
+v0.4 writers, and only then reopen them; webhook projection may continue after the normal
+backup and health checks. A rollback to v0.3 is safe only before v0.4 accepts remote
+mutations, or after writes are stopped and every in-flight v1/remote-started row has been
+reconciled or retired. Prefer rolling forward when a remote result is unknown.
 
 ## Scheduled jobs
 

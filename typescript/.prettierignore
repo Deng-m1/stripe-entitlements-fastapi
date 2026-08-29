@@ -1,0 +1,6 @@
+dist
+coverage
+node_modules
+package-lock.json
+migrations/*.sql
+plans.toml

@@ -1,9 +1,9 @@
 cff-version: 1.2.0
 message: If this reference implementation helps your work, cite the repository.
-title: Stripe Entitlements for FastAPI
+title: Stripe Entitlements for FastAPI and TypeScript
 type: software
 authors:
   - name: Tosea
 repository-code: https://github.com/Deng-m1/stripe-entitlements-fastapi
 license: Apache-2.0
-version: 0.3.0
+version: 0.4.0

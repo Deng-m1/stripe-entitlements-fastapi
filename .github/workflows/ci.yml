@@ -28,6 +28,7 @@ jobs:
         run: uv sync --frozen
       - name: Lint
         run: |
+          uv run python scripts/check_release_versions.py
           uv run ruff format --check .
           uv run ruff check .
           while IFS= read -r -d '' script; do
@@ -43,6 +44,7 @@ jobs:
       - name: Build and inspect distributions
         run: |
           scripts/build_distributions.sh dist
+          uv run python scripts/verify_python_distributions.py dist
           uv run python - <<'PY'
           import glob
           import tarfile
@@ -66,6 +68,7 @@ jobs:
               "stripe_entitlements/py.typed",
               "stripe_entitlements/plans.toml",
               "stripe_entitlements/migrations/001_v3_baseline.sql",
+              "stripe_entitlements/migrations/002_stripe_request_snapshots.sql",
           }
           missing = required - names
           assert not missing, sorted(missing)
@@ -73,7 +76,8 @@ jobs:
               name for name in names if name.startswith("stripe_entitlements/migrations/")
           }
           assert packaged_migrations == {
-              "stripe_entitlements/migrations/001_v3_baseline.sql"
+              "stripe_entitlements/migrations/001_v3_baseline.sql",
+              "stripe_entitlements/migrations/002_stripe_request_snapshots.sql",
           }, sorted(packaged_migrations)
 
           sdist = glob.glob("dist/*.tar.gz")
@@ -90,6 +94,7 @@ jobs:
               ".dockerignore",
               ".env.example",
               ".github/RELEASE_CHECKLIST.md",
+              ".github/workflows/ci.yml",
               ".github/workflows/release.yml",
               ".gitignore",
               "Dockerfile",
@@ -97,8 +102,16 @@ jobs:
               "uv.lock",
               "plans.toml",
               "migrations/001_v3_baseline.sql",
+              "migrations/002_stripe_request_snapshots.sql",
               "scripts/bootstrap_stripe.py",
               "scripts/build_distributions.sh",
+              "scripts/check_release_versions.py",
+              "scripts/verify_python_distributions.py",
+              "typescript/.env.example",
+              "typescript/package.json",
+              "typescript/package-lock.json",
+              "typescript/src/index.ts",
+              "typescript/tsconfig.build.json",
               "examples/auth_starters/README.md",
               "examples/job_outbox/demo.py",
               "tests/test_job_outbox_example.py",
@@ -106,6 +119,7 @@ jobs:
               "web/package.json",
               "web/package-lock.json",
               "vercel.json",
+              "vercel.typescript.json",
               "vercel_app.py",
           }
           missing_sdist = required_sdist - normalized_sdist_names
@@ -115,6 +129,9 @@ jobs:
               "web/node_modules/",
               "web/playwright-report/",
               "web/test-results/",
+              "typescript/coverage/",
+              "typescript/dist/",
+              "typescript/node_modules/",
           )
           leaked_generated_files = sorted(
               name
@@ -126,7 +143,8 @@ jobs:
               name for name in normalized_sdist_names if name.startswith("migrations/")
           }
           assert packaged_sdist_migrations == {
-              "migrations/001_v3_baseline.sql"
+              "migrations/001_v3_baseline.sql",
+              "migrations/002_stripe_request_snapshots.sql",
           }, sorted(packaged_sdist_migrations)
           PY
 
@@ -155,6 +173,7 @@ jobs:
           assert catalog_path.is_file(), catalog_path
           assert [path.name for path in sorted(migration_dir.glob("*.sql"))] == [
               "001_v3_baseline.sql",
+              "002_stripe_request_snapshots.sql",
           ]
           assert [plan.key for plan in PlanCatalog.from_toml(catalog_path).ordered()] == [
               "starter",
@@ -208,7 +227,16 @@ jobs:
           applied_migrations="$(docker exec "$wheel_pg_container" \
             psql -U postgres -d wheel_ci -Atqc \
             "select string_agg(filename, ',' order by filename) from schema_migrations")"
-          test "$applied_migrations" = "001_v3_baseline.sql"
+          test "$applied_migrations" = \
+            "001_v3_baseline.sql,002_stripe_request_snapshots.sql"
+          canonical_migration_history="$(sha256sum \
+            migrations/001_v3_baseline.sql \
+            migrations/002_stripe_request_snapshots.sql | \
+            awk '{sub("^migrations/", "", $2); print $2 "|" $1}')"
+          applied_migration_history="$(docker exec "$wheel_pg_container" \
+            psql -U postgres -d wheel_ci -Atqc \
+            "select filename||'|'||sha256 from schema_migrations order by filename")"
+          test "$applied_migration_history" = "$canonical_migration_history"
           wheel_schema_contract="$(docker exec "$wheel_pg_container" \
             psql -U postgres -d wheel_ci -Atqc \
             "select
@@ -226,16 +254,120 @@ jobs:
                   from information_schema.columns
                  where table_schema='public' and table_name='credit_pack_orders'
                    and column_name='request_customer_id'),
+               (select count(*)=6
+                  from information_schema.columns
+                 where table_schema='public'
+                   and table_name in (
+                     'checkout_claims','credit_pack_orders','billing_plan_changes'
+                   )
+                   and column_name in (
+                     'request_snapshot_version','stripe_request_snapshot'
+                   )),
                to_regclass('billing_incidents_unresolved_account_kind_seen') is not null,
                to_regclass('billing_plan_changes_one_pending') is not null
              from pg_constraint
             where conrelid='stripe_invoice_state'::regclass
               and conname='stripe_invoice_state_account_id_fkey'")"
-          test "$wheel_schema_contract" = "t|t|t|t|t|t"
+          test "$wheel_schema_contract" = "t|t|t|t|t|t|t"
           cleanup_wheel_pg
           trap - EXIT
       - name: Check whitespace
         run: git diff --check
+
+  typescript:
+    name: TypeScript billing core
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: typescript
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: typescript/package-lock.json
+      - name: Install locked Python and TypeScript dependencies
+        run: |
+          cd ..
+          uv sync --frozen
+          cd typescript
+          npm ci
+      - name: Audit dependencies
+        run: |
+          npm audit --omit=dev
+          npm audit
+      - name: Lint, type check, PostgreSQL races, and build
+        run: npm run check
+      - name: Inspect, install, and migrate with the npm artifact
+        run: |
+          set -euo pipefail
+          expected_version="$(node -p "require('./package.json').version")"
+          archive_name="$(npm pack --pack-destination "$RUNNER_TEMP" --silent)"
+          test "$archive_name" = \
+            "tosea-stripe-entitlements-${expected_version}.tgz"
+          archive="$RUNNER_TEMP/$archive_name"
+          test -s "$archive"
+          package_root="$(mktemp -d)"
+          npm install --prefix "$package_root" "$archive"
+          installed="$package_root/node_modules/@tosea/stripe-entitlements"
+          test -x "$package_root/node_modules/.bin/stripe-entitlements"
+          test -f "$installed/.env.example"
+          test "$(node -p "require('$installed/package.json').version")" = \
+            "$expected_version"
+          cmp ../LICENSE "$installed/LICENSE"
+          cmp ../NOTICE "$installed/NOTICE"
+          cmp ../plans.toml "$installed/dist/plans.toml"
+          packaged_migrations="$(find "$installed/dist/migrations" -maxdepth 1 \
+            -type f -name '*.sql' -printf '%f\n' | sort)"
+          test "$packaged_migrations" = \
+            $'001_v3_baseline.sql\n002_stripe_request_snapshots.sql'
+          cmp ../migrations/001_v3_baseline.sql \
+            "$installed/dist/migrations/001_v3_baseline.sql"
+          cmp ../migrations/002_stripe_request_snapshots.sql \
+            "$installed/dist/migrations/002_stripe_request_snapshots.sql"
+          test "$("$package_root/node_modules/.bin/stripe-entitlements" --version)" = \
+            "stripe-entitlements $expected_version"
+          (
+            cd "$package_root"
+            node --input-type=module <<'JS'
+          import {
+            CREDIT_SCALE,
+            CreditAmount,
+            PlanCatalog,
+          } from "@tosea/stripe-entitlements";
+          import { createBillingFetchHandler } from "@tosea/stripe-entitlements/http";
+          import {
+            createNextBillingRouteHandler,
+            runtime,
+          } from "@tosea/stripe-entitlements/next";
+          import { parseNodeBillingCommand } from "@tosea/stripe-entitlements/node";
+
+          if (CREDIT_SCALE !== 1_000_000n) throw new Error("credit scale drift");
+          if (CreditAmount.parse("0.125").atoms !== 125_000n) {
+            throw new Error("fractional credit import failed");
+          }
+          if (typeof PlanCatalog.fromToml !== "function") {
+            throw new Error("catalog package export is unavailable");
+          }
+          if (typeof createBillingFetchHandler !== "function") {
+            throw new Error("HTTP package export is unavailable");
+          }
+          if (typeof createNextBillingRouteHandler !== "function" || runtime !== "nodejs") {
+            throw new Error("Next.js package export is unavailable");
+          }
+          if (typeof parseNodeBillingCommand !== "function") {
+            throw new Error("Node package export is unavailable");
+          }
+          JS
+          )
+          ../scripts/verify_npm_migration_smoke.sh "$archive" "$expected_version"
 
   container:
     name: Container
@@ -315,7 +447,16 @@ jobs:
           applied_migrations="$(docker exec "$runtime_pg" \
             psql -U postgres -d container_ci -Atqc \
             "select string_agg(filename, ',' order by filename) from schema_migrations")"
-          test "$applied_migrations" = "001_v3_baseline.sql"
+          test "$applied_migrations" = \
+            "001_v3_baseline.sql,002_stripe_request_snapshots.sql"
+          canonical_migration_history="$(sha256sum \
+            migrations/001_v3_baseline.sql \
+            migrations/002_stripe_request_snapshots.sql | \
+            awk '{sub("^migrations/", "", $2); print $2 "|" $1}')"
+          applied_migration_history="$(docker exec "$runtime_pg" \
+            psql -U postgres -d container_ci -Atqc \
+            "select filename||'|'||sha256 from schema_migrations order by filename")"
+          test "$applied_migration_history" = "$canonical_migration_history"
           container_schema_contract="$(docker exec "$runtime_pg" \
             psql -U postgres -d container_ci -Atqc \
             "select
@@ -333,12 +474,21 @@ jobs:
                   from information_schema.columns
                  where table_schema='public' and table_name='credit_pack_orders'
                    and column_name='request_customer_id'),
+               (select count(*)=6
+                  from information_schema.columns
+                 where table_schema='public'
+                   and table_name in (
+                     'checkout_claims','credit_pack_orders','billing_plan_changes'
+                   )
+                   and column_name in (
+                     'request_snapshot_version','stripe_request_snapshot'
+                   )),
                to_regclass('billing_incidents_unresolved_account_kind_seen') is not null,
                to_regclass('billing_plan_changes_one_pending') is not null
              from pg_constraint
             where conrelid='stripe_invoice_state'::regclass
               and conname='stripe_invoice_state_account_id_fkey'")"
-          test "$container_schema_contract" = "t|t|t|t|t|t"
+          test "$container_schema_contract" = "t|t|t|t|t|t|t"
 
           docker run -d \
             --name "$runtime_app" \

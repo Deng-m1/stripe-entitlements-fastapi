@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-08-29
+
+- Bump the coordinated Python, TypeScript, reference web, and citation metadata to
+  `0.4.0`; the immutable `v0.3.0` tag continues to identify the earlier Python-only
+  release line.
+- Add an independent TypeScript/Node/Next.js billing implementation over the canonical
+  PostgreSQL schema and `plans.toml`, including native webhook projection, both plan
+  transition templates, yearly grants, fractional credits, credit packs, reconciliation,
+  personal/team auth starters, internal entitlement APIs, Node CLI, Fetch facade, and
+  Next.js Route Handlers.
+- Add append-only migration `002_stripe_request_snapshots.sql` and versioned, validated
+  Stripe mutation snapshots for subscription Checkout, credit-pack Checkout, and plan
+  changes. Same-key unknown-result recovery now replays the frozen Price, URL, Customer
+  mode, product-line, API-version, parameters, and Stripe idempotency identity instead
+  of rereading mutable deployment configuration; legacy unfrozen remote mutations fail
+  closed for operator reconciliation.
+- Add TypeScript unit, golden-vector, PostgreSQL constraint/race, cross-runtime credit,
+  real Stripe test-mode, package-install, and selectable shared-browser E2E gates. The
+  browser runner now executes one Playwright journey against either Python or TypeScript
+  and retains the same signed-webhook/database verifier.
+- Add a pure TypeScript Vercel topology, npm adoption guide, environment template, package
+  metadata, and dual-runtime architecture/deployment documentation.
 - Add a stable Vercel Services topology that deploys the Next.js reference UI and the
   existing FastAPI billing core behind one domain, without requiring Railway or a second
   public backend deployment.

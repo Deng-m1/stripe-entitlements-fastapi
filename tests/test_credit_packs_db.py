@@ -23,6 +23,9 @@ from stripe_entitlements.credits import (
     InsufficientCreditsError,
 )
 from stripe_entitlements.processor import EventProcessor
+from stripe_entitlements.stripe_request_snapshots import (
+    build_credit_pack_checkout_request_snapshot,
+)
 from tests.builders import paid_invoice
 from tests.db_lock_helpers import (
     wait_for_account_row_lock_waiter,
@@ -236,9 +239,33 @@ class RecoveringCheckoutCreator:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
         self.fail_once = True
+        self.remote_calls = 0
 
-    async def create_credit_pack_checkout_session(self, **kwargs: Any) -> tuple[str, str]:
+    async def prepare_credit_pack_checkout_session(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(kwargs)
+        return build_credit_pack_checkout_request_snapshot(
+            order_id=kwargs["order_id"],
+            account_id=kwargs["account_id"],
+            customer_id=kwargs["customer_id"],
+            price_id="price_test_pack",
+            lookup_key=kwargs["lookup_key"],
+            currency=kwargs["expected_currency"],
+            unit_amount=kwargs["expected_unit_amount"],
+            pack_key=kwargs["pack_key"],
+            pack_credits=kwargs["pack_credits"],
+            expires_days=kwargs["expires_days"],
+            product_line="example-entitlements",
+            success_url="https://app.example.test/success",
+            cancel_url="https://app.example.test/pricing",
+            expires_at=int(kwargs["expires_at"].timestamp()),
+            request_api_version=API_VERSION,
+        )
+
+    async def create_checkout_session_from_snapshot(
+        self, snapshot: dict[str, Any]
+    ) -> tuple[str, str]:
+        del snapshot
+        self.remote_calls += 1
         if self.fail_once:
             self.fail_once = False
             raise RuntimeError("unknown remote outcome")
@@ -333,8 +360,8 @@ async def test_checkout_replay_uses_snapshot_after_webhook_beats_session_attach(
         "cs_test_pack",
         "https://checkout.stripe.com/c/pay/cs_test_pack",
     )
-    assert [call["customer_id"] for call in creator.calls] == [None, None]
-    assert [call["customer_email"] for call in creator.calls] == [None, None]
+    assert [call["customer_id"] for call in creator.calls] == [None]
+    assert [call["customer_email"] for call in creator.calls] == [None]
     assert len({call["order_id"] for call in creator.calls}) == 1
     async with pool.acquire() as conn:
         order = await conn.fetchrow(
@@ -377,8 +404,8 @@ async def test_checkout_replay_does_not_derive_parameters_from_changed_email(
         request_key="email-drift",
     )
 
-    assert [call["customer_id"] for call in creator.calls] == [None, None]
-    assert [call["customer_email"] for call in creator.calls] == [None, None]
+    assert [call["customer_id"] for call in creator.calls] == [None]
+    assert [call["customer_email"] for call in creator.calls] == [None]
 
 
 async def test_checkout_replay_keeps_reserved_customer_after_account_binding_changes(
@@ -414,11 +441,8 @@ async def test_checkout_replay_keeps_reserved_customer_after_account_binding_cha
         request_key="customer-drift",
     )
 
-    assert [call["customer_id"] for call in creator.calls] == [
-        "cus_original",
-        "cus_original",
-    ]
-    assert [call["customer_email"] for call in creator.calls] == [None, None]
+    assert [call["customer_id"] for call in creator.calls] == ["cus_original"]
+    assert [call["customer_email"] for call in creator.calls] == [None]
     async with pool.acquire() as conn:
         assert (
             await conn.fetchval(

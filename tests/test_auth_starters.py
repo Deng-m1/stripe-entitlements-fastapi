@@ -1038,6 +1038,12 @@ async def test_repository_cannot_return_authority_for_another_tenant(
 
 class PrefixTestGateway:
     secret_key = "sk_test_prefixed_auth_gateway"
+    api_version = "2026-06-24.dahlia"
+    product_line = "example-entitlements"
+    checkout_success_url = "http://localhost:3000/billing/success"
+    checkout_cancel_url = "http://localhost:3000/pricing"
+    portal_return_url = "http://localhost:3000/account"
+    portal_configuration_id = None
 
     def construct_event(self, payload: bytes, signature: str) -> dict[str, object]:
         del payload, signature

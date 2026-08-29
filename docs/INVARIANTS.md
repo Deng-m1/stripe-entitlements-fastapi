@@ -56,9 +56,12 @@ For the current active pool, these permutations converge to the same credit bala
 ## 5. Checkout single-flight
 
 One account has at most one unexpired Checkout claim. Claim identity, not only account
-identity, guards attach/release. The claim snapshots the pre-existing Stripe Customer or
-first-Customer create mode before remote work. Same-key recovery replays that immutable
-choice and omits an email prefill instead of retaining mutable login PII. Expiration or
+identity, guards attach/release. Before remote mutation, the claim freezes a versioned
+request containing the exact Price, URLs, Customer/create mode, product line, request API
+version, parameters, and derived Stripe idempotency key. Same-key recovery replays that
+request and omits an email prefill for first-Customer creation instead of retaining
+mutable login PII. A pre-002 `NULL`, reserved-but-unfrozen `0`, malformed version, or
+row/snapshot mismatch cannot be reconstructed from current configuration. Expiration or
 completion of an older Session cannot delete or bind a newer claim. A Subscription update
 that first binds through a claim consumes that authority in the same transaction, and
 terminal deletion removes any claim that existed before it. A late paid Event cannot
@@ -125,7 +128,11 @@ invoice completes the intent.
 Only one pending plan change may exist per account. For a delta upgrade, the intent also
 snapshots the immutable source funding Invoice, fixed entitlement difference, and
 proration timestamp. Confirm atomically changes `previewed` to `applying` before any
-Stripe mutation and records `remote_started_at` before the call. An unknown result less
+Stripe mutation and records `remote_started_at` before the call. Preview freezes the
+complete Price evidence, Subscription/item/period context, product line, request API
+version, policy parameters, Schedule phases, and derived idempotency key. Confirm and
+unknown-result recovery execute only that validated snapshot; legacy unfrozen intents
+fail closed and cannot be filled from a later catalog. An unknown result less
 than 23 hours old is retried only with the same derived Stripe idempotency key. At or
 beyond 23 hours, automatic mutation stops until an operator proves the exact Invoice or
 Schedule outcome; a new logical intent is not opened speculatively.
@@ -252,10 +259,12 @@ funding rows for an exact read-only account total is not such a write.
 ## 18. Credit packs preserve immutable cash and funding provenance
 
 A pack order snapshots its account, client and Stripe request identities, pack key,
-lookup key, credit atoms, currency amount, currency, expiry policy, and nullable
-pre-existing Customer request before Checkout is created. Same-key recovery replays only
-those durable facts; first-Customer creation deliberately omits an email prefill instead
-of rereading mutable authentication state. Checkout Session, PaymentIntent, Charge, and
+lookup key, credit atoms, currency amount, currency, expiry policy, nullable pre-existing
+Customer request, URLs, product line, request API version, Checkout parameters, and
+derived Stripe idempotency key before Checkout is created. Same-key recovery replays only
+that strict versioned request; first-Customer creation deliberately omits an email prefill
+instead of rereading mutable authentication state. A legacy, unfrozen, malformed, or
+row-inconsistent snapshot cannot start a Stripe mutation. Checkout Session, PaymentIntent, Charge, and
 Dispute facts must match that full snapshot, exact customer lineage, authorized amount,
 amount received, latest Charge, and object state. Only a compatible
 `payment_intent.succeeded` grants funding; a browser return or Checkout completion never

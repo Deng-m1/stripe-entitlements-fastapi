@@ -1,11 +1,13 @@
-# Stripe Billing, Entitlements & Credit Packs for FastAPI
+# Stripe Billing, Entitlements & Credit Packs for FastAPI and TypeScript
 
 [![CI](https://github.com/Deng-m1/stripe-entitlements-fastapi/actions/workflows/ci.yml/badge.svg)](https://github.com/Deng-m1/stripe-entitlements-fastapi/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12%2B-3776AB.svg)](pyproject.toml)
+[![Node](https://img.shields.io/badge/node-22%2B-339933.svg)](typescript/package.json)
 
-An open-source Stripe billing, SaaS entitlements, and credit-ledger starter for FastAPI,
-PostgreSQL, and Next.js. It includes monthly/yearly subscriptions, exact fractional
+An open-source Stripe billing, SaaS entitlements, and credit-ledger starter with two
+native backend choices: Python/FastAPI or TypeScript/Node/Next.js. Both use PostgreSQL
+and the same reviewed accounting contract. It includes monthly/yearly subscriptions, exact fractional
 credits, one-time credit packs, two selectable upgrade policies, Checkout, refunds,
 disputes, SCA recovery, Test Clock renewals, and webhook-authoritative accounting under
 duplicate, delayed, concurrent, and out-of-order Events.
@@ -17,11 +19,12 @@ duplicate, delayed, concurrent, and out-of-order Events.
 ## Contents
 
 - [Implemented scope](#what-is-completeand-what-is-not)
+- [Choose Python or TypeScript](#choose-python-or-typescript)
 - [Plan catalog and annual savings](#plan-catalog)
 - [One-time credit packs](#one-time-credit-packs)
 - [Two plan-change templates](#safe-stripe-plan-transitions-full-price-or-prorated-difference)
 - [Correctness and distributed deployment](#correctness-model)
-- [Vercel full-stack deployment](#deploy-nextjs-and-fastapi-together-on-vercel)
+- [Optional Vercel deployment](#deploy-on-vercel-with-either-backend)
 - [Quick start](#quick-start)
 - [Adopt in an existing application](#adopt-in-an-existing-application)
 - [Demo recording](#demo-recording-and-promotional-video)
@@ -40,8 +43,30 @@ state transitions explicit and backs them with PostgreSQL constraints and real S
 test-mode gates.
 
 It is useful as a starting point for teams building a FastAPI Stripe integration,
-subscription credit system, SaaS pricing backend, or Next.js billing UI that need a
+TypeScript/Next.js billing backend, subscription credit system, or SaaS pricing UI that need a
 reviewable reference rather than a copy-paste Checkout snippet.
+
+## Choose Python or TypeScript
+
+The repository contains two independent server implementations. TypeScript does not
+forward requests to Python, and Python does not invoke Node:
+
+| Runtime                | Best fit                                                                              | Entry points                                                              |
+| ---------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Python 3.12+ / FastAPI | Existing Python API, sidecar, container, or Vercel Services split deployment          | `stripe_entitlements`, `create_app`, `install_billing`, Python CLI        |
+| Node 22+ / TypeScript  | Next.js App Router, standalone Node billing service, or another Fetch-compatible host | `@tosea/stripe-entitlements`, Node CLI, Fetch handler, Next Route Handler |
+
+They share the canonical [`plans.toml`](plans.toml), PostgreSQL
+[`001_v3_baseline.sql`](migrations/001_v3_baseline.sql) plus append-only
+[`002_stripe_request_snapshots.sql`](migrations/002_stripe_request_snapshots.sql),
+fixed-point credit protocol, transition matrices, webhook contract, and documented invariants. Golden policy vectors
+run in both languages, and mixed Python/TypeScript PostgreSQL tests prove that the same
+idempotency key cannot double-charge or overspend an account.
+
+A deployment normally chooses one backend runtime. Do not mix arbitrary package
+versions as interchangeable replicas: every API/webhook/worker process must use a
+compatible migration level, identical catalog, Stripe mode/version contracts, product
+line, and transition policy. See the [TypeScript package guide](typescript/README.md).
 
 ## What is complete—and what is not
 
@@ -65,6 +90,8 @@ per intent. Shared scope:
 - authenticated catalog, account, Checkout, Portal, preview, and confirm APIs;
 - standalone `create_app()` plus native `BillingKernel` / `install_billing` composition
   for an existing FastAPI root;
+- an independent TypeScript `BillingKernel`, Fetch facade, standalone Node server/CLI,
+  and Next.js App Router integration using the same schema and invariants;
 - strict personal/team JWT authentication starters, including catalog-only team viewers;
 - an in-process `EntitlementService` and optional owner-authorized internal workload API;
 - server-controlled plan transitions with Stripe invoice previews and
@@ -93,11 +120,11 @@ must supply verified authentication and product enforcement. See
 Prices come from [plans.toml](plans.toml). Tier identity and transition direction
 use stable plan keys and explicit rank—never a price comparison.
 
-| Plan | Monthly | Yearly total | Yearly equivalent | Annual saving | Monthly credits |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Starter | $19 | $137 | $11.42/mo | $91 | 300 |
-| Pro | $49 | $353 | $29.42/mo | $235 | 1,000 |
-| Ultra | $149 | $1,073 | $89.42/mo | $715 | 4,000 |
+| Plan    | Monthly | Yearly total | Yearly equivalent | Annual saving | Monthly credits |
+| ------- | ------: | -----------: | ----------------: | ------------: | --------------: |
+| Starter |     $19 |         $137 |         $11.42/mo |           $91 |             300 |
+| Pro     |     $49 |         $353 |         $29.42/mo |          $235 |           1,000 |
+| Ultra   |    $149 |       $1,073 |         $89.42/mo |          $715 |           4,000 |
 
 Yearly savings compare 12 monthly payments with the explicit yearly total. The
 UI shows a saving only when both prices use the same currency and the yearly
@@ -113,16 +140,16 @@ Checkout never shows a promotion-code field. The gates any future promotion-code
 support must clear first are documented in
 [Promotion codes and coupons](docs/PROMOTION_CODES.md).
 
-| Entitlement | Starter | Pro | Ultra |
-| --- | ---: | ---: | ---: |
-| PDF → PPT / image → PPT | yes | yes | yes |
-| Batch conversion | no | yes | yes |
-| API access | no | yes | yes |
-| Priority queue | no | no | yes |
-| Maximum file size | 30 MB | 100 MB | 250 MB |
-| Maximum pages per job | 100 | 500 | 2,000 |
-| Concurrent jobs | 1 | 5 | 20 |
-| API keys | 0 | 5 | 25 |
+| Entitlement             | Starter |    Pro |  Ultra |
+| ----------------------- | ------: | -----: | -----: |
+| PDF → PPT / image → PPT |     yes |    yes |    yes |
+| Batch conversion        |      no |    yes |    yes |
+| API access              |      no |    yes |    yes |
+| Priority queue          |      no |     no |    yes |
+| Maximum file size       |   30 MB | 100 MB | 250 MB |
+| Maximum pages per job   |     100 |    500 |  2,000 |
+| Concurrent jobs         |       1 |      5 |     20 |
+| API keys                |       0 |      5 |     25 |
 
 The API returns these as structured entitlements. Product code still has to
 enforce them; displaying an entitlement is not enforcement.
@@ -132,11 +159,11 @@ enforce them; displaying an entitlement is not enforcement.
 The reference catalog also includes one-time packs. Packs add spendable product credits;
 they never add plan features, raise limits, or alter subscription tier direction.
 
-| Pack | Price | Credits | Default expiry |
-| --- | ---: | ---: | ---: |
-| Boost 100 | $15 | 100 | 365 days |
-| Boost 500 | $59 | 500 | 365 days |
-| Boost 2,000 | $199 | 2,000 | 365 days |
+| Pack        | Price | Credits | Default expiry |
+| ----------- | ----: | ------: | -------------: |
+| Boost 100   |   $15 |     100 |       365 days |
+| Boost 500   |   $59 |     500 |       365 days |
+| Boost 2,000 |  $199 |   2,000 |       365 days |
 
 Pack Checkout uses Stripe Hosted Checkout in `mode=payment` and explicitly restricts the
 reference contract to cards; Dashboard automatic payment methods cannot silently add an
@@ -222,7 +249,7 @@ are safe against the same primary, but PostgreSQL remains a stateful dependency
 and single point unless deployed with HA, backups, and tested restore. See
 [Distributed deployment](docs/DISTRIBUTED.md).
 
-## Deploy Next.js and FastAPI together on Vercel
+## Deploy on Vercel with either backend
 
 The checked-in [`vercel.json`](vercel.json) deploys `web/` and the existing Python
 billing core as two Vercel Services behind one deployment URL. Browser `/api/*`, Stripe
@@ -245,21 +272,28 @@ See [Deploy Next.js and FastAPI together on Vercel](docs/VERCEL.md) for the envi
 matrix, authentication boundary, local `vercel dev -L` workflow, webhook setup, and
 deployment verification checklist.
 
+For a pure TypeScript deployment, [`vercel.typescript.json`](vercel.typescript.json)
+uses one Next.js service. Native Route Handlers own `/api/*`, `/webhooks/stripe`, and
+`/health`, and the same bounded Cron URLs call the TypeScript services. It does not need
+a Python or Railway runtime, but it still requires managed PostgreSQL, Stripe, real
+authentication, migrations, backups, and schedulers. See the
+[TypeScript package guide](typescript/README.md#use-the-native-nextjs-backend).
+
 ## API surface and authentication
 
 Authenticated billing routes:
 
-| Method | Route | Purpose |
-| --- | --- | --- |
-| GET | `/api/catalog` | ordered prices and structured entitlements |
-| GET | `/api/account` | webhook-projected plan, credits, enforcement and pending state |
-| POST | `/api/checkout` | first paid subscription; requires `Idempotency-Key` |
-| POST | `/api/credit-packs/checkout` | one-time pack Checkout; requires `Idempotency-Key` |
-| POST | `/api/billing/portal` | safe Portal Session; requires `Idempotency-Key` |
-| POST | `/api/billing/change/preview` | durable preview; requires `Idempotency-Key` |
-| POST | `/api/billing/change/confirm` | confirm the opaque `preview_id` |
+| Method | Route                         | Purpose                                                        |
+| ------ | ----------------------------- | -------------------------------------------------------------- |
+| GET    | `/api/catalog`                | ordered prices and structured entitlements                     |
+| GET    | `/api/account`                | webhook-projected plan, credits, enforcement and pending state |
+| POST   | `/api/checkout`               | first paid subscription; requires `Idempotency-Key`            |
+| POST   | `/api/credit-packs/checkout`  | one-time pack Checkout; requires `Idempotency-Key`             |
+| POST   | `/api/billing/portal`         | safe Portal Session; requires `Idempotency-Key`                |
+| POST   | `/api/billing/change/preview` | durable preview; requires `Idempotency-Key`                    |
+| POST   | `/api/billing/change/confirm` | confirm the opaque `preview_id`                                |
 
-`AuthAccountAdapter` is the integration boundary. Production defaults to
+`AuthAccountAdapter` is the integration boundary in both implementations. Production defaults to
 `RejectAllAuthAdapter`; it does not trust a browser-supplied account ID.
 `DemoBearerAuthAdapter` is enabled only when all of these are true:
 
@@ -305,8 +339,17 @@ not infer request, Event API view, or endpoint payload versions from one another
 
 ## Quick start
 
-Requirements: Python 3.12+, `uv`, Docker, Node.js 22+, npm, Stripe CLI, and a
+Requirements for the complete source-repository gates: Python 3.12+, `uv`, Docker,
+Node.js 22+, npm, Stripe CLI, and a
 Stripe test-mode account.
+
+Choose one backend runtime for application traffic. The following setup first shows the
+Python/FastAPI commands; the native TypeScript alternative follows below. PostgreSQL,
+Stripe catalog, Portal, webhook, identity, and scheduler requirements are the same.
+Vercel is an optional deployment adapter, not a runtime dependency: either backend can
+run on a VM, container platform, Kubernetes, or another PaaS that can reach PostgreSQL
+and receive signed Stripe webhooks. Docker and Stripe CLI are used by the repository's
+default local/test workflows; they are not required inside a deployed application.
 
 The commands below assume an exact release-tag source checkout or the matching source
 distribution. The Wheel is intentionally the backend runtime boundary: it contains the
@@ -314,24 +357,25 @@ Python package, catalog, and migrations, while the source distribution also cont
 environment templates, operator scripts, Docker/Compose files, examples, tests, and
 Next.js reference UI.
 
-The version-tag workflow attaches the Wheel, source distribution, checksums, and immutable
-container digest to the matching GitHub Release. It also publishes
+The version-tag workflow attaches the Wheel, source distribution, verified TypeScript npm
+tarball, checksums, and immutable container digest to the matching GitHub Release. It also publishes
 `ghcr.io/deng-m1/stripe-entitlements-fastapi` with exact-version, minor-version, commit,
 and `latest` tags. Moving minor-version and `latest` tags only advance within their
 respective release channels; publishing an older patch does not roll them back. GitHub
-Release assets are not a claim that the package was published to PyPI; use the exact
-reviewed artifact or release tag documented for your deployment.
+Release assets are not a claim that either package was published to PyPI or the npm
+registry; use the exact reviewed artifact or release tag documented for your deployment.
 
 The published container is currently native `linux/amd64`, not a multi-architecture
 manifest. ARM64 users should install the Wheel/source distribution or build and verify
 the pinned Dockerfile on their own platform.
 
-Version 0.3 requires a fresh database. If the PostgreSQL volume was initialized by a
-v0.2.x checkout, preserve any evidence you need and recreate that development volume;
-there is intentionally no in-place upgrade across the pre-release baseline reset.
-The `migrate` command is still required on a new installation because it initializes the
-fourteen-table schema; it does not imply that an unreleased product needs a historical
-data migration or v0.2 compatibility path.
+Release 0.4.0 applies `001_v3_baseline.sql` and
+`002_stripe_request_snapshots.sql` to a fresh database. An existing v0.3 database keeps
+its immutable 001 history and applies only 002. If the PostgreSQL volume was initialized
+by a v0.2.x checkout, preserve any evidence you need and recreate that development
+volume; there is intentionally no in-place upgrade across the pre-release 0.3 baseline
+reset. The `migrate` command is required for both a new installation and a v0.3 → v0.4
+upgrade.
 
 ```bash
 cp .env.example .env
@@ -342,7 +386,7 @@ uv sync --frozen
 uv run --env-file .env stripe-entitlements migrate
 ```
 
-`stripe-entitlements migrate` reads only `DATABASE_URL`; a schema-init Job does not need
+`stripe-entitlements migrate` reads only database connection/pool settings; a schema-init Job does not need
 the Stripe API key, webhook secret, or browser configuration. The full `.env` command
 above is convenient for local setup, but production should inject a database-only secret
 into the migration Job and keep Stripe credentials on the API/workers that use them.
@@ -401,6 +445,27 @@ uv run --env-file .env \
   uvicorn stripe_entitlements.app:create_app --factory --port 8000
 ```
 
+Native TypeScript/Node alternative:
+
+```bash
+cd typescript
+npm ci
+cp .env.example .env
+chmod 600 .env
+# Set BILLING_TRANSITION_POLICY to full_period_reset or prorated_delta.
+set -a
+. ./.env
+set +a
+npx stripe-entitlements migrate
+npx stripe-entitlements doctor
+npx stripe-entitlements serve
+```
+
+The Node server exposes the same public paths on port 8000. A pure Next.js backend can
+instead use the checked-in Route Handlers and `vercel.typescript.json`; it never starts
+FastAPI. Full package, auth, worker, and deployment instructions are in
+[`typescript/README.md`](typescript/README.md).
+
 For the reference frontend:
 
 ```bash
@@ -431,7 +496,7 @@ usually maps an immutable host user ID to `external_ref`; team billing maps the 
 organization or tenant ID instead. Email and browser-supplied account IDs are never
 ownership authority.
 
-The repository supplies the auth protocol, account resolver, billing HTTP APIs and
+Both backend packages supply the auth protocol, account resolver, billing HTTP APIs and
 atomic credit primitives. It now also supplies personal/team JWT starters,
 `BillingKernel` / `BillingServices`, a native `APIRouter` installer, an
 `EntitlementService`, and an optional internal workload router. The host still owns
@@ -451,6 +516,12 @@ routes, and scopes response hardening to installed billing routes. It does not a
 unrelated host routes or global logging. See the
 [adoption guide](docs/ADOPTION.md#compose-the-fastapi-application) for complete runnable
 personal, team, composed-lifespan, and internal-router examples.
+
+For Node or Next.js, use `createBillingRuntime({ auth })` with a host
+`AuthAccountAdapter`, or configure the strict personal JWT/JWKS environment starter and
+delegate Route Handlers to `environmentNextBillingRouteHandler`. Team deployments inject
+`TeamJwtAuthAdapter` with a live membership repository. See the
+[TypeScript adoption guide](typescript/README.md#connect-the-host-identity-system).
 
 Bind one `Database` object to one kernel; a second binding fails fast so one lifecycle
 cannot close another kernel's pool. Routers passed explicitly through `internal_routers`
@@ -511,16 +582,19 @@ privacy rules, and reproducible workflow.
 Evidence is split by execution layer; collecting a test or retaining an older run does
 not prove the current tree against Stripe's network.
 
-The current Vercel Services working tree passed 1,205 network-free backend tests against
-disposable PostgreSQL 17 and 193 frontend tests, including production build. The 10
-opt-in Stripe test-mode cases belong to the unchanged `v0.3.0` billing baseline and were
-not rerun for this deployment-only branch. Those layers are not yet bound together as a
-final commit, container, signed browser transport, or production release; all applicable
-gates must be rebound to the release commit.
+The current uncommitted 0.4.0 working tree passed 1,254 network-free Python tests against
+disposable PostgreSQL 17 (with 10 `real_stripe` tests deselected), 804 native TypeScript
+tests across 50 files under its full coverage/build gate, and 207 reference-Web tests
+across 19 files. Python lint/type checking/audit, both TypeScript npm audits, and Web
+lint/type checking/npm audits also passed. These working-tree results are not yet bound
+to a final commit. The clean Web production build, final Python/npm distributions, container,
+current Python and TypeScript Stripe-network suites, four browser/backend-policy runs,
+and production payload verification must be recorded separately; none is implied by the
+network-free counts.
 
 The artifact and network evidence below belongs to the earlier 2026-08-28 0.3
 baseline candidate based on `main@4df7f73`; it has not been rebound to the current
-phase-1 tree and must be rerun before release:
+0.4.0 candidate and must be rerun before release:
 
 - an independently installed candidate Wheel loaded its packaged catalog and complete
   schema baseline from an arbitrary working directory and migrated a fresh PostgreSQL 17
@@ -567,14 +641,24 @@ fixing the incidental total Event count.
 Default CI:
 
 ```bash
+uv sync --frozen
+uv run python scripts/check_release_versions.py
 uv run ruff format --check .
 uv run ruff check .
 uv run mypy src
 uv run pytest -m "not real_stripe"
+uv audit
 
-cd web
+cd typescript
 npm ci
 npm audit --omit=dev
+npm audit
+npm run check
+
+cd ../web
+npm ci
+npm audit --omit=dev
+npm audit
 npm run lint
 npm run typecheck
 npm test
@@ -649,13 +733,16 @@ customer, Event, Invoice, or secret identifiers are committed. See
 
 ## SQL migrations and production cutover
 
-`stripe-entitlements migrate` applies the complete `001_v3_baseline.sql` to a fresh
-PostgreSQL database. It directly creates all fourteen correctness tables, final constraints,
+`stripe-entitlements migrate` applies the complete ordered migration bundle. A fresh 0.4.0
+database receives `001_v3_baseline.sql` followed by
+`002_stripe_request_snapshots.sql`; an existing v0.3 database receives only the atomic
+002 addition. The baseline creates all fourteen correctness tables, final constraints,
 partial uniqueness guards, coordination indexes, immutable Invoice ownership, and causal
-incident timestamps. There are no historical backfills, FK rebuilds, or deprecated audit-
-digest compatibility columns in a fresh installation.
+incident timestamps. Migration 002 adds versioned JSON request snapshots to subscription
+Checkout claims, credit-pack orders, and plan-change intents without inventing facts for
+existing rows.
 
-The migration process loads only `DATABASE_URL`. This permits a least-privilege schema
+The migration process loads only `DATABASE_URL` and optional `DATABASE_POOL_*` bounds. This permits a least-privilege schema
 init Job with no Stripe key or webhook secret; normal API and worker processes still
 require their complete runtime settings.
 
@@ -664,6 +751,20 @@ initialized by a public v0.2.x tag: recreate old development, demo, and staging 
 The new filename makes mixed histories fail closed in both directions; do not edit
 `schema_migrations` to bypass that protection. Once 0.3 is released, its baseline checksum
 is immutable and future schema changes must be appended as `002_...sql` and later files.
+
+Snapshot state is explicit: `NULL` is a pre-002 request that cannot be reconstructed,
+`0` is a new reservation that has not started a Stripe mutation, and `1` is the validated,
+frozen request used for every same-key retry. The frozen request includes the exact Price,
+URL, Customer/create mode, product line, API version, mutation parameters, and Stripe
+idempotency identity. Legacy or malformed requests fail closed instead of being rebuilt
+from current configuration.
+
+The 002 DDL is additive, but the coordinator protocol is not safe to mix with v0.3 remote
+mutation writers: v0.3 does not understand frozen snapshots. Quiesce subscription
+Checkout, credit-pack Checkout, and plan-change creation; apply 002; then replace all such
+writers with v0.4 before reopening traffic. After v0.4 has accepted a request, do not roll
+those writers back to v0.3 while any claim/order/intent is in flight. Stop writes and
+reconcile or retire every remote outcome first; otherwise roll forward.
 
 The runner serializes application, verifies every bundled checksum, and allows later rows
 for future backward-compatible rolling deploys. Apply every migration required by the
@@ -692,6 +793,8 @@ Use the [release checklist](.github/RELEASE_CHECKLIST.md) and
 
 - `src/stripe_entitlements/`: standalone/composable FastAPI integration, billing and
   entitlement services, processor, gateway, workers, auth and plan-change coordinator;
+- `typescript/`: independent Node/Next implementation, npm package, Fetch/Route Handler
+  adapters, CLI, unit/PostgreSQL/cross-runtime/real-Stripe tests, and adoption guide;
 - `examples/auth_starters/`: runnable personal/team JWT entrypoints and team membership
   schema;
 - `examples/job_outbox/`: runnable Job, billing outbox, queue outbox, retry, and fencing

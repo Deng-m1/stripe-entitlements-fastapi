@@ -582,7 +582,7 @@ async def run_doctor(
             )
         )
 
-    database = Database(settings.database_url)
+    database = Database.from_settings(settings)
     connected = False
     try:
         await database.connect()

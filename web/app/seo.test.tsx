@@ -23,10 +23,10 @@ describe("public SEO surface", () => {
     const { container } = render(<HomePage />);
 
     expect(homeMetadata.title).toBe(
-      "Stripe Billing, Credit Packs & Entitlements for FastAPI",
+      "Stripe Billing, Credit Packs & Entitlements for FastAPI & TypeScript",
     );
     expect(homeMetadata.description).toMatch(
-      /FastAPI, PostgreSQL.*fractional credits.*credit packs.*full-period or prorated/i,
+      /FastAPI and TypeScript backends.*PostgreSQL.*fractional credits.*credit packs.*full-period or prorated/i,
     );
 
     expect(
@@ -39,7 +39,7 @@ describe("public SEO surface", () => {
     // "Stripe billing". Do not weaken these without updating the brief.
     expect(
       screen.getByText(
-        /Stripe billing reference for FastAPI, PostgreSQL, and Next\.js.*credit packs/i,
+        /Stripe billing reference with native FastAPI and TypeScript\/Next\.js backends.*PostgreSQL.*credit packs/i,
       ),
     ).toBeInTheDocument();
     expect(
@@ -99,6 +99,9 @@ describe("public SEO surface", () => {
     expect(screen.getByRole("rowheader", { name: "Boost 500" })).toBeInTheDocument();
     expect(screen.getByRole("rowheader", { name: "Boost 2,000" })).toBeInTheDocument();
     expect(screen.getByText(/Can product credits be fractional/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Can I use the Stripe billing backend without Python/i),
+    ).toBeInTheDocument();
     // The repository guarantees effectively-once PostgreSQL effects, not
     // impossible end-to-end exactly-once delivery. Marketing content must also
     // not invent event-volume evidence that no reproducible test produces.
@@ -135,7 +138,7 @@ describe("public SEO surface", () => {
 
   it("provides a web manifest for the reference application", () => {
     expect(manifest()).toMatchObject({
-      name: "Stripe Entitlements for FastAPI",
+      name: "Stripe Entitlements for FastAPI & TypeScript",
       start_url: "/",
       display: "standalone",
     });

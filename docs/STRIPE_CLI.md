@@ -99,9 +99,43 @@ Reconciliation, not Event editing, repairs a genuinely missing entitlement.
 Bootstrap test-mode Products, Prices and the dedicated Portal configuration:
 
 ```bash
+# Python / FastAPI operator
 uv run python scripts/bootstrap_stripe.py
 uv run python scripts/bootstrap_stripe.py --verify-only
+
+# Native TypeScript / Node operator (does not invoke Python or PostgreSQL)
+cd typescript
+npx stripe-entitlements bootstrap
+npx stripe-entitlements bootstrap --verify-only
 ```
+
+Choose the operator that matches the deployed backend; both consume the same canonical
+`plans.toml`, lookup-key convention, product-line ownership metadata, price policy, and
+Portal safety predicate. The TypeScript command prints secret-free JSON containing the
+`portalConfigurationId`; set that value as `STRIPE_PORTAL_CONFIGURATION_ID` before
+starting Node or Next.js. It follows every Product, Price, and Portal list page and uses
+stable mutation idempotency keys. It refuses to transfer a lookup key from an unrelated
+Product and fails closed on duplicate owned Products or Portal configurations.
+
+The TypeScript operator defaults to test mode. A live key is not sufficient authority:
+both explicit acknowledgements are required even for the read-only verification path,
+and the confirmation must exactly equal the effective `PRODUCT_LINE`:
+
+```bash
+cd typescript
+npx stripe-entitlements bootstrap \
+  --allow-live \
+  --confirm-live-product-line example-entitlements
+npx stripe-entitlements bootstrap \
+  --verify-only \
+  --allow-live \
+  --confirm-live-product-line example-entitlements
+```
+
+Missing, placeholder, malformed, or insufficiently confirmed live keys fail before the
+Stripe SDK client is constructed. There is intentionally no environment-only live
+bootstrap opt-in. Optional `--catalog`, `--lookup-prefix`, and `--product-line` flags
+override their environment/package defaults for one operator run.
 
 The Portal policy intentionally disables subscription price updates and permits
 cancellation only at period end. Plan changes must pass through the authenticated
@@ -216,8 +250,12 @@ lookup keys, preview totals, final Event types and cleanup. Never commit raw ide
 Test and live mode do not share Products, Prices, Portal configurations, webhook
 endpoints, Events or signing secrets.
 
-1. run `bootstrap_stripe.py --allow-live` with an explicitly approved live key;
-2. run `--verify-only` and save redacted output in the private release record;
+1. choose the matching operator and bootstrap with an explicitly approved live key:
+   Python uses `bootstrap_stripe.py --allow-live`; TypeScript uses
+   `stripe-entitlements bootstrap --allow-live --confirm-live-product-line <exact-line>`;
+2. run that operator's `--verify-only` form (including both TypeScript live
+   acknowledgements) and save its secret-free/redacted output in the private release
+   record;
 3. create a new live webhook endpoint with only the supported event types;
 4. inspect a live endpoint Event snapshot and set `STRIPE_WEBHOOK_API_VERSION` to it;
 5. configure the new live signing secret independently;

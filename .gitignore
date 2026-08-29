@@ -9,6 +9,12 @@ __pycache__/
 *.py[cod]
 dist/
 build/
+node_modules/
+/typescript/node_modules
+/web/node_modules
+coverage/
+.vite/
+*.tsbuildinfo
 htmlcov/
 .coverage
 test-results/

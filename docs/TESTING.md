@@ -4,19 +4,20 @@ The project separates deterministic local/PostgreSQL tests, opt-in automated Str
 test-mode tests, real-browser signed-delivery tests, manual observations, and live
 production verification. Passing one layer must not be described as passing another.
 
-The credit-pack candidate has current local, frontend, and Stripe test-mode evidence but
-has not yet received the required final-commit browser and container rerun. Working-tree
-results below must not be presented as release evidence or inherit an earlier container
-identity:
+The 0.4.0 native-TypeScript parity candidate has current network-free working-tree evidence
+but has not yet received the required final-commit artifact, Stripe-network, browser, and
+container reruns. Results below must not be presented as release evidence or inherit an
+earlier artifact identity:
 
-| Layer | Evidence | Boundary |
-| --- | --- | --- |
-| Local/backend | Current Vercel Services working tree: 1,205 passed, 10 `real_stripe` deselected | Real PostgreSQL and mocked Stripe responses; not yet bound to a final commit |
-| Frontend | Current Vercel Services working tree: 193 passed; lint, typecheck, production build, and npm production audit passed | No Stripe network; not yet bound to a final commit |
-| Real Stripe suite | Unchanged `v0.3.0` billing baseline: 10/10 passed in 408.12 seconds with strict run-owned cleanup; not rerun for this deployment-only branch | Test mode and Event polling, not signed webhook transport or live mode; not evidence for the changed deployment commit |
-| Browser policy gates, endpoint transport | Later 2026-08-28 working-tree artifacts: both policies completed the expanded gate with 11 account-related, 0 unrelated, exactly 5 essential Events, and final Pro/1,020 | Predates final hardening and does not embed the final commit SHA; must be rerun |
-| Wheel/container | Current 0.3.0 wheel and sdist built with checksums; earlier candidate container reached healthy non-root/read-only runtime | Current container rebuild still required on the final commit |
-| Live production payload | **not run** | Test mode never substitutes for live mode |
+| Layer                   | Current evidence                                                                                                         | Boundary                                                                             |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| Python/FastAPI          | 1,254 passed, 10 `real_stripe` deselected; Ruff, Mypy, and dependency audit passed                                       | Real PostgreSQL and mocked Stripe responses; uncommitted working tree                |
+| Native TypeScript       | 50 files / 804 tests passed under `npm run check`; both npm audits reported zero vulnerabilities                         | Real PostgreSQL and mocked Stripe responses; uncommitted working tree                |
+| Reference Web           | 19 files / 207 tests, lint, typecheck, and both npm audits passed                                                        | No Stripe network; clean production build and final-commit rerun remain required     |
+| Real Stripe suites      | Earlier Python v0.3.0 10/10 result remains historical; current Python and TypeScript 0.4.0 suites have not been rebound  | Event polling is not signed delivery or live mode                                    |
+| Browser policy gates    | Two earlier Python working-tree endpoint runs completed the expanded five-essential-Event gate                           | Predates final hardening; does not prove either backend at 0.4.0 or the final commit |
+| Distribution/container  | Current npm artifact migration smoke passed earlier in the working tree; prior Python/container artifacts are historical | Rebuild and verify every final 0.4.0 artifact from the exact commit                  |
+| Live production payload | **not run**                                                                                                              | Test mode never substitutes for live mode                                            |
 
 The earlier 2026-08-01 pre-hardening baseline—239 local/backend, 7 real Stripe,
 60 frontend, and 2 browser policy runs—is retained only as historical regression
@@ -118,6 +119,72 @@ These tests use real PostgreSQL transactions and constraints but mocked Stripe r
 They prove repository logic for the fixtures; they do not prove current Stripe network or
 Dashboard behavior.
 
+## Native TypeScript suite
+
+`typescript/` is a second backend implementation, not a frontend client or Python proxy.
+Its default gate runs type-aware lint, TypeScript compilation, unit/golden-policy tests,
+real PostgreSQL migration/constraint/transaction/race tests, and a production package
+build:
+
+```bash
+cd typescript
+npm ci
+npm audit --omit=dev
+npm audit
+npm run check
+```
+
+`npm run check` includes the unit/PostgreSQL coverage gate. Coverage is collected only
+from `src/**/*.ts` (excluding the build-time resource copier and process-only bin shim),
+with maintainable whole-runtime floors of 80% statements/lines, 85% functions, and 70%
+branches. The new remote-mutation safety boundary is held to stronger per-module floors:
+`checkout.ts`, `credit-pack-coordinator.ts`, and `stripe-request-snapshots.ts` each require
+90% statements/lines/functions and 85% branches. The larger `plan-changes.ts`
+coordinator independently requires 85% statements/lines, 95% functions, and 80%
+branches. Subscription clawback-debt collection in `clawbacks.ts` requires 85%
+statements/lines, 100% functions, and 60% branches. Passing test counts without these
+thresholds is not a successful `check`.
+
+The PostgreSQL project is serial at the file level and owns a disposable PostgreSQL 17
+container. It covers the native subscription projector, both transition policies,
+Invoice binding and SCA recovery, annual grants, Checkout coordinators, credit packs,
+entitlement/internal HTTP services, reconciliation leases/fencing, commit-time
+constraints, and same-account concurrency. Shared golden vectors execute the catalog,
+credit precision, ordering, invoice, and transition policy contract in both languages.
+Mixed-runtime tests start Python and TypeScript workers against one real database and
+prove same-key charge idempotency, concurrent no-overspend, and one-time refund recovery.
+
+CI also builds `npm pack`, installs the tarball in a clean temporary project, imports the
+public ESM API, resolves the CLI, and compares its packaged migration and `plans.toml`
+byte-for-byte with the repository canonicals. A second clean install then starts a fresh,
+disposable PostgreSQL 17 instance and invokes that installed package's CLI from outside
+the repository. It requires exact 001/002 filenames and SHA-256 history, an idempotent
+second `migrate`, all correctness tables, all six 002 snapshot columns, and
+`Database.schemaReady() === true`. This proves the published package resource lookup and
+migration path; it does not prove an upgrade of application data or a production rollout.
+The checked-in Next.js reference then lint/typechecks/tests/builds against that local
+package.
+
+The opt-in TypeScript real-Stripe suite has a fail-fast test-key guard and creates
+isolated run-marked Products, Prices, Customers, Subscriptions, PaymentIntents,
+Schedules, and Test Clocks. It must clean only its own objects and require zero residual
+run inventory:
+
+```bash
+cd typescript
+npm run test:real-stripe
+```
+
+Its intended matrix covers paid/refund projection, both immediate-upgrade templates,
+SCA source-entitlement preservation under both policies, annual period-end Schedule,
+annual Test Clock slot/downtime/renewal behavior, and credit-pack cash/product refund
+convergence. Only an actually completed run counts as network evidence.
+
+The same repository Playwright journey can select `python` or `typescript` with
+`E2E_BACKEND_IMPLEMENTATION` and must run once per transition policy. This proves that
+both backends satisfy the same browser contract rather than merely passing different
+mock fixtures.
+
 ## Frontend suite
 
 `web/` uses Vitest and React Testing Library. CI runs:
@@ -126,6 +193,7 @@ Dashboard behavior.
 cd web
 npm ci
 npm audit --omit=dev
+npm audit
 npm run lint
 npm run typecheck
 npm test
@@ -184,7 +252,12 @@ the gate performs a hosted Portal round trip and an owner-bound Job charge/repla
 flow ending at Pro/1,020.
 
 The browser refuses card entry unless the actual hosted URL contains a `cs_test_`
-Session. A remote base URL requires a second explicit acknowledgement. The full-stack
+Session. All five Stripe-touching browser POST classes (subscription Checkout,
+credit-pack Checkout, Portal, plan-change preview, and plan-change confirm) additionally
+send `X-Stripe-Mode-Requirement: test`; Python and TypeScript reject a mismatch before
+any gateway call. The header supplements, and does not replace, the `sk_test_` process
+guard and pre-write `/health` attestation. A remote base URL requires a second explicit
+acknowledgement. The full-stack
 runner defaults to creating and verifying a temporary test Webhook Endpoint; an explicit
 Stripe CLI mode is available for local signed forwarding when a Quick Tunnel is
 unavailable. Both inspect PostgreSQL for handled signed Events at the configured snapshot
@@ -310,9 +383,9 @@ uv run pytest -m real_stripe -v
 The following observations were recorded manually on 2026-07-31 and are not replayed by
 CI:
 
-| Scenario | Observed result | What it supports |
-| --- | --- | --- |
-| `PY → UM` preview | negative $204 | why every annual-origin transition must defer |
+| Scenario                  | Observed result                                                                                                        | What it supports                                                                                 |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `PY → UM` preview         | negative $204                                                                                                          | why every annual-origin transition must defer                                                    |
 | declined immediate change | old SKU and active Subscription remained; latest Invoice was open; hosted recovery URL and confirmation secret existed | originally manual; the current 4-case automated failed-payment matrix passed again on 2026-08-28 |
 
 Amounts are observations for that test account/time, not universal expected values. These
@@ -377,14 +450,23 @@ Checkout promotion codes before they pass is prohibited.
 
 ```bash
 uv sync --frozen
+uv run python scripts/check_release_versions.py
 uv run ruff format --check .
 uv run ruff check .
 uv run mypy src
 uv run pytest -m "not real_stripe"
+uv audit
 
-cd web
+cd typescript
 npm ci
 npm audit --omit=dev
+npm audit
+npm run check
+
+cd ../web
+npm ci
+npm audit --omit=dev
+npm audit
 npm run lint
 npm run typecheck
 npm test
@@ -392,8 +474,10 @@ npm run build
 
 # Explicit networked release gate; requires isolated Stripe test infrastructure.
 cd ..
-E2E_TRANSITION_POLICY=full_period_reset scripts/run_browser_e2e.sh
-E2E_TRANSITION_POLICY=prorated_delta scripts/run_browser_e2e.sh
+E2E_BACKEND_IMPLEMENTATION=python E2E_TRANSITION_POLICY=full_period_reset scripts/run_browser_e2e.sh
+E2E_BACKEND_IMPLEMENTATION=python E2E_TRANSITION_POLICY=prorated_delta scripts/run_browser_e2e.sh
+E2E_BACKEND_IMPLEMENTATION=typescript E2E_TRANSITION_POLICY=full_period_reset scripts/run_browser_e2e.sh
+E2E_BACKEND_IMPLEMENTATION=typescript E2E_TRANSITION_POLICY=prorated_delta scripts/run_browser_e2e.sh
 
 git diff --check
 ```

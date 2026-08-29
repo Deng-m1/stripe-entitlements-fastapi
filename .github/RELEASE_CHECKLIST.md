@@ -7,13 +7,13 @@
 - [ ] Link every billing behavior change to an invariant and migration.
 - [ ] Separate automated PostgreSQL, automated real Stripe, manual test-mode and
       production evidence.
-- [ ] Bind every pass claim to the exact commit. An earlier phase-1 snapshot reported
-      1,110 network-free PostgreSQL tests and 180 frontend tests, but final credit-pack
-      hardening changed the tree afterward. The later working-tree candidate passed
-      1,187/189/10 local, frontend, and Stripe test-mode gates; bind them to the final
-      commit before release. The expanded browser artifacts still predate final hardening;
-      label older 239/7/60/2 and 270/9/62/2 results as historical, and do not relabel the
-      failed pre-state Quick Tunnel attempt as endpoint evidence.
+- [ ] Bind every pass claim to the exact commit. The uncommitted 0.4.0 candidate passed
+      1,254 Python tests with 10 `real_stripe` tests deselected, 804 TypeScript tests across
+      50 files, and 207 Web tests across 19 files. Those counts are working-tree evidence,
+      not a release identity; rerun all applicable artifact, container, Stripe-network,
+      and four browser/backend-policy gates on the final commit. Keep older
+      239/7/60/2 and 270/9/62/2 results historical, and do not relabel the failed
+      pre-state Quick Tunnel attempt as endpoint evidence.
 - [ ] Cite Test Clock renewal/annual-slot evidence only when the full annual lifecycle
       test actually ran; a collected or skipped test is not evidence.
 - [ ] Record outbound request API version and webhook Event snapshot API version
@@ -22,14 +22,30 @@
 ## Locked verification
 
 - [ ] `uv sync --frozen`
+- [ ] `uv run python scripts/check_release_versions.py`
 - [ ] `uv run ruff format --check .`
 - [ ] `uv run ruff check .`
 - [ ] `uv run mypy src`
 - [ ] `uv run pytest -m "not real_stripe"`
+- [ ] `uv audit`
+- [ ] `cd typescript && npm ci`
+- [ ] `cd typescript && npm audit --omit=dev && npm audit`
+- [ ] `cd typescript && npm run check`
+- [ ] Pack the npm artifact, install it in a clean project, run its CLI, import every
+      documented export, and compare packaged migration/catalog/license files with the
+      repository canonicals.
+- [ ] From a second clean install of that exact `.tgz`, run the installed (not source-tree)
+      CLI against a fresh disposable PostgreSQL 17 database; require exact 001/002
+      filename/SHA-256 history, idempotent re-apply, all correctness tables, all six 002
+      snapshot columns, and `Database.schemaReady() === true`.
+- [ ] Treat the verified GitHub Release `.tgz` as an artifact, not an npm registry
+      publication; enable npm trusted publishing and a vacancy check before adding
+      `npm publish` to the release workflow.
 - [ ] Run `stripe-entitlements doctor --json` against the release database and retain a
       secret-free report; do not label it Stripe endpoint or payload evidence.
 - [ ] `cd web && npm ci`
 - [ ] `cd web && npm audit --omit=dev`
+- [ ] `cd web && npm audit`
 - [ ] `cd web && npm run lint`
 - [ ] `cd web && npm run typecheck`
 - [ ] `cd web && npm test`
@@ -41,6 +57,9 @@
 - [ ] Confirm the key starts with `sk_test_` before any automated real call.
 - [ ] Run `uv run pytest -m real_stripe -v` when Stripe object/payload parsing
       changed; require all 10 current cases to execute and record counts/skips.
+- [ ] Run `cd typescript && npm run test:real-stripe` when TypeScript Stripe
+      object/payload parsing changed; require every current case plus strict cleanup and
+      zero run-owned residual inventory.
 - [ ] Verify the real credit-pack PaymentIntent, immutable metadata, Customer/Charge
       lineage, partial/full cash clawback, product refund interaction, and strict cleanup.
 - [ ] Verify the automated real full-price/no-proration monthly transition.
@@ -70,8 +89,8 @@
 - [ ] Re-run affected manual scenarios:
   - [ ] annual-origin previews such as `PY → UM` remain period-end;
   - [ ] decline/pending update retains old entitlement and provides recovery.
-- [ ] Run `scripts/run_browser_e2e.sh` once with each transition policy against an
-      isolated test account and record:
+- [ ] Run `scripts/run_browser_e2e.sh` for Python and TypeScript, once with each
+      transition policy (four runs), against an isolated test account and record:
   - [ ] Checkout decline left the browser-visible account Free;
   - [ ] the same `cs_test_` Session completed the test 3DS challenge;
   - [ ] the UI confirmed only the webhook-projected Starter/Monthly/300 state;
@@ -119,6 +138,16 @@
       verify both old-to-new and new-to-old lineage mixing fails without partial DDL.
 - [ ] After the 0.3 baseline is released, freeze its filename and checksum and append
       `002_...sql` or later for every schema change.
+- [ ] For 0.4.0, verify fresh installation applies byte-identical 001 + 002, and verify an
+      existing 0.3 database atomically applies only `002_stripe_request_snapshots.sql`.
+- [ ] Verify failed 002 application leaves no snapshot columns/constraints/history row,
+      then succeeds unchanged on retry.
+- [ ] Verify legacy rows remain `request_snapshot_version IS NULL`, new reservations use
+      0, and only strict frozen JSON request snapshots use version 1.
+- [ ] Quiesce subscription Checkout, credit-pack Checkout, and plan-change writers before
+      applying 002; replace every v0.3 writer with v0.4 before reopening those routes.
+- [ ] Do not roll remote-mutation writers back to v0.3 after v0.4 accepts traffic unless
+      writes are stopped and every in-flight v1/remote-started row is reconciled or retired.
 - [ ] Verify every bundled migration checksum; tolerate later migration rows only when
       the runtime/schema change remains backward-compatible during rolling deployment.
 - [ ] Verify restore/PITR and run reconciliation in staging.
@@ -160,7 +189,8 @@
       return routes `noindex` using `docs/SEO.md`.
 - [ ] Confirm visible landing, plan, savings and FAQ copy matches JSON-LD and the
       enforced catalog; do not advertise unsupported coupons, trials, tax or currency.
-- [ ] Confirm CI `Backend`, `Container`, and `Web` jobs pass from a clean clone. Backend
+- [ ] Confirm CI `Backend`, `TypeScript billing core`, `Container`, and `Web` jobs pass
+      from a clean clone. Backend
       must install the Wheel independently and apply the complete baseline to fresh
       PostgreSQL; Container must do the same from the built image, then return
       `ok=true`/`database=true` from host `curl` while UID/GID 10001 and read-only.
@@ -201,8 +231,12 @@
       review. Record the recovery decision and final digest in the private release log.
 - [ ] Download the published GitHub assets, verify `SHA256SUMS`, install the Wheel in a
       clean environment, and require `stripe-entitlements --version` to equal the tag.
+- [ ] Install the downloaded `.tgz` in a second clean Node project; require its CLI
+      version, public ESM exports, catalog, licenses, and both migration bytes to match
+      the tag and repository canonicals, then repeat the fresh PostgreSQL migration
+      contract with that downloaded artifact.
 - [ ] Pull the image by the recorded digest, require the same CLI version, apply the fresh
-      baseline, and repeat the non-root/read-only health smoke before announcing release.
+      migration set, and repeat the non-root/read-only health smoke before announcing release.
 - [ ] Record that the release workflow currently publishes a native `linux/amd64` image;
       do not advertise ARM64/multi-architecture support until a verified manifest exists.
 - [ ] Include migrations, compatibility, evidence boundary, rollback and known limits.

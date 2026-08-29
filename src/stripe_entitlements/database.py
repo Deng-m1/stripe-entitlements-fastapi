@@ -6,12 +6,15 @@ import json
 import re
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import asyncpg
 
 from .owner_reference import validate_owner_external_ref
 from .resources import default_migration_directory
+
+if TYPE_CHECKING:
+    from .config import DatabaseSettings
 
 MigrationFile = tuple[str, str, str]
 _MIGRATION_NAME = re.compile(r"^(\d{3})_[a-z0-9][a-z0-9_]*\.sql$")
@@ -73,13 +76,46 @@ async def _init_connection(conn: asyncpg.Connection) -> None:
 
 
 class Database:
-    def __init__(self, dsn: str) -> None:
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        min_size: int = 1,
+        max_size: int = 20,
+        idle_timeout_ms: int = 10_000,
+        connect_timeout_ms: int = 10_000,
+    ) -> None:
+        if not 0 <= min_size <= max_size <= 100 or max_size < 1:
+            raise ValueError("database pool sizes must satisfy 0 <= min <= max <= 100")
+        if not 1_000 <= idle_timeout_ms <= 600_000:
+            raise ValueError("database idle timeout must be between 1000 and 600000 ms")
+        if not 1_000 <= connect_timeout_ms <= 120_000:
+            raise ValueError("database connect timeout must be between 1000 and 120000 ms")
         self.dsn = dsn
+        self.min_size = min_size
+        self.max_size = max_size
+        self.idle_timeout_ms = idle_timeout_ms
+        self.connect_timeout_ms = connect_timeout_ms
         self.pool: asyncpg.Pool | None = None
+
+    @classmethod
+    def from_settings(cls, settings: DatabaseSettings) -> Database:
+        return cls(
+            settings.database_url,
+            min_size=settings.database_pool_min,
+            max_size=settings.database_pool_max,
+            idle_timeout_ms=settings.database_pool_idle_timeout_ms,
+            connect_timeout_ms=settings.database_connect_timeout_ms,
+        )
 
     async def connect(self) -> None:
         self.pool = await asyncpg.create_pool(
-            self.dsn, min_size=1, max_size=20, init=_init_connection
+            self.dsn,
+            min_size=self.min_size,
+            max_size=self.max_size,
+            max_inactive_connection_lifetime=self.idle_timeout_ms / 1000,
+            timeout=self.connect_timeout_ms / 1000,
+            init=_init_connection,
         )
 
     async def close(self) -> None:

@@ -194,7 +194,7 @@ def create_app() -> FastAPI:
     workload_auth = _SignedWorkloadAdapter(workload_verifier, issuer)
     owner_authorizer = _BoundWorkloadOwnerAuthorizer(workload_subject, expected_owner)
 
-    app = FastAPI(title="Stripe Entitlements Browser E2E Host", version="0.3.0")
+    app = FastAPI(title="Stripe Entitlements Browser E2E Host", version="0.4.0")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(kernel.origins),

@@ -17,6 +17,7 @@ import {
 } from "../lib/e2e-backend-auth";
 import { E2E_ROUTE_AUTH_SENTINEL } from "../lib/auth";
 import { parseExactCreditAmount } from "../lib/credit-amount";
+import { E2ENavigationCapture } from "../lib/e2e-navigation-capture";
 
 const DECLINED_TEST_CARD = "4000000000000002";
 const SCA_TEST_CARD = "4000002500003155";
@@ -70,7 +71,11 @@ async function expectedAccountId(): Promise<string> {
           /account-id=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i,
         );
         if (error || !match) {
-          reject(new Error("Authenticated E2E subject could not be bound to PostgreSQL."));
+          reject(
+            new Error(
+              "Authenticated E2E subject could not be bound to PostgreSQL.",
+            ),
+          );
           return;
         }
         resolve(match[1]);
@@ -199,7 +204,9 @@ async function verifyTestBackend(
   }
   const expectedPolicy = process.env.E2E_TRANSITION_POLICY;
   if (health.transition_policy !== expectedPolicy) {
-    throw new Error("Backend transition policy differs from E2E_TRANSITION_POLICY.");
+    throw new Error(
+      "Backend transition policy differs from E2E_TRANSITION_POLICY.",
+    );
   }
 }
 
@@ -208,7 +215,6 @@ async function installBackendAuthentication(
   backendURL: string,
   token: string | undefined,
 ): Promise<void> {
-  if (!token) return;
   await context.route("**/*", async (route) => {
     const request = route.request();
     if (
@@ -218,8 +224,17 @@ async function installBackendAuthentication(
       await route.continue();
       return;
     }
+    const authenticatedHeaders = token
+      ? withE2EBackendAuthorization(request.headers(), token)
+      : request.headers();
     const response = await route.fetch({
-      headers: withE2EBackendAuthorization(request.headers(), token),
+      headers:
+        request.method() === "POST"
+          ? {
+              ...authenticatedHeaders,
+              "x-stripe-mode-requirement": "test",
+            }
+          : authenticatedHeaders,
       maxRedirects: 0,
     });
     await route.fulfill({ response });
@@ -233,8 +248,13 @@ async function browserBackendPost<T>(
   payload: Record<string, unknown>,
 ): Promise<T> {
   const target = new URL(path, backendURL);
-  if (target.origin !== new URL(backendURL).origin || !target.pathname.startsWith("/api/")) {
-    throw new Error("Refusing browser E2E POST outside the attested backend API.");
+  if (
+    target.origin !== new URL(backendURL).origin ||
+    !target.pathname.startsWith("/api/")
+  ) {
+    throw new Error(
+      "Refusing browser E2E POST outside the attested backend API.",
+    );
   }
   const result = await page.evaluate(
     async ({ url, body, sentinel }) => {
@@ -264,10 +284,14 @@ async function browserBackendPost<T>(
     },
   );
   if (!result.ok) {
-    throw new Error(`Browser POST ${target.pathname} returned HTTP ${result.status}.`);
+    throw new Error(
+      `Browser POST ${target.pathname} returned HTTP ${result.status}.`,
+    );
   }
   if (!result.parsed || typeof result.parsed !== "object") {
-    throw new Error(`Browser POST ${target.pathname} returned an invalid JSON contract.`);
+    throw new Error(
+      `Browser POST ${target.pathname} returned an invalid JSON contract.`,
+    );
   }
   return result.parsed as T;
 }
@@ -289,8 +313,13 @@ async function prepareUpgradePaymentMethod(): Promise<void> {
         maxBuffer: 64 * 1024,
       },
       (error, stdout) => {
-        if (error || !stdout.includes("prepared run-owned upgrade PaymentMethod")) {
-          reject(new Error("Run-owned upgrade PaymentMethod preparation failed."));
+        if (
+          error ||
+          !stdout.includes("prepared run-owned upgrade PaymentMethod")
+        ) {
+          reject(
+            new Error("Run-owned upgrade PaymentMethod preparation failed."),
+          );
           return;
         }
         resolve();
@@ -298,7 +327,6 @@ async function prepareUpgradePaymentMethod(): Promise<void> {
     );
   });
 }
-
 
 async function creditPackGate(
   command: "wait-captured" | "release" | "wait-forwarded",
@@ -337,7 +365,9 @@ async function creditPackGate(
       },
       (error, stdout) => {
         if (error || !stdout.includes(expectedOutput)) {
-          reject(new Error(`Credit-pack webhook gate command failed: ${command}.`));
+          reject(
+            new Error(`Credit-pack webhook gate command failed: ${command}.`),
+          );
           return;
         }
         resolve();
@@ -349,7 +379,8 @@ async function creditPackGate(
 async function verifyDeclineStability(): Promise<void> {
   const databaseURL = process.env.E2E_DATABASE_URL?.trim();
   const externalRef = process.env.E2E_EXTERNAL_REF?.trim();
-  const stabilitySeconds = process.env.E2E_DECLINE_STABILITY_SECONDS?.trim() ?? "10";
+  const stabilitySeconds =
+    process.env.E2E_DECLINE_STABILITY_SECONDS?.trim() ?? "10";
   if (!databaseURL || !externalRef) {
     throw new Error("Decline barrier environment is missing.");
   }
@@ -407,7 +438,8 @@ async function openPricingThroughExpectedBackend(
   backendURL: string,
 ): Promise<void> {
   const responsePromise = page.waitForResponse(
-    (response) => isCatalogResponse(response.url(), response.request().method()),
+    (response) =>
+      isCatalogResponse(response.url(), response.request().method()),
     { timeout: 20_000 },
   );
   const navigation = await page.goto(frontendUrl(baseURL, "/pricing"), {
@@ -429,17 +461,24 @@ async function openPricingThroughExpectedBackend(
   }
 }
 
-async function openHostedCheckout(page: Page, checkoutUrl: string): Promise<void> {
+async function openHostedCheckout(
+  page: Page,
+  checkoutUrl: string,
+): Promise<void> {
   const expectedSession = checkoutSessionId(checkoutUrl);
   if (!expectedSession) {
-    throw new Error("The captured Checkout redirect has no test Session identity.");
+    throw new Error(
+      "The captured Checkout redirect has no test Session identity.",
+    );
   }
 
   // Checkout capture deliberately aborts the application's automatic navigation.
   // Chromium still updates page.url() before showing an empty aborted document, so
   // URL matching is not proof that hosted Checkout loaded. Always issue a fresh
   // navigation after the temporary route is removed.
-  let lastError: unknown = new Error("Stripe Checkout navigation did not start.");
+  let lastError: unknown = new Error(
+    "Stripe Checkout navigation did not start.",
+  );
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
       await page.goto(checkoutUrl, { timeout: 45_000, waitUntil: "commit" });
@@ -466,11 +505,10 @@ async function prepareCheckoutCapture(
   wait: () => Promise<CheckoutRedirect>;
   release: () => Promise<void>;
 }> {
-  let redirect: CheckoutRedirect | undefined;
-  let captureError: unknown;
+  const capture = new E2ENavigationCapture<CheckoutRedirect>();
   const escapedPath = endpointPath.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   const routePattern = new RegExp(`${escapedPath}(?:\\?.*)?$`, "u");
-  const automaticCheckoutNavigation = /^https:\/\/checkout\.stripe\.com\//;
+  const automaticCheckoutNavigation = /^https:\/\/checkout\.stripe\.com\//u;
 
   // The application redirects immediately after receiving the Session URL. During
   // capture, abort only that automatic top-level navigation so Locator.click() does
@@ -481,7 +519,12 @@ async function prepareCheckoutCapture(
       route.request().isNavigationRequest() &&
       route.request().frame() === page.mainFrame()
     ) {
-      await route.abort("blockedbyclient");
+      try {
+        await route.abort("blockedbyclient");
+        capture.markNavigationAborted();
+      } catch (error) {
+        capture.fail(error);
+      }
       return;
     }
     await route.continue();
@@ -493,7 +536,9 @@ async function prepareCheckoutCapture(
       return;
     }
     try {
-      if (new URL(route.request().url()).origin !== new URL(backendURL).origin) {
+      if (
+        new URL(route.request().url()).origin !== new URL(backendURL).origin
+      ) {
         throw new Error(
           "Refusing Checkout POST: frontend write target does not match E2E_BACKEND_URL.",
         );
@@ -509,20 +554,19 @@ async function prepareCheckoutCapture(
         maxRedirects: 0,
       });
       const body = await response.text();
-      let capturedRedirect: CheckoutRedirect | undefined;
       if (!response.ok()) {
-        captureError = new Error(
+        throw new Error(
           `POST ${endpointPath} returned HTTP ${response.status()}.`,
         );
-      } else {
-        capturedRedirect = JSON.parse(body) as CheckoutRedirect;
       }
+      const capturedRedirect = JSON.parse(body) as CheckoutRedirect;
       // Capture the body before the application calls location.assign(). Chromium
       // may otherwise release Network.getResponseBody during an external navigation.
-      await route.fulfill({ response, body });
-      redirect = capturedRedirect;
+      await capture.publishAfterFulfill(capturedRedirect, () =>
+        route.fulfill({ response, body }),
+      );
     } catch (error) {
-      captureError = error;
+      capture.fail(error);
       await route.abort("failed").catch(() => undefined);
     }
   });
@@ -530,23 +574,19 @@ async function prepareCheckoutCapture(
   return {
     wait: async () => {
       await expect
-        .poll(
-          () => {
-            if (captureError) throw captureError;
-            return redirect;
-          },
-          {
-            timeout: 60_000,
-            message: "waiting for the Checkout redirect response",
-          },
-        )
+        .poll(() => capture.readyValue(), {
+          timeout: 60_000,
+          message: "waiting for the Checkout redirect response",
+        })
         .toBeTruthy();
+      const redirect = capture.readyValue();
       if (!redirect) {
         throw new Error("The Checkout response did not contain a redirect.");
       }
       return redirect;
     },
     release: async () => {
+      capture.assertReleasable();
       await page.unroute(routePattern);
       await page.unroute(automaticCheckoutNavigation);
     },
@@ -561,8 +601,7 @@ async function preparePortalCapture(
   wait: () => Promise<PortalRedirect>;
   release: () => Promise<void>;
 }> {
-  let redirect: PortalRedirect | undefined;
-  let captureError: unknown;
+  const capture = new E2ENavigationCapture<PortalRedirect>();
   const routePattern = /\/api\/billing\/portal(?:\?.*)?$/u;
   const automaticPortalNavigation = /^https:\/\/billing\.stripe\.com\//u;
 
@@ -571,7 +610,12 @@ async function preparePortalCapture(
       route.request().isNavigationRequest() &&
       route.request().frame() === page.mainFrame()
     ) {
-      await route.abort("blockedbyclient");
+      try {
+        await route.abort("blockedbyclient");
+        capture.markNavigationAborted();
+      } catch (error) {
+        capture.fail(error);
+      }
       return;
     }
     await route.continue();
@@ -582,28 +626,34 @@ async function preparePortalCapture(
       return;
     }
     try {
-      if (new URL(route.request().url()).origin !== new URL(backendURL).origin) {
+      if (
+        new URL(route.request().url()).origin !== new URL(backendURL).origin
+      ) {
         throw new Error(
           "Refusing Portal POST: frontend write target does not match E2E_BACKEND_URL.",
         );
       }
       const response = await route.fetch({
-        headers: token
-          ? withE2EBackendAuthorization(route.request().headers(), token)
-          : route.request().headers(),
+        headers: {
+          ...(token
+            ? withE2EBackendAuthorization(route.request().headers(), token)
+            : route.request().headers()),
+          "x-stripe-mode-requirement": "test",
+        },
         maxRedirects: 0,
       });
       const responseBody = await response.text();
       if (!response.ok()) {
-        captureError = new Error(
+        throw new Error(
           `POST /api/billing/portal returned HTTP ${response.status()}.`,
         );
-      } else {
-        redirect = JSON.parse(responseBody) as PortalRedirect;
       }
-      await route.fulfill({ response, body: responseBody });
+      const parsedRedirect = JSON.parse(responseBody) as PortalRedirect;
+      await capture.publishAfterFulfill(parsedRedirect, () =>
+        route.fulfill({ response, body: responseBody }),
+      );
     } catch (error) {
-      captureError = error;
+      capture.fail(error);
       await route.abort("failed").catch(() => undefined);
     }
   });
@@ -611,18 +661,18 @@ async function preparePortalCapture(
   return {
     wait: async () => {
       await expect
-        .poll(
-          () => {
-            if (captureError) throw captureError;
-            return redirect;
-          },
-          { timeout: 60_000, message: "waiting for the Portal redirect response" },
-        )
+        .poll(() => capture.readyValue(), {
+          timeout: 60_000,
+          message: "waiting for the Portal redirect response",
+        })
         .toBeTruthy();
-      if (!redirect) throw new Error("The Portal response did not contain a redirect.");
+      const redirect = capture.readyValue();
+      if (!redirect)
+        throw new Error("The Portal response did not contain a redirect.");
       return redirect;
     },
     release: async () => {
+      capture.assertReleasable();
       await page.unroute(routePattern);
       await page.unroute(automaticPortalNavigation);
     },
@@ -631,22 +681,38 @@ async function preparePortalCapture(
 
 function assertTestModePortal(redirect: PortalRedirect): void {
   if (!/^bps_[A-Za-z0-9_]+$/u.test(redirect.session_id)) {
-    throw new Error("Stripe did not return a stable test Portal Session identity.");
+    throw new Error(
+      "Stripe did not return a stable test Portal Session identity.",
+    );
   }
   const hosted = new URL(redirect.url);
-  if (hosted.protocol !== "https:" || hosted.hostname !== "billing.stripe.com") {
-    throw new Error("Portal redirect is not the real Stripe-hosted billing origin.");
+  if (
+    hosted.protocol !== "https:" ||
+    hosted.hostname !== "billing.stripe.com"
+  ) {
+    throw new Error(
+      "Portal redirect is not the real Stripe-hosted billing origin.",
+    );
   }
 }
 
-async function openHostedPortal(page: Page, redirect: PortalRedirect): Promise<void> {
+async function openHostedPortal(
+  page: Page,
+  redirect: PortalRedirect,
+): Promise<void> {
   assertTestModePortal(redirect);
   let lastError: unknown = new Error("Stripe Portal navigation did not start.");
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      await page.goto(redirect.url, { timeout: 45_000, waitUntil: "domcontentloaded" });
+      await page.goto(redirect.url, {
+        timeout: 45_000,
+        waitUntil: "domcontentloaded",
+      });
       const opened = new URL(page.url());
-      if (opened.protocol !== "https:" || opened.hostname !== "billing.stripe.com") {
+      if (
+        opened.protocol !== "https:" ||
+        opened.hostname !== "billing.stripe.com"
+      ) {
         throw new Error("Hosted Portal navigated outside billing.stripe.com.");
       }
       return;
@@ -658,7 +724,10 @@ async function openHostedPortal(page: Page, redirect: PortalRedirect): Promise<v
   throw lastError;
 }
 
-async function portalReturnLink(page: Page, expectedReturnURL: string): Promise<Locator> {
+async function portalReturnLink(
+  page: Page,
+  expectedReturnURL: string,
+): Promise<Locator> {
   const expected = new URL(expectedReturnURL).toString();
   const deadline = Date.now() + 45_000;
   while (Date.now() < deadline) {
@@ -679,12 +748,15 @@ async function portalReturnLink(page: Page, expectedReturnURL: string): Promise<
         const returnControl = frame
           .getByRole(role, { name: /(?:return|back) to .+/i })
           .first();
-        if (await returnControl.isVisible().catch(() => false)) return returnControl;
+        if (await returnControl.isVisible().catch(() => false))
+          return returnControl;
       }
     }
     await page.waitForTimeout(250);
   }
-  throw new Error("Stripe Portal did not expose the configured return-to-account link.");
+  throw new Error(
+    "Stripe Portal did not expose the configured return-to-account link.",
+  );
 }
 
 async function loadAccountProjection(
@@ -693,7 +765,8 @@ async function loadAccountProjection(
   backendURL: string,
 ): Promise<AccountProjection> {
   const responsePromise = page.waitForResponse(
-    (response) => isAccountResponse(response.url(), response.request().method()),
+    (response) =>
+      isAccountResponse(response.url(), response.request().method()),
     { timeout: 20_000 },
   );
   await page.goto(frontendUrl(baseURL, "/account"), {
@@ -739,10 +812,13 @@ async function loadAccountProjection(
     lotAtoms += BigInt(remaining.atoms);
   }
   if (
-    BigInt(subscription.atoms) + BigInt(purchased.atoms) !== BigInt(total.atoms) ||
+    BigInt(subscription.atoms) + BigInt(purchased.atoms) !==
+      BigInt(total.atoms) ||
     lotAtoms !== BigInt(purchased.atoms)
   ) {
-    throw new Error("Account projection returned inconsistent credit funding totals.");
+    throw new Error(
+      "Account projection returned inconsistent credit funding totals.",
+    );
   }
   parseExactCreditAmount(
     projection.credits.grant_amount,
@@ -781,7 +857,8 @@ async function waitForPaidProjection(
       {
         timeout: timeoutFromEnvironment(),
         intervals: [500, 1_000, 2_000, 3_000],
-        message: "waiting for the signed invoice.paid webhook account projection",
+        message:
+          "waiting for the signed invoice.paid webhook account projection",
       },
     )
     .toEqual({
@@ -842,7 +919,8 @@ async function waitForCreditPackProjection(
       pack_remaining: "100",
       exact_session: expectedSessionId,
     });
-  if (!latest) throw new Error("The credit-pack account projection was not captured.");
+  if (!latest)
+    throw new Error("The credit-pack account projection was not captured.");
   return latest;
 }
 
@@ -871,13 +949,21 @@ async function optionalVisibleLocatorAcrossFrames(
   timeout = 2_000,
 ): Promise<Locator | null> {
   try {
-    return await visibleLocatorAcrossFrames(page, selectors, "optional Checkout field", timeout);
+    return await visibleLocatorAcrossFrames(
+      page,
+      selectors,
+      "optional Checkout field",
+      timeout,
+    );
   } catch {
     return null;
   }
 }
 
-async function fillIfEditable(locator: Locator | null, value: string): Promise<void> {
+async function fillIfEditable(
+  locator: Locator | null,
+  value: string,
+): Promise<void> {
   if (locator && (await locator.isEditable().catch(() => false))) {
     await locator.fill(value);
   }
@@ -955,7 +1041,9 @@ async function fillCheckoutCard(page: Page, number: string): Promise<void> {
 async function disableLinkSave(page: Page): Promise<void> {
   for (const frame of page.frames()) {
     const checkbox = frame
-      .getByRole("checkbox", { name: /save my information for faster checkout/i })
+      .getByRole("checkbox", {
+        name: /save my information for faster checkout/i,
+      })
       .first();
     if (
       (await checkbox.isVisible().catch(() => false)) &&
@@ -1123,7 +1211,10 @@ async function submitCreditPackCheckout(
   let challengeVisible = false;
   while (Date.now() < outcomeDeadline) {
     const current = new URL(page.url());
-    if (current.origin === frontendOrigin && current.pathname === "/billing/success") {
+    if (
+      current.origin === frontendOrigin &&
+      current.pathname === "/billing/success"
+    ) {
       return;
     }
     challengeVisible = page
@@ -1133,21 +1224,33 @@ async function submitCreditPackCheckout(
     await page.waitForTimeout(200);
   }
   if (!challengeVisible) {
-    throw new Error("Credit-pack Checkout neither returned nor opened a 3DS challenge.");
+    throw new Error(
+      "Credit-pack Checkout neither returned nor opened a 3DS challenge.",
+    );
   }
   await completeScaChallenge(page);
   await page.waitForURL(
-    (url) => url.origin === frontendOrigin && url.pathname === "/billing/success",
+    (url) =>
+      url.origin === frontendOrigin && url.pathname === "/billing/success",
     { timeout: 90_000 },
   );
 }
 
-async function hasVisibleTextAcrossFrames(page: Page, pattern: RegExp): Promise<boolean> {
+async function hasVisibleTextAcrossFrames(
+  page: Page,
+  pattern: RegExp,
+): Promise<boolean> {
   for (const frame of page.frames()) {
     const matches = frame.getByText(pattern);
     const count = await matches.count().catch(() => 0);
     for (let index = 0; index < count; index += 1) {
-      if (await matches.nth(index).isVisible().catch(() => false)) return true;
+      if (
+        await matches
+          .nth(index)
+          .isVisible()
+          .catch(() => false)
+      )
+        return true;
     }
   }
   return false;
@@ -1181,9 +1284,12 @@ async function completeScaChallenge(
     if (!button) await page.waitForTimeout(200);
   }
   if (!button) {
-    throw new Error("Timed out waiting for Stripe's test 3DS authentication challenge.");
+    throw new Error(
+      "Timed out waiting for Stripe's test 3DS authentication challenge.",
+    );
   }
-  if (!challengeFrame) throw new Error("Stripe's 3DS challenge frame is missing.");
+  if (!challengeFrame)
+    throw new Error("Stripe's 3DS challenge frame is missing.");
   await challengeFrame.waitForLoadState("load");
   await expect(button).toBeEnabled();
   if (onChallengeReady) {
@@ -1215,7 +1321,10 @@ async function completeScaChallenge(
   try {
     const completionDeadline = Date.now() + 30_000;
     let clickAttempts = 0;
-    while (page.frames().includes(challengeFrame) && Date.now() < completionDeadline) {
+    while (
+      page.frames().includes(challengeFrame) &&
+      Date.now() < completionDeadline
+    ) {
       const enabled = await button.isEnabled().catch(() => false);
       const visible = await button.isVisible().catch(() => false);
       if (enabled && visible && clickAttempts < 3) {
@@ -1236,7 +1345,9 @@ async function completeScaChallenge(
     page.off("response", observeAcsResponse);
   }
   if (acsResponseStatus !== null && acsResponseStatus >= 400) {
-    throw new Error(`Stripe test ACS completion returned HTTP ${acsResponseStatus}.`);
+    throw new Error(
+      `Stripe test ACS completion returned HTTP ${acsResponseStatus}.`,
+    );
   }
 }
 
@@ -1260,7 +1371,8 @@ function isStripeChallengeFrame(frame: Frame, page: Page): boolean {
 function assertTestModeCheckout(urlValue: string): void {
   const checkout = new URL(urlValue);
   const stripeHost =
-    checkout.hostname === "stripe.com" || checkout.hostname.endsWith(".stripe.com");
+    checkout.hostname === "stripe.com" ||
+    checkout.hostname.endsWith(".stripe.com");
   expect(checkout.protocol).toBe("https:");
   expect(stripeHost).toBe(true);
   const sessionPathSegment = checkoutSessionId(urlValue);
@@ -1297,7 +1409,9 @@ test.describe("real Stripe hosted Checkout", () => {
     );
     const fullStackEvidence = process.env.E2E_FULL_STACK_EVIDENCE === "1";
     if (fullStackEvidence && !personalBearerToken) {
-      throw new Error("E2E_PERSONAL_BEARER_TOKEN is required for the Personal Auth gate.");
+      throw new Error(
+        "E2E_PERSONAL_BEARER_TOKEN is required for the Personal Auth gate.",
+      );
     }
     const successJobKey = process.env.E2E_JOB_SUCCESS_KEY?.trim() ?? "";
     const failureJobKey = process.env.E2E_JOB_FAILURE_KEY?.trim() ?? "";
@@ -1305,15 +1419,25 @@ test.describe("real Stripe hosted Checkout", () => {
       fullStackEvidence &&
       (!successJobKey || !failureJobKey || successJobKey === failureJobKey)
     ) {
-      throw new Error("Distinct browser E2E product Job operation keys are required.");
+      throw new Error(
+        "Distinct browser E2E product Job operation keys are required.",
+      );
     }
     const webhookGateEnabled = Boolean(
       process.env.E2E_WEBHOOK_GATE_STATE_DIR?.trim(),
     );
-    await installBackendAuthentication(context, backendURL, personalBearerToken);
+    await installBackendAuthentication(
+      context,
+      backendURL,
+      personalBearerToken,
+    );
 
     const recordingStartedAt = Date.now();
-    const timeline: Array<{ label: string; milliseconds: number; url: string }> = [];
+    const timeline: Array<{
+      label: string;
+      milliseconds: number;
+      url: string;
+    }> = [];
     let screenshotSequence = 0;
     const mark = async (
       targetPage: Page,
@@ -1346,7 +1470,9 @@ test.describe("real Stripe hosted Checkout", () => {
           }
         }
         if (!captured) {
-          console.warn(`promo milestone screenshot was not captured: ${screenshotName}`);
+          console.warn(
+            `promo milestone screenshot was not captured: ${screenshotName}`,
+          );
         }
       }
       await demoPause(targetPage, multiplier);
@@ -1364,17 +1490,28 @@ test.describe("real Stripe hosted Checkout", () => {
 
     const accountPage = await context.newPage();
     await installRecordingCaptureStyles(accountPage);
-    const initial = await loadAccountProjection(accountPage, baseURL, backendURL);
+    const initial = await loadAccountProjection(
+      accountPage,
+      baseURL,
+      backendURL,
+    );
     expect(initial.account_id).toBe(await expectedAccountId());
     expect(initial.plan_key).toBe("free");
     expect(initial.credits.balance).toBe("0");
     expect(initial.entitlements_enforceable).toBe(false);
-    await mark(accountPage, "Free account · zero credits", 1.25, "free-account");
+    await mark(
+      accountPage,
+      "Free account · zero credits",
+      1.25,
+      "free-account",
+    );
 
     let initialCheckoutSessionId = "";
 
     await test.step("open a verifiably test-mode hosted Checkout", async () => {
-      await expect(page.getByRole("heading", { name: "Starter" })).toBeVisible();
+      await expect(
+        page.getByRole("heading", { name: "Starter" }),
+      ).toBeVisible();
       const capture = await prepareCheckoutCapture(
         page,
         backendURL,
@@ -1389,7 +1526,9 @@ test.describe("real Stripe hosted Checkout", () => {
       assertTestModeCheckout(redirect.url);
       const redirectSessionId = checkoutSessionId(redirect.url);
       if (!redirectSessionId) {
-        throw new Error("The captured test Checkout URL has no Session identity.");
+        throw new Error(
+          "The captured test Checkout URL has no Session identity.",
+        );
       }
 
       // The application already calls location.assign(). Navigating explicitly to the
@@ -1407,11 +1546,18 @@ test.describe("real Stripe hosted Checkout", () => {
       await fillCheckoutCard(page, DECLINED_TEST_CARD);
       await submitCheckout(page);
       await expect
-        .poll(() => hasVisibleTextAcrossFrames(page, /card (?:was|has been) declined|declined/i), {
-          timeout: 45_000,
-          intervals: [250, 500, 1_000],
-          message: "waiting for Stripe Checkout to show the test decline",
-      })
+        .poll(
+          () =>
+            hasVisibleTextAcrossFrames(
+              page,
+              /card (?:was|has been) declined|declined/i,
+            ),
+          {
+            timeout: 45_000,
+            intervals: [250, 500, 1_000],
+            message: "waiting for Stripe Checkout to show the test decline",
+          },
+        )
         .toBe(true);
       assertTestModeCheckout(page.url());
       expect(checkoutSessionId(page.url())).toBe(initialCheckoutSessionId);
@@ -1451,19 +1597,27 @@ test.describe("real Stripe hosted Checkout", () => {
       await waitForPaidProjection(accountPage, baseURL, backendURL);
       await page.goto(page.url());
       await expect(
-        page.getByRole("heading", { name: "Webhook-backed account state is ready" }),
+        page.getByRole("heading", {
+          name: "Webhook-backed account state is ready",
+        }),
       ).toBeVisible();
 
       await accountPage.goto(frontendUrl(baseURL, "/account"));
       const subscription = accountPage.locator(".account-card").filter({
         has: accountPage.getByText("Subscription", { exact: true }),
       });
-      await expect(subscription.getByRole("heading", { name: "Starter" })).toBeVisible();
-      await expect(subscription.getByText("active", { exact: true })).toBeVisible();
+      await expect(
+        subscription.getByRole("heading", { name: "Starter" }),
+      ).toBeVisible();
+      await expect(
+        subscription.getByText("active", { exact: true }),
+      ).toBeVisible();
       const credits = accountPage.locator(".account-card").filter({
         has: accountPage.getByText("Credits", { exact: true }),
       });
-      await expect(credits.getByText("300", { exact: true }).first()).toBeVisible();
+      await expect(
+        credits.getByText("300", { exact: true }).first(),
+      ).toBeVisible();
       await mark(
         page,
         "Webhook-backed Checkout success",
@@ -1492,7 +1646,9 @@ test.describe("real Stripe hosted Checkout", () => {
           }),
         ).toBeVisible();
         await expect(
-          accountPage.locator(".timing-panel").filter({ hasText: "700 credits" }),
+          accountPage
+            .locator(".timing-panel")
+            .filter({ hasText: "700 credits" }),
         ).toBeVisible();
       } else {
         await expect(
@@ -1540,29 +1696,30 @@ test.describe("real Stripe hosted Checkout", () => {
       );
       await accountPage.goto(accountPage.url());
       await expect(
-        accountPage.getByRole("heading", { name: "Webhook-backed account state is ready" }),
+        accountPage.getByRole("heading", {
+          name: "Webhook-backed account state is ready",
+        }),
       ).toBeVisible();
       await page.goto(frontendUrl(baseURL, "/account"));
       const subscription = page.locator(".account-card").filter({
         has: page.getByText("Subscription", { exact: true }),
       });
-      await expect(subscription.getByRole("heading", { name: "Pro" })).toBeVisible();
+      await expect(
+        subscription.getByRole("heading", { name: "Pro" }),
+      ).toBeVisible();
       const credits = page.locator(".account-card").filter({
         has: page.getByText("Credits", { exact: true }),
       });
-      await expect(credits.getByText("1,000", { exact: true }).first()).toBeVisible();
+      await expect(
+        credits.getByText("1,000", { exact: true }).first(),
+      ).toBeVisible();
       await mark(
         accountPage,
         "Webhook-backed upgrade success",
         1.25,
         "upgrade-success",
       );
-      await mark(
-        page,
-        "Pro Monthly · 1,000 credits",
-        1.75,
-        "pro-1000-credits",
-      );
+      await mark(page, "Pro Monthly · 1,000 credits", 1.75, "pro-1000-credits");
     });
 
     let packSessionId = "";
@@ -1598,8 +1755,12 @@ test.describe("real Stripe hosted Checkout", () => {
       await submitCreditPackCheckout(page, new URL(baseURL).origin);
 
       const returnUrl = new URL(page.url());
-      expect(returnUrl.searchParams.get("expected_credit_pack")).toBe("boost-100");
-      expect(returnUrl.searchParams.get("checkout_session_id")).toBe(packSessionId);
+      expect(returnUrl.searchParams.get("expected_credit_pack")).toBe(
+        "boost-100",
+      );
+      expect(returnUrl.searchParams.get("checkout_session_id")).toBe(
+        packSessionId,
+      );
     });
 
     await test.step("the return page cannot grant before the signed pack webhook", async () => {
@@ -1640,15 +1801,21 @@ test.describe("real Stripe hosted Checkout", () => {
         await retryProjection.click();
       }
       await expect(
-        page.getByRole("heading", { name: "Webhook-backed account state is ready" }),
+        page.getByRole("heading", {
+          name: "Webhook-backed account state is ready",
+        }),
       ).toBeVisible();
       await accountPage.goto(frontendUrl(baseURL, "/account"));
       const credits = accountPage.locator(".account-card").filter({
         has: accountPage.getByText("Credits", { exact: true }),
       });
       await expect(credits.getByText("1,100", { exact: true })).toBeVisible();
-      await expect(credits.getByText("boost-100", { exact: true })).toBeVisible();
-      await expect(credits.getByText("100 credits", { exact: true })).toBeVisible();
+      await expect(
+        credits.getByText("boost-100", { exact: true }),
+      ).toBeVisible();
+      await expect(
+        credits.getByText("100 credits", { exact: true }),
+      ).toBeVisible();
       await mark(
         page,
         "Signed PaymentIntent · exact Session confirmed",
@@ -1678,6 +1845,10 @@ test.describe("real Stripe hosted Checkout", () => {
       await capture.release();
       assertTestModePortal(redirect);
       if (fullStackEvidence) {
+        await accountPage.goto(frontendUrl(baseURL, "/account"), {
+          waitUntil: "domcontentloaded",
+        });
+        expect(new URL(accountPage.url()).origin).toBe(new URL(baseURL).origin);
         const evidence = await browserBackendPost<{
           verified: boolean;
           session_id: string;
@@ -1693,7 +1864,11 @@ test.describe("real Stripe hosted Checkout", () => {
       }
 
       await openHostedPortal(accountPage, redirect);
-      await mark(accountPage, "Real Stripe Billing Portal · owner-bound Session", 1.25);
+      await mark(
+        accountPage,
+        "Real Stripe Billing Portal · owner-bound Session",
+        1.25,
+      );
       const expectedReturnURL = frontendUrl(baseURL, "/account");
       const returnLink = await portalReturnLink(accountPage, expectedReturnURL);
       await returnLink.click();
@@ -1701,7 +1876,11 @@ test.describe("real Stripe hosted Checkout", () => {
         (url) => url.toString() === new URL(expectedReturnURL).toString(),
         { timeout: 60_000 },
       );
-      const returned = await loadAccountProjection(accountPage, baseURL, backendURL);
+      const returned = await loadAccountProjection(
+        accountPage,
+        baseURL,
+        backendURL,
+      );
       expect(returned.plan_key).toBe("pro");
       expect(returned.credits.balance).toBe("1100");
       await mark(
@@ -1761,7 +1940,11 @@ test.describe("real Stripe hosted Checkout", () => {
         balance: "1020",
         requested: "80",
       });
-      await mark(accountPage, "Product Job · 80-credit owner-bound charge", 1.25);
+      await mark(
+        accountPage,
+        "Product Job · 80-credit owner-bound charge",
+        1.25,
+      );
     });
 
     await test.step("a terminal product failure refunds the exact original debit", async () => {
@@ -1804,7 +1987,9 @@ test.describe("real Stripe hosted Checkout", () => {
         has: accountPage.getByText("Credits", { exact: true }),
       });
       await expect(credits.getByText("1,020", { exact: true })).toBeVisible();
-      await expect(credits.getByText("100 credits", { exact: true })).toBeVisible();
+      await expect(
+        credits.getByText("100 credits", { exact: true }),
+      ).toBeVisible();
       await mark(
         accountPage,
         "Failed Job refunded · 1,020 credits remain",
