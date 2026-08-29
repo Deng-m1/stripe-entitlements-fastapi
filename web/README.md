@@ -31,6 +31,19 @@ NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_REPLACE_ME
 NEXT_PUBLIC_DEMO_BEARER_TOKEN=demo-local-token
 ```
 
+For the repository's Vercel Services deployment, use the single public origin:
+
+```env
+NEXT_PUBLIC_BILLING_API_MODE=http
+NEXT_PUBLIC_BILLING_API_BASE_URL=same-origin
+NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_REPLACE_ME
+```
+
+`same-origin` is an explicit sentinel that produces relative `/api/...` requests. An
+empty base URL is rejected. It does not supply identity: production still needs the
+host's real `AuthAdapter`, and a missing token fails before any request is sent. See the
+[Vercel deployment guide](../docs/VERCEL.md).
+
 `NEXT_PUBLIC_DEMO_BEARER_TOKEN` is only a replaceable local adapter. It is exposed
 to browser JavaScript and is not production authentication. Production integration
 must replace the composition in `lib/runtime.ts` with the host application's real

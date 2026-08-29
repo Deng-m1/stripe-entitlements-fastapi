@@ -41,12 +41,20 @@ uv run stripe-entitlements grant-due
 uv run stripe-entitlements reconcile
 ```
 
-The scheduler is not embedded in the API process. Kubernetes CronJobs, Railway Cron,
-systemd timers or a managed scheduler are valid. If a schedule is missed, the next annual
-run jumps to the current reset slot rather than replaying all missed monthly grants.
+The scheduler is not embedded in the API process. Kubernetes CronJobs, systemd timers,
+Vercel Cron, Railway Cron, or another managed scheduler are valid. If a schedule is
+missed, the next annual run jumps to the current reset slot rather than replaying all
+missed monthly grants.
 Reconciliation repairs paid/canceled projection after webhook loss. It rotates through
 every eligible account in bounded batches during one invocation; old
 `requires_action` rows cannot permanently occupy the first page.
+
+The Vercel Services option exposes `GET /api/cron/annual-grants` and
+`GET /api/cron/reconcile`. Both require Vercel's `Authorization: Bearer $CRON_SECRET`
+contract, use bounded serverless pages, return identity-free counts, and return 503 when
+the invocation should be retried. Missing `CRON_SECRET` disables them fail-closed. See
+[the Vercel deployment guide](VERCEL.md); migration and catalog bootstrap must still run
+as explicit predeploy/operator jobs.
 
 Alert on scheduler lag; “multi-worker safe” does not mean “scheduler optional.”
 

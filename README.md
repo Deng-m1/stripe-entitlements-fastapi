@@ -21,6 +21,7 @@ duplicate, delayed, concurrent, and out-of-order Events.
 - [One-time credit packs](#one-time-credit-packs)
 - [Two plan-change templates](#safe-stripe-plan-transitions-full-price-or-prorated-difference)
 - [Correctness and distributed deployment](#correctness-model)
+- [Vercel full-stack deployment](#deploy-nextjs-and-fastapi-together-on-vercel)
 - [Quick start](#quick-start)
 - [Adopt in an existing application](#adopt-in-an-existing-application)
 - [Demo recording](#demo-recording-and-promotional-video)
@@ -70,6 +71,8 @@ per intent. Shared scope:
   Subscription Schedules;
 - a Next.js reference UI for pricing, account state, payment recovery, and
   webhook-backed success polling;
+- a stable Vercel Services deployment for Next.js, FastAPI, and secured bounded Cron
+  routes on one domain, without requiring Railway or a separately hosted API;
 - PostgreSQL event/business idempotency, row locks, durable plan-change intent,
   cross-Invoice funding allocation, refund/dispute convergence, and fail-closed
   incidents;
@@ -218,6 +221,29 @@ PostgreSQL is the coordination and writable truth. Multiple API/worker processes
 are safe against the same primary, but PostgreSQL remains a stateful dependency
 and single point unless deployed with HA, backups, and tested restore. See
 [Distributed deployment](docs/DISTRIBUTED.md).
+
+## Deploy Next.js and FastAPI together on Vercel
+
+The checked-in [`vercel.json`](vercel.json) deploys `web/` and the existing Python
+billing core as two Vercel Services behind one deployment URL. Browser `/api/*`, Stripe
+`/webhooks/*`, and `/health` traffic goes to FastAPI; every other path goes to Next.js.
+The frontend uses the explicit `same-origin` API sentinel, so it needs no Railway URL,
+cross-origin allowlist, or second public deployment.
+
+Vercel Cron invokes bounded hourly annual-grant and five-minute reconciliation routes.
+Those routes require `CRON_SECRET`, return only aggregate counts, and rely on the same
+PostgreSQL locks, uniqueness guards, and leases that make multiple workers safe. Schema
+migration and Stripe catalog bootstrap remain explicit operator commands before deploy.
+
+This option still requires managed PostgreSQL, a Stripe account/webhook endpoint, and
+the product's real identity provider. Same-origin routing never weakens authentication:
+the FastAPI entrypoint defaults to reject-all and can enable the strict personal
+JWT/JWKS starter only through complete explicit configuration. Preview deployments must
+use isolated test Stripe/database resources and remain `noindex`.
+
+See [Deploy Next.js and FastAPI together on Vercel](docs/VERCEL.md) for the environment
+matrix, authentication boundary, local `vercel dev -L` workflow, webhook setup, and
+deployment verification checklist.
 
 ## API surface and authentication
 
@@ -485,10 +511,12 @@ privacy rules, and reproducible workflow.
 Evidence is split by execution layer; collecting a test or retaining an older run does
 not prove the current tree against Stripe's network.
 
-The current 0.3 working-tree candidate passed 1,187 network-free backend tests against
-disposable PostgreSQL 17, 189 frontend tests, and all 10 opt-in Stripe test-mode cases.
-Those results are not yet bound to a final commit, container, signed browser transport,
-or production release; all applicable gates must be rebound to the release commit.
+The current Vercel Services working tree passed 1,205 network-free backend tests against
+disposable PostgreSQL 17 and 193 frontend tests, including production build. The 10
+opt-in Stripe test-mode cases belong to the unchanged `v0.3.0` billing baseline and were
+not rerun for this deployment-only branch. Those layers are not yet bound together as a
+final commit, container, signed browser transport, or production release; all applicable
+gates must be rebound to the release commit.
 
 The artifact and network evidence below belongs to the earlier 2026-08-28 0.3
 baseline candidate based on `main@4df7f73`; it has not been rebound to the current

@@ -11,9 +11,9 @@ identity:
 
 | Layer | Evidence | Boundary |
 | --- | --- | --- |
-| Local/backend | Current working-tree snapshot: 1,187 passed, 10 `real_stripe` deselected | Real PostgreSQL and mocked Stripe responses; not yet bound to a final commit |
-| Frontend | Current working-tree snapshot: 189 passed; lint, typecheck, production build, and both npm audits passed | No Stripe network; not yet bound to a final commit |
-| Real Stripe suite | Current working-tree snapshot: 10/10 passed in 408.12 seconds with strict run-owned cleanup | Test mode and Event polling, not signed webhook transport or live mode; not yet bound to a final commit |
+| Local/backend | Current Vercel Services working tree: 1,205 passed, 10 `real_stripe` deselected | Real PostgreSQL and mocked Stripe responses; not yet bound to a final commit |
+| Frontend | Current Vercel Services working tree: 193 passed; lint, typecheck, production build, and npm production audit passed | No Stripe network; not yet bound to a final commit |
+| Real Stripe suite | Unchanged `v0.3.0` billing baseline: 10/10 passed in 408.12 seconds with strict run-owned cleanup; not rerun for this deployment-only branch | Test mode and Event polling, not signed webhook transport or live mode; not evidence for the changed deployment commit |
 | Browser policy gates, endpoint transport | Later 2026-08-28 working-tree artifacts: both policies completed the expanded gate with 11 account-related, 0 unrelated, exactly 5 essential Events, and final Pro/1,020 | Predates final hardening and does not embed the final commit SHA; must be rerun |
 | Wheel/container | Current 0.3.0 wheel and sdist built with checksums; earlier candidate container reached healthy non-root/read-only runtime | Current container rebuild still required on the final commit |
 | Live production payload | **not run** | Test mode never substitutes for live mode |
@@ -147,6 +147,29 @@ The backend additionally verifies that the public JSON catalog cannot drift from
 `plans.toml` prices, entitlements, descriptions, or order.
 
 The frontend never tests or grants backend entitlement by itself.
+
+## Vercel Services deployment tests
+
+The network-free suite parses `vercel.json` as a routing contract and verifies that API,
+webhook, health, catch-all, and Cron ownership cannot drift. Python tests cover explicit
+personal-JWT environment construction, reject-all fallback, partial configuration
+failure, Cron-secret validation/authorization, missing-secret 503 behavior,
+identity-free summaries, retryable worker failure, strict batch bounds, and overlapping
+Cron invocations. Frontend tests exercise the explicit `same-origin` sentinel and prove
+that it still requires a production access token.
+
+The pinned local platform smoke is:
+
+```bash
+npx vercel@59.10.0 dev -L
+```
+
+It must detect one Next.js and one FastAPI service and serve requests through the public
+local origin. It requires a reachable migrated PostgreSQL database and safe local
+test-mode settings. This proves local service discovery, dependency installation, ASGI
+lifespan, and top-level routing; it is not a Preview Deployment, Stripe endpoint, or
+live-production test. Run browser Stripe E2E against an isolated deployed preview or
+staging environment for that evidence layer.
 
 ## Real-browser Checkout gate
 

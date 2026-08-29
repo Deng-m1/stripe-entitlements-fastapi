@@ -40,6 +40,7 @@ interface HttpApiOptions {
 const defaultTimeoutMs = 30_000;
 const maximumTimeoutMs = 120_000;
 const maximumAccessTokenBytes = 8_192;
+export const SAME_ORIGIN_BILLING_API = "same-origin";
 
 function validAccessToken(value: string): boolean {
   return (
@@ -223,7 +224,12 @@ export function normalizeBillingApiBaseUrl(
   baseUrl: string,
   environment = process.env.NODE_ENV,
 ): string {
-  if (!baseUrl) return "";
+  if (baseUrl === SAME_ORIGIN_BILLING_API) return "";
+  if (!baseUrl) {
+    throw new BillingApiError(
+      `Billing API base URL is required. Use ${SAME_ORIGIN_BILLING_API} for relative same-origin requests.`,
+    );
+  }
 
   let parsed: URL;
   try {
@@ -275,11 +281,6 @@ export function createHttpBillingApi({
     init?: RequestInit,
     decode?: (body: unknown) => T,
   ): Promise<T> {
-    if (!normalizedBase) {
-      throw new BillingApiError(
-        "Billing API is not configured. Set NEXT_PUBLIC_BILLING_API_BASE_URL.",
-      );
-    }
     const token = await auth.getAccessToken();
     if (!token) {
       throw new BillingApiError(

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createHttpBillingApi,
   normalizeBillingApiBaseUrl,
+  SAME_ORIGIN_BILLING_API,
 } from "@/lib/http-api";
 import { CREDIT_SCALE, creditAmountFromAtoms } from "@/lib/credit-amount";
 import { demoAccount, demoCatalog } from "@/lib/mock-api";
@@ -159,6 +160,57 @@ describe("HTTP billing API", () => {
       "https://billing-api.example/root/api/billing/change/preview",
       "https://billing-api.example/root/api/billing/change/confirm",
     ]);
+  });
+
+  it("uses explicit same-origin paths while preserving production auth", async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify(demoCatalog()), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const api = createHttpBillingApi({
+      baseUrl: SAME_ORIGIN_BILLING_API,
+      auth,
+      fetchImpl,
+    });
+
+    await api.getCatalog();
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/api/catalog",
+      expect.objectContaining({
+        credentials: "omit",
+        redirect: "error",
+        headers: expect.objectContaining({
+          Authorization: "Bearer verified-session-token",
+        }),
+      }),
+    );
+  });
+
+  it("does not treat same-origin routing as authentication", async () => {
+    const fetchImpl = vi.fn();
+    const api = createHttpBillingApi({
+      baseUrl: SAME_ORIGIN_BILLING_API,
+      auth: {
+        kind: "none",
+        async getAccessToken() {
+          return null;
+        },
+      },
+      fetchImpl,
+    });
+
+    await expect(api.getAccount()).rejects.toMatchObject({ status: 401 });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("requires the same-origin sentinel instead of accepting an accidental blank", () => {
+    expect(normalizeBillingApiBaseUrl(SAME_ORIGIN_BILLING_API, "production")).toBe("");
+    expect(() => normalizeBillingApiBaseUrl("", "production")).toThrow(
+      "Use same-origin",
+    );
   });
 
   it.each([

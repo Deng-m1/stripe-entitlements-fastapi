@@ -7,6 +7,14 @@ one PostgreSQL primary. Any number of annual workers or reconcilers may scan the
 accounts. Correctness comes from primary keys, partial unique indexes, conditional
 updates, leases and row locks; process-local memory is not part of the proof.
 
+That statement also covers stateless Vercel Python Functions. Overlapping Cron requests
+process bounded pages and can be interrupted or repeated; no invocation owns durable
+progress in memory. The same PostgreSQL primary, migration level, catalog, Stripe mode,
+and transition policy remain mandatory across every warm instance. Function cold starts
+and provider retries do not weaken the database guards. Configure managed PostgreSQL
+connection limits/pooling for serverless concurrency; exhausting connections is an
+availability failure even when correctness remains intact.
+
 Checkout Session creation uses a durable single-flight claim. The browser supplies a
 stable `Idempotency-Key` for one user intent; the database binds it to an unguessable
 claim token. Stripe receives a derived stable idempotency key. A retry with the same
@@ -67,6 +75,9 @@ coordination: replicas must never share an in-memory kernel or pool across proce
   safe, but product state can be stale until retry or reconciliation.
 - Annual grants require a scheduler. Multiple schedulers are safe; no scheduler means
   delayed slots, not duplicate slots.
+- Vercel Services is an optional API/UI/scheduler host, not durable storage. Vercel Cron
+  cadence and duration depend on the selected platform plan; another scheduler may call
+  the same secured endpoints or run the one-shot CLI commands.
 - PostgreSQL and Stripe are not one atomic transaction. Durable intent, idempotency and
   reconciliation reduce the failure surface but do not create distributed ACID.
 - A host Job database/queue and billing are also not one atomic transaction. The host

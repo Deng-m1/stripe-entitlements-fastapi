@@ -37,6 +37,16 @@ class AnnualGrantService:
                 {"subscription_id": subscription_id, "reason": reason},
             )
 
+    async def defer_candidate(self, account_id: str) -> None:
+        """Move a no-grant candidate behind older accounts in bounded worker scans."""
+
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """update billing_accounts set updated_at=clock_timestamp()
+                     where id=$1::uuid""",
+                account_id,
+            )
+
     async def due_accounts(
         self,
         now: datetime | None,

@@ -3,7 +3,10 @@ import {
   createE2ERouteAuth,
   noAuthAdapter,
 } from "@/lib/auth";
-import { createHttpBillingApi } from "@/lib/http-api";
+import {
+  createHttpBillingApi,
+  SAME_ORIGIN_BILLING_API,
+} from "@/lib/http-api";
 import { createMockBillingApi } from "@/lib/mock-api";
 import type { BillingApi, Redirect } from "@/lib/types";
 
@@ -38,6 +41,12 @@ export const unsafeProductionDemoConfiguration =
     demoToken,
   );
 
+export function configuredBillingApiBaseUrl(
+  value: string | undefined,
+): string {
+  return value ?? SAME_ORIGIN_BILLING_API;
+}
+
 let runtimeApi: BillingApi | undefined;
 
 export function getBillingApi(): BillingApi {
@@ -51,7 +60,9 @@ export function getBillingApi(): BillingApi {
     billingApiMode === "mock"
       ? createMockBillingApi()
       : createHttpBillingApi({
-          baseUrl: process.env.NEXT_PUBLIC_BILLING_API_BASE_URL ?? "",
+          baseUrl: configuredBillingApiBaseUrl(
+            process.env.NEXT_PUBLIC_BILLING_API_BASE_URL,
+          ),
           auth: demoToken
             ? createDemoBearerAuth(demoToken)
             : e2eRouteAuthSentinel

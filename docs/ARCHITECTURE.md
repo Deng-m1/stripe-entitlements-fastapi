@@ -53,6 +53,12 @@ Authenticated product workload
 optional internal APIRouter ──► EntitlementService ──► credit/account rows
 ```
 
+The checked-in Vercel Services topology preserves this boundary in one deployment:
+Next.js owns the catch-all route while FastAPI owns `/api/*`, `/webhooks/*`, and
+`/health`. Vercel Cron reaches secured, bounded annual and reconciliation wrappers; it
+does not create a second processor or move coordination into function memory. See
+[the Vercel deployment guide](VERCEL.md).
+
 ## Scope boundary
 
 The backend supports one recurring subscription item, USD, fixed plan keys,
