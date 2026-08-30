@@ -31,6 +31,20 @@ interface ProjectionSnapshot {
   readonly event_rank: number;
 }
 
+interface ValidatedSubscription {
+  readonly ok: true;
+  readonly subscription: StripeObject;
+  readonly status: string;
+  readonly livemode: boolean;
+}
+
+interface InvalidSubscription {
+  readonly ok: false;
+  readonly result: ProcessResult;
+}
+
+type SubscriptionRetrieval = ValidatedSubscription | InvalidSubscription;
+
 interface ReconciliationAccountRow extends QueryResultRow {
   readonly id: string;
   readonly stripe_subscription_id: string | null;
@@ -168,6 +182,73 @@ export class ReconciliationService {
     };
   }
 
+  async #validatedSubscriptionObject(
+    accountId: string,
+    subscriptionId: string,
+  ): Promise<SubscriptionRetrieval> {
+    let subscription: StripeObject;
+    try {
+      subscription = await this.#gateway.subscriptionObject(subscriptionId);
+    } catch (error) {
+      await this.#incident(
+        accountId,
+        subscriptionId,
+        `subscription retrieval failed: ${
+          error instanceof Error ? error.constructor.name : "UnknownError"
+        }`,
+      );
+      throw error;
+    }
+    const status = subscription["status"];
+    const livemode = subscription["livemode"];
+    if (subscription["id"] !== subscriptionId) {
+      await this.#incident(
+        accountId,
+        subscriptionId,
+        "Stripe returned a different subscription",
+      );
+      return {
+        ok: false,
+        result: {
+          outcome: "ignored",
+          reason: "Stripe returned a different subscription",
+          accountId,
+        },
+      };
+    }
+    if (typeof status !== "string" || status.length === 0) {
+      await this.#incident(
+        accountId,
+        subscriptionId,
+        "Stripe returned an invalid subscription status",
+      );
+      return {
+        ok: false,
+        result: {
+          outcome: "ignored",
+          reason: "Stripe returned an invalid subscription status",
+          accountId,
+        },
+      };
+    }
+    if (typeof livemode !== "boolean") {
+      await this.#incident(
+        accountId,
+        subscriptionId,
+        "Stripe returned an invalid subscription mode",
+      );
+      return {
+        ok: false,
+        result: {
+          outcome: "ignored",
+          reason: "Stripe returned an invalid subscription mode",
+          accountId,
+        },
+      };
+    }
+    return { ok: true, subscription, status, livemode };
+  }
+
   public async candidates(
     now?: PgTimestamp,
     options: {
@@ -260,58 +341,14 @@ export class ReconciliationService {
       event_rank: account.event_rank,
     };
 
-    let subscription: StripeObject;
-    try {
-      subscription =
-        await this.#gateway.subscriptionObject(expectedSubscription);
-    } catch (error) {
-      await this.#incident(
-        accountId,
-        expectedSubscription,
-        `subscription retrieval failed: ${
-          error instanceof Error ? error.constructor.name : "UnknownError"
-        }`,
-      );
-      throw error;
+    const initialSubscription = await this.#validatedSubscriptionObject(
+      accountId,
+      expectedSubscription,
+    );
+    if (!initialSubscription.ok) {
+      return initialSubscription.result;
     }
-    const status = subscription["status"];
-    const livemode = subscription["livemode"];
-    if (subscription["id"] !== expectedSubscription) {
-      await this.#incident(
-        accountId,
-        expectedSubscription,
-        "Stripe returned a different subscription",
-      );
-      return {
-        outcome: "ignored",
-        reason: "Stripe returned a different subscription",
-        accountId,
-      };
-    }
-    if (typeof status !== "string" || status.length === 0) {
-      await this.#incident(
-        accountId,
-        expectedSubscription,
-        "Stripe returned an invalid subscription status",
-      );
-      return {
-        outcome: "ignored",
-        reason: "Stripe returned an invalid subscription status",
-        accountId,
-      };
-    }
-    if (typeof livemode !== "boolean") {
-      await this.#incident(
-        accountId,
-        expectedSubscription,
-        "Stripe returned an invalid subscription mode",
-      );
-      return {
-        outcome: "ignored",
-        reason: "Stripe returned an invalid subscription mode",
-        accountId,
-      };
-    }
+    let { subscription, status, livemode } = initialSubscription;
 
     if (status === "canceled" || status === "incomplete_expired") {
       return this.#reconcileCancellation({
@@ -322,6 +359,7 @@ export class ReconciliationService {
         attempt,
         attemptFingerprint,
         livemode,
+        allowFreshRetry: true,
       });
     }
 
@@ -350,10 +388,32 @@ export class ReconciliationService {
       );
       if (refreshed !== undefined) {
         expectedAccount = refreshed;
+        const freshSubscription = await this.#validatedSubscriptionObject(
+          accountId,
+          expectedSubscription,
+        );
+        if (!freshSubscription.ok) {
+          return freshSubscription.result;
+        }
+        ({ subscription, status, livemode } = freshSubscription);
+        if (status === "canceled" || status === "incomplete_expired") {
+          return this.#reconcileCancellation({
+            accountId,
+            subscriptionId: expectedSubscription,
+            subscription,
+            expectedAccount,
+            attempt,
+            attemptFingerprint,
+            livemode,
+            allowFreshRetry: false,
+          });
+        }
         statusEvent = {
           ...statusEvent,
           id: `reconcile:${expectedSubscription}:status:${status}:${attempt.database_epoch}:${expectedAccount.event_created}:${expectedAccount.event_rank}`,
+          livemode,
           _expected_account: expectedAccount,
+          data: { object: subscription },
         };
         statusResult = await this.#process(
           statusEvent,
@@ -489,6 +549,7 @@ export class ReconciliationService {
     readonly attempt: AttemptRow;
     readonly attemptFingerprint: string;
     readonly livemode: boolean;
+    readonly allowFreshRetry: boolean;
   }): Promise<ProcessResult> {
     const canceledAt = input.subscription["canceled_at"];
     if (
@@ -531,6 +592,7 @@ export class ReconciliationService {
       input.subscriptionId,
     );
     if (
+      input.allowFreshRetry &&
       !projectionCommitted(result) &&
       result.reason === "older than the applied state"
     ) {
@@ -540,10 +602,61 @@ export class ReconciliationService {
       );
       if (refreshed !== undefined) {
         expected = refreshed;
+        const fresh = await this.#validatedSubscriptionObject(
+          input.accountId,
+          input.subscriptionId,
+        );
+        if (!fresh.ok) {
+          return fresh.result;
+        }
+        if (
+          fresh.status !== "canceled" &&
+          fresh.status !== "incomplete_expired"
+        ) {
+          await this.#incident(
+            input.accountId,
+            input.subscriptionId,
+            "remote subscription changed during cancellation reconciliation",
+          );
+          return {
+            outcome: "ignored",
+            reason: "remote subscription changed during reconciliation",
+            accountId: input.accountId,
+          };
+        }
+        const freshCanceledAt = fresh.subscription["canceled_at"];
+        if (
+          freshCanceledAt !== undefined &&
+          freshCanceledAt !== null &&
+          (typeof freshCanceledAt !== "number" ||
+            !Number.isSafeInteger(freshCanceledAt) ||
+            freshCanceledAt < 0)
+        ) {
+          await this.#incident(
+            input.accountId,
+            input.subscriptionId,
+            "Stripe returned an invalid cancellation timestamp",
+          );
+          return {
+            outcome: "ignored",
+            reason: "Stripe returned an invalid cancellation timestamp",
+            accountId: input.accountId,
+          };
+        }
+        const freshCreated =
+          typeof freshCanceledAt === "number"
+            ? freshCanceledAt
+            : Number(input.attempt.database_epoch);
+        const freshCustomerFingerprint = customerFactFingerprint(
+          fresh.subscription,
+        );
         event = {
           ...event,
-          id: `reconcile:${input.subscriptionId}:deleted:${created}:${expected.event_created}:${expected.event_rank}:${input.attemptFingerprint}:${customerFingerprint}`,
+          id: `reconcile:${input.subscriptionId}:deleted:${freshCreated}:${expected.event_created}:${expected.event_rank}:${input.attemptFingerprint}:${freshCustomerFingerprint}`,
+          created: freshCreated,
+          livemode: fresh.livemode,
           _expected_account: expected,
+          data: { object: fresh.subscription },
         };
         result = await this.#process(
           event,

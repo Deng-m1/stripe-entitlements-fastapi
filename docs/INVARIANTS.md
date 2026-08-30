@@ -87,6 +87,12 @@ attempt. Incident observations use PostgreSQL's statement wall clock rather than
 transaction-start clock; an observation at the exact cutoff or written later by a
 long-running transaction remains unresolved for the next attempt.
 
+A Subscription reconciliation CAS retry never reuses the mutable Stripe object from the
+losing attempt. It first snapshots the newly committed local projection cursor, then
+retrieves and validates Stripe state again, and permits one fresh projection. A second
+cursor loss stops fail-closed with a durable incident so an older remote read cannot
+overwrite newer status, cancellation, or period facts committed by a webhook.
+
 If another reconciler advances the Subscription projection cursor between a paid-Invoice
 snapshot and its account lock, the losing attempt performs a bounded retry against a
 fresh snapshot and a new synthetic Event ID. A successful retry may resolve only the

@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 
-import { describe, expect, test } from "vitest";
+import { beforeAll, describe, expect, test } from "vitest";
 
+import { PlanCatalog } from "../../src/catalog.js";
 import type { Database } from "../../src/database.js";
+import { EventProcessor } from "../../src/event-processor.js";
 import {
   customerFactFingerprint,
   ReconciliationService,
@@ -11,6 +14,103 @@ import {
 } from "../../src/reconcile.js";
 import type { ProcessResult } from "../../src/types.js";
 import { postgresDatabase } from "../support/postgres-setup.js";
+
+const ROOT_CATALOG = fileURLToPath(
+  new URL("../../../plans.toml", import.meta.url),
+);
+const RACE_PERIOD_START = 1_800_000_000;
+const RACE_PERIOD_STALE = 1_802_592_000;
+const RACE_PERIOD_FRESH = 1_805_184_000;
+const RACE_PERIOD_LATEST = 1_807_776_000;
+
+let catalog: PlanCatalog;
+
+beforeAll(async () => {
+  catalog = await PlanCatalog.fromToml(ROOT_CATALOG);
+});
+
+function starterPrice(): Readonly<Record<string, unknown>> {
+  return {
+    id: "price_starter_month",
+    lookup_key: "ent_starter_month",
+    active: true,
+    type: "recurring",
+    currency: "usd",
+    unit_amount: 1900,
+    billing_scheme: "per_unit",
+    recurring: {
+      interval: "month",
+      interval_count: 1,
+      usage_type: "licensed",
+    },
+    tax_behavior: "unspecified",
+    tiers_mode: null,
+    transform_quantity: null,
+    custom_unit_amount: null,
+    currency_options: null,
+    product: {
+      id: "prod_starter",
+      active: true,
+      metadata: { product_line: "example-entitlements", plan: "starter" },
+    },
+  };
+}
+
+function subscriptionSnapshot(
+  accountId: string,
+  subscriptionId: string,
+  customerId: string,
+  options: {
+    readonly status: "active" | "past_due" | "canceled";
+    readonly cancelAtPeriodEnd: boolean;
+    readonly periodEnd: number;
+  },
+): Readonly<Record<string, unknown>> {
+  return {
+    id: subscriptionId,
+    object: "subscription",
+    livemode: false,
+    customer: customerId,
+    status: options.status,
+    cancel_at_period_end: options.cancelAtPeriodEnd,
+    current_period_end: options.periodEnd,
+    metadata: {
+      account_id: accountId,
+      product_line: "example-entitlements",
+    },
+    items: {
+      data: [
+        {
+          id: "si_reconcile_race",
+          quantity: 1,
+          current_period_start: RACE_PERIOD_START,
+          current_period_end: options.periodEnd,
+          price: {
+            id: "price_starter_month",
+            lookup_key: "ent_starter_month",
+          },
+          _resolved_price: starterPrice(),
+        },
+      ],
+    },
+  };
+}
+
+function subscriptionWebhook(
+  eventId: string,
+  created: number,
+  subscription: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  return {
+    id: eventId,
+    object: "event",
+    type: "customer.subscription.updated",
+    created,
+    livemode: false,
+    api_version: "2026-06-24.dahlia",
+    data: { object: subscription },
+  };
+}
 
 class FakeGateway implements ReconciliationGateway {
   public subscription: Readonly<Record<string, unknown>>;
@@ -165,6 +265,326 @@ describe("reconciliation orchestration", () => {
     expect(paidEvents[1]?.["_expected_account"]).toMatchObject({
       event_created: "101",
       event_rank: 30,
+    });
+  });
+
+  test("status CAS retry fetches fresh Stripe state before projecting", async () => {
+    const database = postgresDatabase();
+    const subscriptionId = "sub_ts_reconcile_status_refresh";
+    const customerId = "cus_ts_reconcile_status_refresh";
+    const accountId = await account(database, subscriptionId);
+    await database.query(
+      `update billing_accounts set stripe_customer_id=$2,
+         current_period_end=to_timestamp($3::bigint),
+         entitlement_period_end=to_timestamp($3::bigint)
+       where id=$1::uuid`,
+      [accountId, customerId, RACE_PERIOD_STALE],
+    );
+    const stale = subscriptionSnapshot(accountId, subscriptionId, customerId, {
+      status: "active",
+      cancelAtPeriodEnd: false,
+      periodEnd: RACE_PERIOD_STALE,
+    });
+    const fresh = subscriptionSnapshot(accountId, subscriptionId, customerId, {
+      status: "past_due",
+      cancelAtPeriodEnd: true,
+      periodEnd: RACE_PERIOD_FRESH,
+    });
+    let subscriptionReads = 0;
+    let paidRead = false;
+    const gateway: ReconciliationGateway = {
+      async subscriptionObject() {
+        subscriptionReads += 1;
+        return subscriptionReads === 1 ? stale : fresh;
+      },
+      async latestPaidInvoiceEvent() {
+        paidRead = true;
+        return undefined;
+      },
+    };
+    const projector = new EventProcessor(
+      database,
+      catalog,
+      "example-entitlements",
+      { expectedApiVersion: "2026-06-24.dahlia" },
+    );
+    let webhookCommitted = false;
+    const processor: ReconciliationProcessor = {
+      async process(event): Promise<ProcessResult> {
+        const candidate = event as Readonly<Record<string, unknown>>;
+        if (!webhookCommitted && candidate["_remote_verified"] === true) {
+          webhookCommitted = true;
+          const webhookResult = await projector.process(
+            subscriptionWebhook(
+              "evt_ts_reconcile_status_refresh",
+              RACE_PERIOD_START + 10,
+              fresh,
+            ),
+          );
+          expect(webhookResult.outcome).toBe("handled");
+        }
+        return projector.process(event);
+      },
+    };
+
+    const result = await new ReconciliationService(
+      database,
+      processor,
+      gateway,
+    ).reconcileAccount(accountId);
+
+    expect(result.outcome).toBe("handled");
+    expect(subscriptionReads).toBe(2);
+    expect(paidRead).toBe(false);
+    const projected = await database.query<{
+      readonly subscription_status: string;
+      readonly cancel_at_period_end: boolean;
+      readonly period_end_epoch: string;
+    }>(
+      `select subscription_status,cancel_at_period_end,
+              extract(epoch from current_period_end)::bigint::text as period_end_epoch
+         from billing_accounts where id=$1::uuid`,
+      [accountId],
+    );
+    expect(projected.rows[0]).toEqual({
+      subscription_status: "past_due",
+      cancel_at_period_end: true,
+      period_end_epoch: String(RACE_PERIOD_FRESH),
+    });
+  });
+
+  test("a second status CAS loss stops without overwriting the newer webhook", async () => {
+    const database = postgresDatabase();
+    const subscriptionId = "sub_ts_reconcile_status_bounded";
+    const customerId = "cus_ts_reconcile_status_bounded";
+    const accountId = await account(database, subscriptionId);
+    await database.query(
+      `update billing_accounts set stripe_customer_id=$2,
+         current_period_end=to_timestamp($3::bigint),
+         entitlement_period_end=to_timestamp($3::bigint)
+       where id=$1::uuid`,
+      [accountId, customerId, RACE_PERIOD_STALE],
+    );
+    const stale = subscriptionSnapshot(accountId, subscriptionId, customerId, {
+      status: "active",
+      cancelAtPeriodEnd: false,
+      periodEnd: RACE_PERIOD_STALE,
+    });
+    const firstCommitted = subscriptionSnapshot(
+      accountId,
+      subscriptionId,
+      customerId,
+      {
+        status: "past_due",
+        cancelAtPeriodEnd: true,
+        periodEnd: RACE_PERIOD_FRESH,
+      },
+    );
+    const latestCommitted = subscriptionSnapshot(
+      accountId,
+      subscriptionId,
+      customerId,
+      {
+        status: "active",
+        cancelAtPeriodEnd: false,
+        periodEnd: RACE_PERIOD_LATEST,
+      },
+    );
+    let subscriptionReads = 0;
+    const gateway: ReconciliationGateway = {
+      async subscriptionObject() {
+        subscriptionReads += 1;
+        return subscriptionReads === 1 ? stale : firstCommitted;
+      },
+      async latestPaidInvoiceEvent() {
+        throw new Error(
+          "paid Invoice lookup must not run after a lost status CAS",
+        );
+      },
+    };
+    const projector = new EventProcessor(
+      database,
+      catalog,
+      "example-entitlements",
+      { expectedApiVersion: "2026-06-24.dahlia" },
+    );
+    let interleaving = 0;
+    const processor: ReconciliationProcessor = {
+      async process(event): Promise<ProcessResult> {
+        const candidate = event as Readonly<Record<string, unknown>>;
+        if (candidate["_remote_verified"] === true && interleaving < 2) {
+          const next = interleaving === 0 ? firstCommitted : latestCommitted;
+          interleaving += 1;
+          const webhookResult = await projector.process(
+            subscriptionWebhook(
+              `evt_ts_reconcile_status_bounded_${String(interleaving)}`,
+              RACE_PERIOD_START + interleaving * 10,
+              next,
+            ),
+          );
+          expect(webhookResult.outcome).toBe("handled");
+        }
+        return projector.process(event);
+      },
+    };
+
+    const result = await new ReconciliationService(
+      database,
+      processor,
+      gateway,
+    ).reconcileAccount(accountId);
+
+    expect(result).toMatchObject({
+      outcome: "ignored",
+      reason: "older or weaker than the applied state",
+      accountId,
+    });
+    expect(subscriptionReads).toBe(2);
+    expect(interleaving).toBe(2);
+    const projected = await database.query<{
+      readonly subscription_status: string;
+      readonly cancel_at_period_end: boolean;
+      readonly period_end_epoch: string;
+    }>(
+      `select subscription_status,cancel_at_period_end,
+              extract(epoch from current_period_end)::bigint::text as period_end_epoch
+         from billing_accounts where id=$1::uuid`,
+      [accountId],
+    );
+    expect(projected.rows[0]).toEqual({
+      subscription_status: "active",
+      cancel_at_period_end: false,
+      period_end_epoch: String(RACE_PERIOD_LATEST),
+    });
+    const incident = await database.query<{
+      readonly detail: Readonly<Record<string, unknown>>;
+    }>(
+      `select detail from billing_incidents
+        where account_id=$1::uuid and kind='reconciliation_failed'
+          and resolved_at is null`,
+      [accountId],
+    );
+    expect(incident.rows[0]?.detail).toEqual({
+      reason:
+        "status projection did not commit: older or weaker than the applied state",
+    });
+  });
+
+  test("cancellation CAS loss refetches and preserves a newer active webhook", async () => {
+    const database = postgresDatabase();
+    const subscriptionId = "sub_ts_reconcile_cancellation_refresh";
+    const customerId = "cus_ts_reconcile_cancellation_refresh";
+    const accountId = await account(database, subscriptionId);
+    await database.query(
+      `update billing_accounts set stripe_customer_id=$2,
+         current_period_end=to_timestamp($3::bigint),
+         entitlement_period_end=to_timestamp($3::bigint),
+         credits_balance=300000000
+       where id=$1::uuid`,
+      [accountId, customerId, RACE_PERIOD_STALE],
+    );
+    const staleCancellation = subscriptionSnapshot(
+      accountId,
+      subscriptionId,
+      customerId,
+      {
+        status: "canceled",
+        cancelAtPeriodEnd: false,
+        periodEnd: RACE_PERIOD_STALE,
+      },
+    );
+    const freshActive = subscriptionSnapshot(
+      accountId,
+      subscriptionId,
+      customerId,
+      {
+        status: "active",
+        cancelAtPeriodEnd: false,
+        periodEnd: RACE_PERIOD_FRESH,
+      },
+    );
+    let subscriptionReads = 0;
+    const gateway: ReconciliationGateway = {
+      async subscriptionObject() {
+        subscriptionReads += 1;
+        return subscriptionReads === 1 ? staleCancellation : freshActive;
+      },
+      async latestPaidInvoiceEvent() {
+        throw new Error(
+          "paid Invoice lookup must not run after cancellation state drift",
+        );
+      },
+    };
+    const projector = new EventProcessor(
+      database,
+      catalog,
+      "example-entitlements",
+      { expectedApiVersion: "2026-06-24.dahlia" },
+    );
+    let webhookCommitted = false;
+    const processor: ReconciliationProcessor = {
+      async process(event): Promise<ProcessResult> {
+        const candidate = event as Readonly<Record<string, unknown>>;
+        if (!webhookCommitted && candidate["_remote_verified"] === true) {
+          webhookCommitted = true;
+          const webhookResult = await projector.process(
+            subscriptionWebhook(
+              "evt_ts_reconcile_cancellation_refresh",
+              RACE_PERIOD_START + 10,
+              freshActive,
+            ),
+          );
+          expect(webhookResult.outcome).toBe("handled");
+        }
+        return projector.process(event);
+      },
+    };
+
+    const result = await new ReconciliationService(
+      database,
+      processor,
+      gateway,
+    ).reconcileAccount(accountId);
+
+    expect(result).toMatchObject({
+      outcome: "ignored",
+      reason: "remote subscription changed during reconciliation",
+      accountId,
+    });
+    expect(subscriptionReads).toBe(2);
+    expect(webhookCommitted).toBe(true);
+    const projected = await database.query<{
+      readonly stripe_subscription_id: string | null;
+      readonly plan_key: string;
+      readonly subscription_status: string;
+      readonly cancel_at_period_end: boolean;
+      readonly period_end_epoch: string;
+      readonly credits_balance: string;
+    }>(
+      `select stripe_subscription_id,plan_key,subscription_status,
+              cancel_at_period_end,credits_balance::text,
+              extract(epoch from current_period_end)::bigint::text as period_end_epoch
+         from billing_accounts where id=$1::uuid`,
+      [accountId],
+    );
+    expect(projected.rows[0]).toEqual({
+      stripe_subscription_id: subscriptionId,
+      plan_key: "starter",
+      subscription_status: "active",
+      cancel_at_period_end: false,
+      period_end_epoch: String(RACE_PERIOD_FRESH),
+      credits_balance: "300000000",
+    });
+    const incident = await database.query<{
+      readonly detail: Readonly<Record<string, unknown>>;
+    }>(
+      `select detail from billing_incidents
+        where account_id=$1::uuid and kind='reconciliation_failed'
+          and resolved_at is null`,
+      [accountId],
+    );
+    expect(incident.rows[0]?.detail).toEqual({
+      reason: "remote subscription changed during cancellation reconciliation",
     });
   });
 
