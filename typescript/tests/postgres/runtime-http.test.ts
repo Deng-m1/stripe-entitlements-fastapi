@@ -387,6 +387,92 @@ describe("connected TypeScript billing runtime", () => {
     });
   });
 
+  test("serializes account timestamps as RFC 3339 without losing microseconds", async () => {
+    const account = await postgresDatabase().accountForExternalRef(
+      authenticatedExternalRef,
+    );
+    const orderId = randomUUID();
+    const lotId = randomUUID();
+    const previewId = randomUUID();
+    await postgresDatabase().query(
+      `update billing_accounts set
+         plan_key='starter',plan_interval='month',subscription_status='active',
+         current_period_end='2030-08-30 12:34:56.123456+00'::timestamptz,
+         entitlement_period_end='2030-08-30 12:34:56.123456+00'::timestamptz,
+         credit_expires_at='2030-08-30 12:34:56.123456+00'::timestamptz,
+         cancel_at_period_end=true,
+         pending_free_at='2030-08-30 12:34:56.123456+00'::timestamptz,
+         credits_balance=300000000
+       where id=$1::uuid`,
+      [account.id],
+    );
+
+    await postgresDatabase().query(
+      `insert into credit_pack_orders(
+         id,account_id,client_idempotency_key,stripe_request_key,pack_key,
+         pack_credits,price_amount,currency,expires_days,price_lookup_key,
+         checkout_status,payment_status,stripe_checkout_session_id,
+         stripe_payment_intent_id,stripe_charge_id,stripe_customer_id,
+         claim_expires_at,amount_paid,paid_at)
+       values(
+         $1::uuid,$2::uuid,'timestamp-pack','timestamp-pack-request','boost-100',
+         100000000,1500,'usd',365,'ent_pack_boost_100',
+         'completed','paid','cs_timestamp_pack','pi_timestamp_pack',
+         'ch_timestamp_pack','cus_timestamp_pack',
+         '2030-08-30 12:34:56.123456+00'::timestamptz,1500,
+         '2029-08-30 12:34:56.123456+00'::timestamptz)`,
+      [orderId, account.id],
+    );
+    await postgresDatabase().query(
+      `insert into credit_funding_lots(
+         id,order_id,account_id,original_credits,remaining_credits,expires_at)
+       values(
+         $1::uuid,$2::uuid,$3::uuid,100000000,100000000,
+         '2030-08-30 12:34:56.123456+00'::timestamptz)`,
+      [lotId, orderId, account.id],
+    );
+    await postgresDatabase().query(
+      `insert into billing_plan_changes(
+         id,account_id,idempotency_key,stripe_subscription_id,
+         from_plan_key,from_interval,target_plan_key,target_interval,
+         effective_mode,status,effective_at,stripe_request_key,
+         expected_grant_epoch,expected_subscription_status,
+         expected_cancel_at_period_end,transition_policy)
+       values(
+         $1::uuid,$2::uuid,'timestamp-preview','sub_timestamp_preview',
+         'starter','month','pro','month','period_end','scheduled',
+         '2030-08-30 12:34:56.123456+00'::timestamptz,
+         'timestamp-preview-request',0,'active',false,'full_period_reset')`,
+      [previewId, account.id],
+    );
+
+    const response = await handler(authenticated("/api/account"));
+    const payload = (await response.json()) as {
+      readonly current_period_end: string;
+      readonly observed_period_end: string;
+      readonly credits: {
+        readonly next_grant_at: string;
+        readonly credit_packs: readonly [{ readonly expires_at: string }];
+      };
+      readonly pending_change: { readonly effective_at: string };
+      readonly pending_cancellation: { readonly effective_at: string };
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.current_period_end).toBe("2030-08-30T12:34:56.123456+00:00");
+    expect(payload.observed_period_end).toBe(payload.current_period_end);
+    expect(payload.credits.next_grant_at).toBe(payload.current_period_end);
+    expect(payload.credits.credit_packs[0]?.expires_at).toBe(
+      payload.current_period_end,
+    );
+    expect(payload.pending_change.effective_at).toBe(
+      payload.current_period_end,
+    );
+    expect(payload.pending_cancellation.effective_at).toBe(
+      payload.current_period_end,
+    );
+  });
+
   test("rejects an invalid mode assertion on every Stripe-touching browser write before I/O", async () => {
     for (const [path, body] of stripeMutationCases()) {
       const response = await handler(modeGuardedMutation(path, body, "live"));

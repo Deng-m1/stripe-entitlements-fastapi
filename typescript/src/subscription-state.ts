@@ -121,6 +121,31 @@ function timestampMicros(value: unknown): bigint | undefined {
   );
 }
 
+/** Normalize PostgreSQL timestamptz text for public JSON without losing microseconds. */
+export function rfc3339Timestamp(value: PgTimestamp): string {
+  const match = TIMESTAMP.exec(value);
+  if (match === null || timestampMicros(value) === undefined) {
+    throw new TypeError(
+      "PostgreSQL timestamp is outside the supported RFC 3339 range",
+    );
+  }
+  const timezone = match[8];
+  if (timezone === undefined) {
+    throw new TypeError("PostgreSQL timestamp requires a timezone offset");
+  }
+  const normalizedTimezone =
+    timezone === "Z" || timezone.includes(":")
+      ? timezone
+      : timezone.length === 3
+        ? `${timezone}:00`
+        : `${timezone.slice(0, 3)}:${timezone.slice(3)}`;
+  const localTimestamp = `${value.slice(0, 10)}T${value.slice(
+    11,
+    value.length - timezone.length,
+  )}`;
+  return `${localTimestamp}${normalizedTimezone}`;
+}
+
 export interface SubscriptionSpendabilityInput {
   readonly asOf: PgTimestamp | null | undefined;
 }

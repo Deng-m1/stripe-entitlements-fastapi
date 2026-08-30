@@ -26,6 +26,7 @@ import {
   type WorkloadIdentityAdapter,
   type WorkloadOwnerAuthorizer,
 } from "./internal-auth.js";
+import { rfc3339Timestamp } from "./subscription-state.js";
 import type { JsonValue } from "./types.js";
 
 export const ENTITLEMENTS_CHECK_SCOPE = "entitlements:check";
@@ -155,7 +156,10 @@ function checkResponse(
       balance_atoms: decision.creditBalance.atoms.toString(),
       scale: Number(CREDIT_SCALE),
       spendable: decision.creditsSpendable,
-      expires_at: decision.creditExpiresAt,
+      expires_at:
+        decision.creditExpiresAt === null
+          ? null
+          : rfc3339Timestamp(decision.creditExpiresAt),
     },
     features: { ...decision.features },
     limits: Object.fromEntries(

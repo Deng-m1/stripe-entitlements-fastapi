@@ -37,6 +37,7 @@ import {
 } from "./plan-changes.js";
 import { runAnnualGrantBatch, runReconciliationBatch } from "./scheduled.js";
 import {
+  rfc3339Timestamp,
   spendableSubscriptionAtoms,
   subscriptionCreditsAreSpendable,
 } from "./subscription-state.js";
@@ -318,6 +319,14 @@ function optionalString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+function requiredTimestamp(value: unknown): PgTimestamp {
+  const timestamp = optionalString(value);
+  if (timestamp === null) {
+    throw new TypeError("database row requires a timestamp");
+  }
+  return timestamp;
+}
+
 async function databaseNow(kernel: BillingKernel): Promise<PgTimestamp> {
   const response = await kernel.database.query<
     { readonly value: PgTimestamp } & QueryResultRow
@@ -435,9 +444,9 @@ export class DefaultBillingHttpServices implements BillingHttpServices {
         target_plan_key: optionalString(pending["target_plan_key"]),
         target_interval: optionalString(pending["target_interval"]),
         timing: optionalString(pending["effective_mode"]),
-        effective_at:
-          optionalString(pending["effective_at"]) ??
-          optionalString(pending["created_at"]),
+        effective_at: rfc3339Timestamp(
+          requiredTimestamp(pending["effective_at"] ?? pending["created_at"]),
+        ),
         status: optionalString(pending["status"]),
         payment_url: optionalString(pending["recovery_url"]),
         transition_policy: optionalString(pending["transition_policy"]),
@@ -449,8 +458,14 @@ export class DefaultBillingHttpServices implements BillingHttpServices {
       plan_key: account.plan_key,
       plan_interval: account.plan_interval,
       subscription_status: account.subscription_status,
-      current_period_end: account.entitlement_period_end,
-      observed_period_end: account.current_period_end,
+      current_period_end:
+        account.entitlement_period_end === null
+          ? null
+          : rfc3339Timestamp(account.entitlement_period_end),
+      observed_period_end:
+        account.current_period_end === null
+          ? null
+          : rfc3339Timestamp(account.current_period_end),
       credits: {
         balance: creditDecimal(balanceAtoms),
         balance_atoms: balanceAtoms.toString(),
@@ -461,14 +476,17 @@ export class DefaultBillingHttpServices implements BillingHttpServices {
         grant_amount: creditDecimal(grantAtoms),
         grant_amount_atoms: grantAtoms.toString(),
         scale: Number(CREDIT_SCALE),
-        next_grant_at: account.credit_expires_at,
+        next_grant_at:
+          account.credit_expires_at === null
+            ? null
+            : rfc3339Timestamp(account.credit_expires_at),
         credit_packs: lots.rows.map((row) => ({
           lot_id: row.id,
           pack_key: row.pack_key,
           checkout_session_id: row.stripe_checkout_session_id,
           remaining: creditDecimal(pgBigInt(row.remaining_credits)),
           remaining_atoms: row.remaining_credits,
-          expires_at: row.expires_at,
+          expires_at: rfc3339Timestamp(row.expires_at),
         })),
       },
       entitlements: entitlementRows(plan),
@@ -480,7 +498,10 @@ export class DefaultBillingHttpServices implements BillingHttpServices {
         ? {
             target_plan_key: "free",
             timing: "period_end",
-            effective_at: account.pending_free_at,
+            effective_at:
+              account.pending_free_at === null
+                ? null
+                : rfc3339Timestamp(account.pending_free_at),
           }
         : null,
     };
@@ -797,7 +818,9 @@ export class DefaultBillingHttpServices implements BillingHttpServices {
           : immediate
             ? "new_period_full_price"
             : "period_end",
-      effective_at: preview.effectiveAt ?? (await databaseNow(this.#kernel)),
+      effective_at: rfc3339Timestamp(
+        preview.effectiveAt ?? (await databaseNow(this.#kernel)),
+      ),
       currency: preview.estimateCurrency ?? target.currency,
       amount_due_now:
         immediate && preview.estimatedAmountDue !== null

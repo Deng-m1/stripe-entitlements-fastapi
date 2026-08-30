@@ -200,7 +200,13 @@ describe("service-identity protected internal API", () => {
   });
 
   test("check response exposes decisions but no Stripe or recovery identifiers", async () => {
-    const { owner } = await fundedOwner();
+    const { accountId, owner } = await fundedOwner();
+    await database.query(
+      `update billing_accounts
+          set credit_expires_at='2030-08-30 12:34:56.123456+00'::timestamptz
+        where id=$1::uuid`,
+      [accountId],
+    );
     const response = await handler({
       auth: new StaticAuth(ENTITLEMENTS_CHECK_SCOPE),
       owners: [owner],
@@ -220,7 +226,12 @@ describe("service-identity protected internal API", () => {
       limits: {
         max_file_mb: { requested: 30, maximum: 30, allowed: true },
       },
-      credits: { balance: "300", balance_atoms: "300000000", spendable: true },
+      credits: {
+        balance: "300",
+        balance_atoms: "300000000",
+        spendable: true,
+        expires_at: "2030-08-30T12:34:56.123456+00:00",
+      },
     });
     const text = JSON.stringify(payload);
     for (const forbidden of [

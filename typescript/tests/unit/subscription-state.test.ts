@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { POSTGRES_BIGINT_MAX } from "../../src/bounds.js";
 import {
+  rfc3339Timestamp,
   spendableSubscriptionAtoms,
   subscriptionCreditsAreSpendable,
   type SubscriptionSpendabilityInput,
@@ -27,6 +28,21 @@ function account(
 }
 
 describe("subscription credit spendability", () => {
+  it.each([
+    ["2026-08-30 12:34:56.123456+00", "2026-08-30T12:34:56.123456+00:00"],
+    ["2026-08-30 20:34:56.1+08", "2026-08-30T20:34:56.1+08:00"],
+    ["2026-08-30T04:34:56-0800", "2026-08-30T04:34:56-08:00"],
+    ["2026-08-30T12:34:56Z", "2026-08-30T12:34:56Z"],
+  ])("normalizes PostgreSQL timestamp %s to RFC 3339", (raw, expected) => {
+    expect(rfc3339Timestamp(raw)).toBe(expected);
+  });
+
+  it("rejects an invalid timestamp at the JSON serialization boundary", () => {
+    expect(() => rfc3339Timestamp("infinity")).toThrow(
+      "PostgreSQL timestamp is outside the supported RFC 3339 range",
+    );
+  });
+
   it("compares equivalent offsets without losing the final microsecond", () => {
     const state = account();
     expect(
