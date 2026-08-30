@@ -13,11 +13,11 @@ server-side code.
 
 ## Choose the evidence level
 
-| Mode | Stripe/PostgreSQL | What a visitor sees | Use it for |
-| --- | --- | --- | --- |
-| `simulation` | none | Browser-local plan, credit-pack, upgrade, and success-state simulation | Public GitHub demo, visual review, v0/Lovable layout work |
-| test staging | real Stripe **test mode** plus isolated PostgreSQL | Real `checkout.stripe.com`, Portal, SCA/declines, and webhook-projected state | Controlled product acceptance and browser E2E |
-| live production | real Stripe live mode plus production PostgreSQL | Real cards, money, refunds, and payouts | Approved production cutover only |
+| Mode            | Stripe/PostgreSQL                                  | What a visitor sees                                                           | Use it for                                                |
+| --------------- | -------------------------------------------------- | ----------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `simulation`    | none                                               | Browser-local plan, credit-pack, upgrade, and success-state simulation        | Public GitHub demo, visual review, v0/Lovable layout work |
+| test staging    | real Stripe **test mode** plus isolated PostgreSQL | Real `checkout.stripe.com`, Portal, SCA/declines, and webhook-projected state | Controlled product acceptance and browser E2E             |
+| live production | real Stripe live mode plus production PostgreSQL   | Real cards, money, refunds, and payouts                                       | Approved production cutover only                          |
 
 Never describe `simulation` as a Stripe E2E test. Never describe test staging as proof of
 live settlement.
@@ -193,12 +193,27 @@ rather than weakening subject validation globally.
 
 ## v0 + Next.js
 
-v0 is the closest fit for the native TypeScript path. Import this monorepo and preserve
-these server-owned files when replacing the visual layer:
+v0 is the closest fit for the native TypeScript path. In a new App Router project, pin
+the reviewed backend package before asking the builder to connect billing UI:
+
+```bash
+npm install --save-exact @tosea/stripe-entitlements@0.4.0
+```
+
+The package installs the server runtime, types, CLI, catalog, and migrations; it is not a
+React component kit or a one-click SaaS template. Add the three Node Route Handlers,
+managed PostgreSQL 17, a host authentication adapter, Stripe test-mode configuration,
+and protected worker schedules. Copy the handler shape from the matching
+[v0.4.0 clean-consumer fixture](https://github.com/Deng-m1/stripe-entitlements-fastapi/tree/v0.4.0/tests/npm-next-consumer)
+rather than another branch.
+
+When importing this monorepo instead, preserve these server-owned files while replacing
+the visual layer:
 
 - `web/app/api/[...billing]/route.ts`;
 - `web/app/webhooks/stripe/route.ts`;
 - `web/app/health/route.ts`;
+- `next.config.mjs` output-file tracing for the packaged catalog and migrations;
 - the Node runtime declaration and raw-body webhook behavior; and
 - the billing package, migrations, catalog, and environment contract.
 
@@ -213,12 +228,13 @@ expose sk_test, sk_live, whsec, database URLs, client secrets, recovery URLs, or
 Bearer token. A Checkout return is not entitlement proof.
 ```
 
-This is currently a source-repository workflow, not a verified one-click builder import
-or a new-project `npm install` quick start: `@tosea/stripe-entitlements` is not yet
-published to the public npm registry, `web/package.json` uses the local
-`../typescript` package, and no v0 platform-import E2E is recorded. Publish a matching
-npm release, install a pinned GitHub Release tarball, or vendor the reviewed package
-before asking a fresh v0 project to import it.
+The release gate installs the exact tarball into a clean Next.js 16.3.2 App Router
+consumer and runs a production build of all three Route Handlers. That proves package
+installation and Next compilation, not a hosted v0 platform import or a complete product
+journey. `web/package.json` intentionally keeps the local `../typescript` dependency so
+monorepo CI tests the current source. Downstream v0 projects must keep the pinned npm
+version and still run their own authenticated browser E2E against isolated Stripe test
+mode and PostgreSQL before deployment.
 
 Lovable's default Vite runtime likewise cannot execute the Next.js Route Handlers, and
 this repository does not yet contain a runnable Lovable/Vite simulation starter. Use

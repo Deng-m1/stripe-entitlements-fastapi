@@ -4,6 +4,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12%2B-3776AB.svg)](pyproject.toml)
 [![Node](https://img.shields.io/badge/node-22%2B-339933.svg)](typescript/package.json)
+[![npm](https://img.shields.io/npm/v/%40tosea%2Fstripe-entitlements.svg?label=npm)](https://www.npmjs.com/package/@tosea/stripe-entitlements)
 
 An open-source Stripe billing, SaaS entitlements, and credit-ledger starter with two
 native backend choices: Python/FastAPI or TypeScript/Node/Next.js. Both use PostgreSQL
@@ -376,12 +377,14 @@ environment templates, operator scripts, Docker/Compose files, examples, tests, 
 Next.js reference UI.
 
 The version-tag workflow attaches the Wheel, source distribution, verified TypeScript npm
-tarball, checksums, and immutable container digest to the matching GitHub Release. It also publishes
+tarball, checksums, and immutable container digest to the matching GitHub Release,
+publishes the byte-identical TypeScript tarball to npm, and then clean-installs that
+registry version. It also publishes
 `ghcr.io/deng-m1/stripe-entitlements-fastapi` with exact-version, minor-version, commit,
 and `latest` tags. Moving minor-version and `latest` tags only advance within their
-respective release channels; publishing an older patch does not roll them back. GitHub
-Release assets are not a claim that either package was published to PyPI or the npm
-registry; use the exact reviewed artifact or release tag documented for your deployment.
+respective release channels; publishing an older patch does not roll them back. The
+Python GitHub assets are not a claim of PyPI publication. TypeScript consumers should
+pin `@tosea/stripe-entitlements@0.4.0`; do not substitute an older registry version.
 
 The published container is currently native `linux/amd64`, not a multi-architecture
 manifest. ARM64 users should install the Wheel/source distribution or build and verify
@@ -464,6 +467,12 @@ uv run --env-file .env \
 ```
 
 Native TypeScript/Node alternative:
+
+```bash
+npm install --save-exact @tosea/stripe-entitlements@0.4.0
+```
+
+For contributors running this source checkout instead:
 
 ```bash
 cd typescript

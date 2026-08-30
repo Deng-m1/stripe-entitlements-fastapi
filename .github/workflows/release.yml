@@ -19,8 +19,8 @@ jobs:
     name: Verify and publish
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # This sole release job creates the GitHub Release, pushes GHCR, and emits an
-    # OIDC-backed registry attestation. CI workflows retain read-only permissions.
+    # This sole release job publishes npm, creates the GitHub Release, pushes GHCR, and
+    # emits registry provenance. CI workflows retain read-only permissions.
     permissions:
       attestations: write # Publish provenance for the verified image digest.
       contents: write # Reserve, upload, and publish the GitHub Release.
@@ -123,8 +123,14 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: 22
+          node-version: 22.22.0
           package-manager-cache: false
+          registry-url: https://registry.npmjs.org
+
+      - name: Pin an npm CLI with trusted-publishing support
+        run: |
+          npm install --global npm@11.19.1
+          test "$(npm --version)" = "11.19.1"
 
       - name: Verify TypeScript billing core
         working-directory: typescript
@@ -132,6 +138,8 @@ jobs:
           npm ci
           npm audit --omit=dev
           npm audit
+          npm audit --prefix ../tests/npm-next-consumer --package-lock-only --omit=dev
+          npm audit --prefix ../tests/npm-next-consumer --package-lock-only
           npm run check
 
       - name: Verify reference web application
@@ -183,6 +191,7 @@ jobs:
           PY
 
       - name: Build, install, and migrate with the npm distribution
+        id: npm_artifact
         working-directory: typescript
         env:
           RELEASE_VERSION: ${{ steps.tag_guard.outputs.version }}
@@ -193,6 +202,10 @@ jobs:
             "tosea-stripe-entitlements-${RELEASE_VERSION}.tgz"
           archive="$GITHUB_WORKSPACE/dist/$archive_name"
           test -s "$archive"
+          archive_integrity="sha512-$(openssl dgst -sha512 -binary "$archive" | \
+            openssl base64 -A)"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "integrity=$archive_integrity" >> "$GITHUB_OUTPUT"
           package_root="$(mktemp -d)"
           npm install --prefix "$package_root" "$archive"
           installed="$package_root/node_modules/@tosea/stripe-entitlements"
@@ -246,6 +259,111 @@ jobs:
           JS
           )
           ../scripts/verify_npm_migration_smoke.sh "$archive" "$RELEASE_VERSION"
+          ../scripts/verify_npm_next_consumer.sh "$archive"
+
+      - name: Preflight the npm registry destination
+        id: npm_registry
+        working-directory: typescript
+        env:
+          EXPECTED_INTEGRITY: ${{ steps.npm_artifact.outputs.integrity }}
+          IS_LATEST: ${{ steps.release_policy.outputs.latest }}
+          NPM_CONFIG_USERCONFIG: /dev/null
+          RELEASE_VERSION: ${{ steps.tag_guard.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_name="@tosea/stripe-entitlements"
+          package_spec="${package_name}@${RELEASE_VERSION}"
+          package_exists=false
+          package_error="$RUNNER_TEMP/npm-package-lookup.txt"
+          if observed_name="$(npm view "$package_name" name \
+            --json 2>"$package_error" | tr -d '"\r\n')"; then
+            test "$observed_name" = "$package_name"
+            package_exists=true
+          elif ! grep -Eq '(^|[[:space:]])E404([[:space:]]|$)|404 Not Found' \
+            "$package_error"; then
+            echo "could not determine whether the npm package exists" >&2
+            sed -n '1,12p' "$package_error" >&2
+            exit 1
+          fi
+
+          version_exists=false
+          error_file="$RUNNER_TEMP/npm-version-lookup.txt"
+          if existing_integrity="$(npm view "$package_spec" dist.integrity \
+            --json 2>"$error_file" | tr -d '"\r\n')"; then
+            test -n "$existing_integrity"
+            if [ "$existing_integrity" != "$EXPECTED_INTEGRITY" ]; then
+              echo "refusing existing npm version with different tarball integrity" >&2
+              exit 1
+            fi
+            version_exists=true
+            echo "$package_spec already contains the exact verified artifact"
+          else
+            if ! grep -Eq '(^|[[:space:]])E404([[:space:]]|$)|404 Not Found' \
+              "$error_file"; then
+              echo "could not prove that $package_spec is vacant" >&2
+              sed -n '1,12p' "$error_file" >&2
+              exit 1
+            fi
+            echo "$package_spec is vacant"
+          fi
+
+          if [ "$version_exists" = "true" ] && [ "$package_exists" != "true" ]; then
+            echo "npm registry returned an inconsistent package/version view" >&2
+            exit 1
+          fi
+
+          publish_tag="latest"
+          if [ "$IS_LATEST" != "true" ]; then
+            publish_tag="release-${RELEASE_VERSION//[^0-9A-Za-z]/-}"
+          elif [ "$package_exists" = "true" ]; then
+            registry_latest="$(npm view "$package_name" dist-tags.latest \
+              --json 2>/dev/null | tr -d '"\r\n')"
+            python - "$RELEASE_VERSION" "$registry_latest" <<'PY'
+          import re
+          import sys
+
+          current_text, latest_text = sys.argv[1:]
+          stable = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+          current_match = stable.fullmatch(current_text)
+          if current_match is None:
+              raise SystemExit("git release policy marked a non-stable npm version latest")
+          if latest_text:
+              latest_match = stable.fullmatch(latest_text)
+              if latest_match is None:
+                  raise SystemExit("npm latest is not a stable semantic version")
+              current = tuple(map(int, current_match.groups()))
+              latest = tuple(map(int, latest_match.groups()))
+              if current < latest:
+                  raise SystemExit(
+                      f"refusing to move npm latest backward from {latest_text} to {current_text}"
+                  )
+          PY
+          fi
+          echo "package_exists=$package_exists" >> "$GITHUB_OUTPUT"
+          echo "version_exists=$version_exists" >> "$GITHUB_OUTPUT"
+          echo "publish_tag=$publish_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Validate brand-new npm package credentials
+        if: >-
+          steps.npm_registry.outputs.package_exists == 'false' &&
+          steps.npm_registry.outputs.version_exists == 'false'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "brand-new npm package requires the temporary NPM_TOKEN secret" >&2
+            exit 1
+          fi
+          authenticated_user="$(npm whoami --registry=https://registry.npmjs.org)"
+          case "$authenticated_user" in
+            ''|*[!0-9A-Za-z._-]*)
+              echo "npm returned an invalid authenticated username" >&2
+              exit 1
+              ;;
+          esac
 
       - name: Generate distribution checksums
         run: |
@@ -519,6 +637,176 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --generate-notes
 
+      - name: Bootstrap the brand-new npm package with a temporary token
+        if: >-
+          steps.npm_registry.outputs.package_exists == 'false' &&
+          steps.npm_registry.outputs.version_exists == 'false'
+        working-directory: typescript
+        env:
+          ARCHIVE: ${{ steps.npm_artifact.outputs.archive }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PUBLISH_TAG: ${{ steps.npm_registry.outputs.publish_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "brand-new npm package requires the temporary NPM_TOKEN secret" >&2
+            exit 1
+          fi
+          package_name="@tosea/stripe-entitlements"
+          error_file="$RUNNER_TEMP/npm-bootstrap-recheck.txt"
+          if npm --userconfig=/dev/null view "$package_name" name \
+            --json >/dev/null 2>"$error_file"; then
+            echo "npm package appeared after bootstrap preflight; refusing token fallback" >&2
+            exit 1
+          fi
+          if ! grep -Eq '(^|[[:space:]])E404([[:space:]]|$)|404 Not Found' \
+            "$error_file"; then
+            echo "could not re-confirm brand-new npm package vacancy" >&2
+            sed -n '1,12p' "$error_file" >&2
+            exit 1
+          fi
+          npm publish "$ARCHIVE" --access public --provenance --tag "$PUBLISH_TAG"
+
+      - name: Publish an existing npm package through trusted OIDC
+        if: >-
+          steps.npm_registry.outputs.package_exists == 'true' &&
+          steps.npm_registry.outputs.version_exists == 'false'
+        working-directory: typescript
+        env:
+          ARCHIVE: ${{ steps.npm_artifact.outputs.archive }}
+          EXPECTED_INTEGRITY: ${{ steps.npm_artifact.outputs.integrity }}
+          IS_LATEST: ${{ steps.release_policy.outputs.latest }}
+          PUBLISH_TAG: ${{ steps.npm_registry.outputs.publish_tag }}
+          RELEASE_VERSION: ${{ steps.tag_guard.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_name="@tosea/stripe-entitlements"
+          package_spec="${package_name}@${RELEASE_VERSION}"
+          error_file="$RUNNER_TEMP/npm-oidc-version-recheck.txt"
+          if existing_integrity="$(npm --userconfig=/dev/null view \
+            "$package_spec" dist.integrity --json 2>"$error_file" | \
+            tr -d '"\r\n')"; then
+            test "$existing_integrity" = "$EXPECTED_INTEGRITY"
+            echo "$package_spec appeared with the exact verified artifact"
+            exit 0
+          fi
+          if ! grep -Eq '(^|[[:space:]])E404([[:space:]]|$)|404 Not Found' \
+            "$error_file"; then
+            echo "could not re-confirm npm version vacancy" >&2
+            sed -n '1,12p' "$error_file" >&2
+            exit 1
+          fi
+
+          if [ "$IS_LATEST" = "true" ]; then
+            registry_latest="$(npm --userconfig=/dev/null view "$package_name" \
+              dist-tags.latest --json 2>/dev/null | tr -d '"\r\n')"
+            python - "$RELEASE_VERSION" "$registry_latest" <<'PY'
+          import re
+          import sys
+
+          current_text, latest_text = sys.argv[1:]
+          stable = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+          current_match = stable.fullmatch(current_text)
+          if not latest_text:
+              if current_match is None:
+                  raise SystemExit("npm latest comparison requires a stable version")
+              raise SystemExit(0)
+          latest_match = stable.fullmatch(latest_text)
+          if current_match is None or latest_match is None:
+              raise SystemExit("npm latest comparison requires stable semantic versions")
+          current = tuple(map(int, current_match.groups()))
+          latest = tuple(map(int, latest_match.groups()))
+          if current < latest:
+              raise SystemExit(
+                  f"refusing to move npm latest backward from {latest_text} to {current_text}"
+              )
+          PY
+          fi
+          npm publish "$ARCHIVE" --access public --provenance --tag "$PUBLISH_TAG"
+
+      - name: Verify the anonymous npm registry installation
+        working-directory: typescript
+        env:
+          EXPECTED_INTEGRITY: ${{ steps.npm_artifact.outputs.integrity }}
+          EXPECTED_TAG_COMMIT: ${{ steps.tag_guard.outputs.tag_commit }}
+          NPM_CONFIG_USERCONFIG: /dev/null
+          PUBLISH_TAG: ${{ steps.npm_registry.outputs.publish_tag }}
+          RELEASE_VERSION: ${{ steps.tag_guard.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_name="@tosea/stripe-entitlements"
+          package_spec="${package_name}@${RELEASE_VERSION}"
+          observed_integrity=""
+          for attempt in $(seq 1 30); do
+            if observed_integrity="$(npm view "$package_spec" dist.integrity \
+              --json 2>/dev/null | tr -d '"\r\n')" && \
+              [ "$observed_integrity" = "$EXPECTED_INTEGRITY" ]; then
+              break
+            fi
+            sleep 2
+          done
+          test "$observed_integrity" = "$EXPECTED_INTEGRITY"
+          provenance_type="$(npm view "$package_spec" \
+            dist.attestations.provenance.predicateType --json | tr -d '"\r\n')"
+          test "$provenance_type" = "https://slsa.dev/provenance/v1"
+          attestation_url="$(npm view "$package_spec" \
+            dist.attestations.url --json | tr -d '"\r\n')"
+          case "$attestation_url" in
+            https://registry.npmjs.org/-/npm/v1/attestations/*) ;;
+            *) echo "npm provenance attestation URL is missing or invalid" >&2; exit 1 ;;
+          esac
+          attestation_file="$RUNNER_TEMP/npm-attestations.json"
+          curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
+            "$attestation_url" --output "$attestation_file"
+          observed_dist_tag="$(npm view "$package_name" \
+            "dist-tags.$PUBLISH_TAG" --json | tr -d '"\r\n')"
+          test "$observed_dist_tag" = "$RELEASE_VERSION"
+
+          install_root="$(mktemp -d)"
+          anonymous_cache="$(mktemp -d)"
+          npm --userconfig=/dev/null --cache="$anonymous_cache" --prefer-online \
+            install --prefix "$install_root" --ignore-scripts --no-audit --no-fund \
+            "$package_spec"
+          npm --userconfig=/dev/null --cache="$anonymous_cache" \
+            audit signatures --prefix "$install_root"
+          python ../scripts/verify_npm_provenance.py \
+            "$attestation_file" "$EXPECTED_INTEGRITY" \
+            "$EXPECTED_TAG_COMMIT" "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" \
+            "$RELEASE_VERSION"
+          installed="$install_root/node_modules/$package_name"
+          test "$(node -p "require('$installed/package.json').version")" = \
+            "$RELEASE_VERSION"
+          test "$("$install_root/node_modules/.bin/stripe-entitlements" --version)" = \
+            "stripe-entitlements $RELEASE_VERSION"
+          (
+            cd "$install_root"
+            node --input-type=module <<'JS'
+          import { CreditAmount, PlanCatalog } from "@tosea/stripe-entitlements";
+          import { createBillingFetchHandler } from "@tosea/stripe-entitlements/http";
+          import { createNextBillingRouteHandler } from "@tosea/stripe-entitlements/next";
+          import { parseNodeBillingCommand } from "@tosea/stripe-entitlements/node";
+
+          if (CreditAmount.parse("0.125").atoms !== 125_000n) {
+            throw new Error("registry fractional credit import failed");
+          }
+          if (typeof PlanCatalog.fromToml !== "function") {
+            throw new Error("registry catalog export is unavailable");
+          }
+          if (typeof createBillingFetchHandler !== "function") {
+            throw new Error("registry HTTP export is unavailable");
+          }
+          if (typeof createNextBillingRouteHandler !== "function") {
+            throw new Error("registry Next.js export is unavailable");
+          }
+          if (typeof parseNodeBillingCommand !== "function") {
+            throw new Error("registry Node export is unavailable");
+          }
+          JS
+          )
+
       - name: Publish immutable verified OCI image tags
         id: push_container
         env:
@@ -581,7 +869,7 @@ jobs:
           printf '%s@%s\n' "$CONTAINER_IMAGE" "$CONTAINER_DIGEST" \
             > dist/CONTAINER_DIGEST.txt
 
-      - name: Publish the reserved GitHub Release and distributions
+      - name: Upload distributions to the reserved draft GitHub Release
         env:
           CONTAINER_DIGEST: ${{ steps.push_container.outputs.digest }}
           CONTAINER_IMAGE: ${{ steps.image.outputs.name }}
@@ -623,7 +911,6 @@ jobs:
             sleep 2
           done
           test "$observed_assets" = "$expected_assets"
-          gh release edit "$GITHUB_REF_NAME" --draft=false
 
       - name: Publish newest moving OCI channel tags
         env:
@@ -642,6 +929,62 @@ jobs:
             test -n "$tag"
             case "$tag" in
               "$release_tag"|*:sha-*) ;;
-              *) docker push "$tag" ;;
+              *)
+                docker push "$tag"
+                observed_digest=""
+                for attempt in $(seq 1 10); do
+                  observed_digest="$(docker buildx imagetools inspect "$tag" \
+                    | awk '/^Digest:/ {print $2; exit}')"
+                  test "$observed_digest" = "$EXPECTED_DIGEST" && break
+                  sleep 2
+                done
+                test "$observed_digest" = "$EXPECTED_DIGEST"
+                ;;
             esac
           done <<< "$CONTAINER_TAGS"
+
+      - name: Publish the fully verified GitHub Release
+        env:
+          CONTAINER_IMAGE: ${{ steps.image.outputs.name }}
+          CONTAINER_TAGS: ${{ steps.metadata.outputs.tags }}
+          EXPECTED_CONTAINER_DIGEST: ${{ steps.push_container.outputs.digest }}
+          EXPECTED_NPM_INTEGRITY: ${{ steps.npm_artifact.outputs.integrity }}
+          EXPECTED_PUBLISH_TAG: ${{ steps.npm_registry.outputs.publish_tag }}
+          EXPECTED_TAG_OBJECT: ${{ steps.tag_guard.outputs.tag_object }}
+          GH_TOKEN: ${{ github.token }}
+          NPM_CONFIG_USERCONFIG: /dev/null
+          RELEASE_VERSION: ${{ steps.tag_guard.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote_tag_object="$(git ls-remote --refs origin \
+            "refs/tags/$GITHUB_REF_NAME" | awk 'NR == 1 {print $1}')"
+          test "$remote_tag_object" = "$EXPECTED_TAG_OBJECT"
+          test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = "true"
+          expected_assets="$(printf '%s\n' \
+            "stripe_entitlements_fastapi-${RELEASE_VERSION}-py3-none-any.whl" \
+            "stripe_entitlements_fastapi-${RELEASE_VERSION}.tar.gz" \
+            "tosea-stripe-entitlements-${RELEASE_VERSION}.tgz" \
+            SHA256SUMS CONTAINER_DIGEST.txt CONTAINER_SBOM.spdx.json | sort)"
+          observed_assets="$(gh release view "$GITHUB_REF_NAME" --json assets \
+            --jq '.assets[].name' | sort)"
+          test "$observed_assets" = "$expected_assets"
+          observed_npm_integrity="$(npm view \
+            "@tosea/stripe-entitlements@${RELEASE_VERSION}" dist.integrity \
+            --json | tr -d '"\r\n')"
+          test "$observed_npm_integrity" = "$EXPECTED_NPM_INTEGRITY"
+          observed_npm_tag="$(npm view "@tosea/stripe-entitlements" \
+            "dist-tags.${EXPECTED_PUBLISH_TAG}" --json | tr -d '"\r\n')"
+          test "$observed_npm_tag" = "$RELEASE_VERSION"
+          observed_provenance_type="$(npm view \
+            "@tosea/stripe-entitlements@${RELEASE_VERSION}" \
+            dist.attestations.provenance.predicateType --json | tr -d '"\r\n')"
+          test "$observed_provenance_type" = "https://slsa.dev/provenance/v1"
+          while IFS= read -r tag; do
+            test -n "$tag"
+            observed_digest="$(docker buildx imagetools inspect "$tag" \
+              | awk '/^Digest:/ {print $2; exit}')"
+            test "$observed_digest" = "$EXPECTED_CONTAINER_DIGEST"
+          done <<< "$CONTAINER_TAGS"
+          gh release edit "$GITHUB_REF_NAME" --draft=false
+          test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = "false"

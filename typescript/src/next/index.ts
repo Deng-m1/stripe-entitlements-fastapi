@@ -8,8 +8,8 @@ export {
   environmentNextBillingRouteHandler,
 } from "./environment.js";
 
-// Re-export these exact literals from each application Route Handler module. They
-// keep Stripe/pg on the Node runtime, disable route caching, and bound Vercel work.
+// Convenience values for non-Next adapters and contract tests. Next.js applications
+// must write these as literal exports in each Route Handler so static analysis sees them.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
