@@ -342,6 +342,46 @@ async def test_due_account_exclusion_prevents_batch_starvation(
     assert first_ids | second_ids == account_ids
 
 
+async def test_deferred_serverless_candidate_rotates_behind_older_due_account(
+    processor: EventProcessor, pool: asyncpg.Pool, catalog: PlanCatalog, make_account
+) -> None:
+    first_id = await make_account(customer="cus_defer_first", subscription="sub_defer_first")
+    second_id = await make_account(customer="cus_defer_second", subscription="sub_defer_second")
+    await _annual_setup(
+        processor,
+        first_id,
+        invoice_id="in_defer_first",
+        customer="cus_defer_first",
+        subscription="sub_defer_first",
+    )
+    await _annual_setup(
+        processor,
+        second_id,
+        invoice_id="in_defer_second",
+        customer="cus_defer_second",
+        subscription="sub_defer_second",
+    )
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """update billing_accounts
+                  set updated_at=case when id=$1::uuid
+                                      then '2026-01-01T00:00:00Z'::timestamptz
+                                      else '2026-01-02T00:00:00Z'::timestamptz end
+                where id=any($2::uuid[])""",
+            first_id,
+            [first_id, second_id],
+        )
+    service = AnnualGrantService(pool, catalog, processor)
+    now = datetime(2026, 2, 2, tzinfo=UTC)
+    first_page = await service.due_accounts(now, limit=1)
+    assert [str(candidate["id"]) for candidate in first_page] == [first_id]
+
+    await service.defer_candidate(first_id)
+
+    second_page = await service.due_accounts(now, limit=1)
+    assert [str(candidate["id"]) for candidate in second_page] == [second_id]
+
+
 async def test_annual_worker_rejects_naive_time(
     processor: EventProcessor, pool: asyncpg.Pool, catalog: PlanCatalog, make_account
 ) -> None:

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Add a stable Vercel Services topology that deploys the Next.js reference UI and the
+  existing FastAPI billing core behind one domain, without requiring Railway or a second
+  public backend deployment.
+- Add constant-time `CRON_SECRET` authorization and bounded, retryable annual-grant and
+  subscription/credit-pack reconciliation routes for Vercel Cron. Their responses expose
+  aggregate counts only and preserve PostgreSQL as the distributed coordination layer.
+- Add an explicit frontend `same-origin` API mode that still requires the host's real
+  authentication adapter, plus deployment, concurrency, configuration, and routing tests.
+- Document managed PostgreSQL, personal JWT, isolated preview resources, Stripe webhook,
+  local Vercel CLI, migration, and production-verification requirements.
+
 ## 0.3.0 - 2026-08-28
 
 - Add exact fractional product credits with a fixed protocol of one million integer

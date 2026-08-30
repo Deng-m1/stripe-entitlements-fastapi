@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   billingRedirectUrl,
+  configuredBillingApiBaseUrl,
   internalRedirectUrl,
   isUnsafeProductionDemoConfiguration,
 } from "@/lib/runtime";
@@ -68,5 +69,13 @@ describe("production demo guard", () => {
     expect(
       isUnsafeProductionDemoConfiguration("development", "mock", "demo-token"),
     ).toBe(false);
+  });
+
+  it("defaults HTTP deployments to the explicit same-origin sentinel", () => {
+    expect(configuredBillingApiBaseUrl(undefined)).toBe("same-origin");
+    expect(configuredBillingApiBaseUrl("https://billing.example")).toBe(
+      "https://billing.example",
+    );
+    expect(configuredBillingApiBaseUrl("")).toBe("");
   });
 });

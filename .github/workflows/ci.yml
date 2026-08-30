@@ -105,6 +105,8 @@ jobs:
               "web/.env.example",
               "web/package.json",
               "web/package-lock.json",
+              "vercel.json",
+              "vercel_app.py",
           }
           missing_sdist = required_sdist - normalized_sdist_names
           assert not missing_sdist, sorted(missing_sdist)

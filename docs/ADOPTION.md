@@ -66,6 +66,7 @@ build and validate the pinned Dockerfile on their target platform.
 | Shape | Current fit | Use when | Important limitation |
 | --- | --- | --- | --- |
 | Fork the complete repository | Best supported | Building a new FastAPI billing boundary | You own future upstream merges |
+| Vercel Services full stack | Supported | New Next.js + FastAPI SaaS on one domain | Still needs managed PostgreSQL, Stripe, and real identity integration |
 | Standalone billing service | Supported | The host is large, separately deployed or not Python | Configure both workload authentication and owner authorization before enabling private APIs |
 | Same-process FastAPI composition | Supported | The host is Python and already owns a FastAPI root | Install before startup and test route-prefix conflicts |
 | Python service facade | Supported | Product code runs in the billing process | Services exist only inside the installed lifespan |
@@ -77,6 +78,12 @@ billing routes and response hardening to installed billing routes, keeps unrelat
 routes unchanged, and composes the existing host lifespan with the billing lifespan. A
 separately deployed billing service remains a good boundary for non-Python or
 independently operated hosts.
+
+For a new web product that does not need a separate Railway/API deployment, the
+checked-in Vercel Services configuration deploys Next.js and this same FastAPI package
+behind one domain and supplies secured bounded Cron routes. It does not fork or rewrite
+the billing state machine. Follow [the Vercel guide](VERCEL.md); PostgreSQL and host
+identity remain explicit dependencies.
 
 For a standalone service, the browser-facing billing APIs are usable after injecting
 real authentication. The optional internal router exposes owner-bound check, charge,
@@ -111,7 +118,8 @@ identity provider. Its hard runtime assumptions are narrower but significant:
 - `asyncpg` and the repository's unqualified SQL schema for in-process database access;
 - one Stripe account/mode, one product line, one recurring Subscription item and USD;
 - a public signed Stripe webhook endpoint;
-- an external scheduler for annual grants and reconciliation; and
+- a scheduler for annual grants and reconciliation (including the checked-in Vercel
+  Cron option); and
 - Node.js 22+ and npm only when reusing the Next.js reference UI.
 
 Redis, Celery and a particular JWT library are not required. If the host uses SQLAlchemy,
@@ -807,7 +815,7 @@ const auth: AuthAdapter = {
 };
 
 export const billingApi = createHttpBillingApi({
-  baseUrl: process.env.NEXT_PUBLIC_BILLING_API_BASE_URL!,
+  baseUrl: process.env.NEXT_PUBLIC_BILLING_API_BASE_URL ?? "same-origin",
   auth,
 });
 ```
@@ -815,6 +823,11 @@ export const billingApi = createHttpBillingApi({
 Replace the composition in `web/lib/runtime.ts` or pass a host-created `BillingApi` to
 the relevant components. The existing HTTP adapter sends an `Authorization: Bearer`
 header and uses `credentials: "omit"`.
+
+`same-origin` is the explicit mode for Vercel Services or another single-domain reverse
+proxy. It creates relative `/api/...` requests. An empty string remains a configuration
+error, and same-origin mode still rejects every call when the real auth adapter returns
+no access token.
 
 For an HttpOnly-cookie application, use a same-origin BFF that applies CSRF protection
 and forwards a service/user credential, or deliberately change and test the transport.
@@ -943,7 +956,7 @@ test-mode secrets directly in shell history; use an ignored env file or secret m
 ## Schedule workers and operate the dependency chain
 
 The API process does not run background schedules. Invoke these one-shot commands from
-Kubernetes CronJobs, Railway Cron, systemd timers or another scheduler:
+Kubernetes CronJobs, Vercel Cron, Railway Cron, systemd timers or another scheduler:
 
 ```bash
 # Hourly
@@ -966,6 +979,11 @@ state and persisted credit-pack Session/PaymentIntent/Charge state. No scheduler
 annual monthly grants or webhook-loss repair can be delayed. API and worker replicas
 must share the PostgreSQL primary,
 catalog, product line, transition policy and Stripe version contracts.
+
+The Vercel topology schedules secured bounded HTTP wrappers instead of the unbounded
+CLI drain loop. That is intentional for Function duration limits. Overlapping requests
+remain safe, a failed page returns 503 for retry, and later ticks continue the backlog.
+See [the Vercel deployment guide](VERCEL.md#what-the-checked-in-configuration-does).
 
 At minimum monitor database health, unresolved incidents, webhook 5xx/delivery age,
 scheduler lag, stale plan changes, reconciliation failures and backup freshness. See
@@ -1091,6 +1109,9 @@ credits without weakening the billing invariants.
 
 For a Python/FastAPI product using dedicated PostgreSQL, both standalone and native
 same-process adoption are practical through the implemented app/router/service facade.
+For a Next.js product, the stable Vercel Services topology is also practical without a
+separate Railway deployment: it retains Python FastAPI as the trusted backend and uses
+one same-origin public route table.
 The personal/team JWT starters and owner-bound internal API remove common bootstrap
 work, while leaving issuer configuration, tenant membership, and service-to-owner grants
 under host control. ORM models, cookie/BFF auth, a transactional Job/outbox workflow,

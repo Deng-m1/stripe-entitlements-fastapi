@@ -1,0 +1,49 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "frontend": {
+      "root": "web/",
+      "framework": "nextjs",
+      "installCommand": "npm ci"
+    },
+    "billing": {
+      "root": ".",
+      "framework": "fastapi",
+      "entrypoint": "vercel_app:app",
+      "installCommand": "uv sync --frozen --extra auth --no-dev",
+      "functions": {
+        "vercel_app.py": {
+          "maxDuration": 60
+        }
+      }
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": { "service": "billing" }
+    },
+    {
+      "source": "/webhooks/(.*)",
+      "destination": { "service": "billing" }
+    },
+    {
+      "source": "/health",
+      "destination": { "service": "billing" }
+    },
+    {
+      "source": "/(.*)",
+      "destination": { "service": "frontend" }
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/annual-grants",
+      "schedule": "7 * * * *"
+    },
+    {
+      "path": "/api/cron/reconcile",
+      "schedule": "*/5 * * * *"
+    }
+  ]
+}
