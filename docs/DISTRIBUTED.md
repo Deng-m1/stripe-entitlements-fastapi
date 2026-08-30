@@ -85,6 +85,9 @@ coordination: replicas must never share an in-memory kernel or pool across proce
 - Vercel Services is an optional API/UI/scheduler host, not durable storage. Vercel Cron
   cadence and duration depend on the selected platform plan; another scheduler may call
   the same secured endpoints or run the one-shot CLI commands.
+- The frontend-only public simulation has no writable shared truth and is not a billing
+  deployment. Its per-tab `sessionStorage` state demonstrates UI only; distributed
+  safety, signed delivery, reconciliation, and entitlement guarantees do not apply.
 - PostgreSQL and Stripe are not one atomic transaction. Durable intent, idempotency and
   reconciliation reduce the failure surface but do not create distributed ACID.
 - A host Job database/queue and billing are also not one atomic transaction. The host

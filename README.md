@@ -25,6 +25,7 @@ duplicate, delayed, concurrent, and out-of-order Events.
 - [Two plan-change templates](#safe-stripe-plan-transitions-full-price-or-prorated-difference)
 - [Correctness and distributed deployment](#correctness-model)
 - [Optional Vercel deployment](#deploy-on-vercel-with-either-backend)
+- [v0, Lovable, and public simulation](#use-with-v0-lovable-and-ai-app-builders)
 - [Quick start](#quick-start)
 - [Adopt in an existing application](#adopt-in-an-existing-application)
 - [Demo recording](#demo-recording-and-promotional-video)
@@ -279,6 +280,22 @@ a Python or Railway runtime, but it still requires managed PostgreSQL, Stripe, r
 authentication, migrations, backups, and schedulers. See the
 [TypeScript package guide](typescript/README.md#use-the-native-nextjs-backend).
 
+## Use with v0, Lovable, and AI app builders
+
+A Stripe test account is sufficient for a realistic, access-controlled staging site:
+Checkout, Portal, test cards, SCA, signed webhooks, refunds, and Test Clocks all use
+Stripe's real test-mode network without moving money. The repository also provides an
+explicitly `noindex` public `simulation` mode for UI-only links that must not contact
+Stripe or a database.
+
+v0 can edit the visual Next.js layer in this source repository while retaining the
+native TypeScript Route Handlers. Lovable can own a Vite visual layer, but real billing
+must call a separately deployed Node/FastAPI service through a tested authentication
+integration. The included Supabase browser adapter is transport-only, not a complete
+auth starter. In every case, secret keys, webhook verification, PostgreSQL, and
+entitlement projection remain server-side. See the complete
+[AI app-builder and test-staging guide](docs/AI_BUILDERS.md).
+
 ## API surface and authentication
 
 Authenticated billing routes:
@@ -328,7 +345,7 @@ private service boundary is documented in the
   equal that actual Event value and is a required startup setting; it deliberately
   has no fallback to `STRIPE_API_VERSION`.
 
-The request version does not rewrite webhook payloads. In the four exact-`e22d5a7`
+The request version does not rewrite webhook payloads. In the four exact-`f757fcc`
 browser gates, isolated test endpoints pinned to Dahlia delivered signed
 `2026-06-24.dahlia` payloads while independent Event API retrievals reported
 `2025-12-15.clover`. A mismatch
@@ -586,15 +603,16 @@ privacy rules, and reproducible workflow.
 Evidence is split by execution layer; collecting a test or retaining an older run does
 not prove the current tree against Stripe's network.
 
-The complete 0.4.0 parity gate is bound to clean commit
-`e22d5a7eb327e7ef175c23fa76fc1021c9b1184e`. GitHub Actions run
-[`33280721250`](https://github.com/Deng-m1/stripe-entitlements-fastapi/actions/runs/33280721250)
+The billing-core and Stripe-network parity gate is bound to clean commit
+`f757fcce4aeb1194b3db04f87579e8f5ef169058`. Its tree is byte-identical to the
+subsequent squash-merged `main` commit `89646e5`. GitHub Actions run
+[`33283480383`](https://github.com/Deng-m1/stripe-entitlements-fastapi/actions/runs/33283480383)
 passed Backend, TypeScript billing core, Container, and Web:
 
-- Python passed Ruff, Mypy, the version check, dependency audit, and 1,254 network-free
+- Python passed Ruff, Mypy, the version check, dependency audit, and 1,257 network-free
   tests with 10 `real_stripe` cases deselected;
-- native TypeScript passed format/lint/typecheck/build, both npm audits, and 807 tests
-  across 50 files with 82.88% statements, 76.21% branches, 91.65% functions, and 82.93%
+- native TypeScript passed format/lint/typecheck/build, both npm audits, and 816 tests
+  across 50 files with 83.19% statements, 76.64% branches, 92.16% functions, and 83.25%
   lines;
 - a clean Web archive/install passed lint, typecheck, production build, both npm audits,
   and 208 tests across 19 files;
@@ -612,6 +630,9 @@ independently retrieved Event API view was `2025-12-15.clover`. These are test-m
 endpoint and API observations. No live-production webhook payload verification is
 claimed. Earlier 0.2/0.3, CLI-forwarding, working-tree, and failed Quick Tunnel runs remain
 historical regression evidence and are not substituted for the exact-head results above.
+The later AI-builder/public-simulation frontend changes require their own network-free
+Web gate and a rerun of the affected real-browser SCA path; they do not inherit this
+commit's browser evidence merely because the billing backend is unchanged.
 
 Default CI:
 
@@ -637,6 +658,8 @@ npm audit
 npm run lint
 npm run typecheck
 npm test
+npx playwright install --with-deps chromium
+npm run test:e2e:simulation
 npm run build
 ```
 
@@ -673,7 +696,7 @@ designed to verify:
 - direct Event polling and PostgreSQL projection for those networked API cases.
 
 All ten cases passed against isolated Stripe test-mode inventory in both runtimes on
-`e22d5a7`: Python in 380.28 seconds and TypeScript in 244.11 seconds. Direct Event polling
+`f757fcc`: Python in 404.42 seconds and TypeScript in 276.03 seconds. Direct Event polling
 in those suites is not signed endpoint delivery, and later runtime changes must rerun the
 gate rather than inherit this result.
 
@@ -691,7 +714,7 @@ exactly five essential signed Events. It also requires no unresolved incident fo
 identities, verifies one 700-credit delta allocation or no allocation according to
 policy, completes the hosted Portal round trip, and proves the Job charge/replay/refund
 equations. The earlier pre-pack Stripe CLI runs bound three essential Events and remain
-subscription/upgrade history only. The exact-`e22d5a7` four-quadrant endpoint runs bound
+subscription/upgrade history only. The exact-`f757fcc` four-quadrant endpoint runs bound
 five essential Events and happened to observe 11 account-related Events per run.
 Incidental totals are not an invariant, and no live-production payload is claimed.
 

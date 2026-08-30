@@ -22,6 +22,23 @@ plan identity and change direction use stable keys/order, never price comparison
 Mock mode and the browser-exposed demo Bearer adapter are rejected when
 `NODE_ENV=production`.
 
+For a public, frontend-only preview that deliberately performs no Stripe or backend
+request, use the acknowledged simulation mode:
+
+```env
+NEXT_PUBLIC_BILLING_API_MODE=simulation
+NEXT_PUBLIC_SIMULATION_ACKNOWLEDGEMENT=1
+NEXT_PUBLIC_ALLOW_INDEXING=false
+```
+
+The build rejects an indexable simulation and any simulation containing browser or
+server billing credentials. A persistent banner identifies browser-local sample state;
+writable `sessionStorage` is required for safe cross-page projection. Deploy it with the
+repository's frontend-only `vercel.simulation.json`, never either full-stack Vercel
+configuration. Simulation is suitable for a GitHub/v0/Lovable visual demo, never as
+Stripe payment evidence. See the
+[AI app-builder guide](../docs/AI_BUILDERS.md).
+
 For HTTP integration:
 
 ```env
@@ -48,6 +65,12 @@ host's real `AuthAdapter`, and a missing token fails before any request is sent.
 to browser JavaScript and is not production authentication. Production integration
 must replace the composition in `lib/runtime.ts` with the host application's real
 session/OIDC adapter. HTTP mode without an auth adapter fails explicitly.
+
+When a host changes or signs out the authenticated subject, it must cancel outstanding
+billing UI work, unmount the billing screens, call `clearAllIdempotentIntents()` from
+`lib/idempotency.ts`, and remount with the new session. Retry keys are scoped by the
+server account but are intentionally retained in this tab for one browser intent; stale
+account UI must not survive a subject switch.
 
 Never put Stripe secret keys, webhook secrets, PaymentIntent client secrets, or
 hosted invoice URLs in localStorage, analytics, logs, or source control.

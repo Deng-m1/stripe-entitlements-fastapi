@@ -50,3 +50,20 @@ export function completeIdempotentIntent(intent: string): void {
     // The in-memory value was still cleared.
   }
 }
+
+/** Clear browser retry identities before an authenticated host changes subject. */
+export function clearAllIdempotentIntents(): void {
+  memoryKeys.clear();
+  if (typeof window === "undefined") return;
+  try {
+    const keys: string[] = [];
+    for (let index = 0; index < window.sessionStorage.length; index += 1) {
+      const key = window.sessionStorage.key(index);
+      if (key?.startsWith(sessionPrefix)) keys.push(key);
+    }
+    for (const key of keys) window.sessionStorage.removeItem(key);
+  } catch {
+    // In-memory identities were still cleared. The host should replace the tab when
+    // browser storage is unavailable during an authenticated subject change.
+  }
+}

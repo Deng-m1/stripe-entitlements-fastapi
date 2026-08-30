@@ -110,6 +110,7 @@ include = [
   "/LICENSE",
   "/NOTICE",
   "/vercel.json",
+  "/vercel.simulation.json",
   "/vercel.typescript.json",
   "/vercel_app.py",
 ]

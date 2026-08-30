@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { completeIdempotentIntent } from "@/lib/idempotency";
 import { formatCreditDecimal } from "@/lib/credit-amount";
-import { getBillingApi } from "@/lib/runtime";
+import { getBillingApi, publicSimulationMode } from "@/lib/runtime";
 import type { AccountResponse, BillingApi, BillingInterval } from "@/lib/types";
 
 interface SuccessScreenProps {
@@ -163,12 +163,16 @@ export function SuccessScreen({
 
   const heading =
     state === "confirmed"
-      ? "Webhook-backed account state is ready"
+      ? publicSimulationMode
+        ? "Simulated account state is ready"
+        : "Webhook-backed account state is ready"
       : state === "invalid"
         ? "This billing return cannot be verified"
         : state === "timed_out"
           ? "Payment may still be processing"
-          : "Waiting for webhook confirmation";
+          : publicSimulationMode
+            ? "Waiting for simulated projection"
+            : "Waiting for webhook confirmation";
 
   return (
     <section
@@ -180,24 +184,43 @@ export function SuccessScreen({
       <div className={`success-mark ${state}`} aria-hidden="true">
         {state === "confirmed" ? "✓" : state === "timed_out" ? "!" : "↻"}
       </div>
-      <p className="eyebrow">Checkout returned</p>
+      <p className="eyebrow">
+        {publicSimulationMode ? "Simulation returned" : "Checkout returned"}
+      </p>
       <h1>{heading}</h1>
       {state !== "invalid" ? (
         <ol className="success-steps">
-          <li className="done">Returned from checkout</li>
+          <li className="done">
+            {publicSimulationMode ? "Simulated redirect returned" : "Returned from checkout"}
+          </li>
           <li
             aria-current={state === "confirmed" ? undefined : "step"}
             className={state === "confirmed" ? "done" : "active"}
           >
-            Webhook projection applied
+            {publicSimulationMode
+              ? "Browser-local projection applied"
+              : "Webhook projection applied"}
           </li>
           <li className={state === "confirmed" ? "done" : ""}>
-            {expectedCreditPack ? "Purchased credits available" : "Entitlements enforceable"}
+            {expectedCreditPack
+              ? publicSimulationMode
+                ? "Sample credits available"
+                : "Purchased credits available"
+              : publicSimulationMode
+                ? "Sample entitlements active"
+                : "Entitlements enforceable"}
           </li>
         </ol>
       ) : null}
       {state === "confirmed" ? (
-        expectedCreditPack ? (
+        publicSimulationMode ? (
+          <p>
+            Browser-local sample state now shows the requested {expectedCreditPack
+              ? `${expectedCreditPack} credit pack`
+              : `${account?.plan_key}/${account?.plan_interval} plan`}. No Checkout,
+            payment, webhook, or server account was created.
+          </p>
+        ) : expectedCreditPack ? (
           <p>
             The account API now reports the {expectedCreditPack} funding lot for this
             exact Checkout Session. The return redirect itself was not treated as proof
@@ -217,15 +240,20 @@ export function SuccessScreen({
         </p>
       ) : state === "timed_out" ? (
         <p>
-          {maxAttempts} polls finished without a webhook-projected{" "}
+          {maxAttempts} polls finished without a {publicSimulationMode
+            ? "simulated"
+            : "webhook-projected"}{" "}
           {expectedCreditPack ?? `${expectedPlan}/${expectedInterval}`} result. No
-          entitlement or purchased balance is assumed from the redirect; Stripe may
-          still be processing. Checking again is safe and repeatable.
+          entitlement or purchased balance. {publicSimulationMode
+            ? "Resetting the public simulation is safe."
+            : "Stripe may still be processing. Checking again is safe and repeatable."}
         </p>
       ) : (
         <p>
           Poll {attempt} of {maxAttempts}. Entitlements are granted only after the
-          backend processes Stripe state; refreshing this page is safe.
+          {publicSimulationMode
+            ? "browser-local simulation applies its delayed sample projection"
+            : "backend processes Stripe state"}; refreshing this page is safe.
         </p>
       )}
       {state === "confirmed" && account ? (

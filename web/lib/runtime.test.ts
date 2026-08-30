@@ -4,6 +4,8 @@ import {
   configuredBillingApiBaseUrl,
   internalRedirectUrl,
   isUnsafeProductionDemoConfiguration,
+  isUsableSimulationStorage,
+  publicSimulationRedirectUrl,
 } from "@/lib/runtime";
 
 describe("billing redirect boundaries", () => {
@@ -53,6 +55,29 @@ describe("billing redirect boundaries", () => {
       ),
     ).toThrow("HTTPS");
   });
+
+  it("keeps simulation redirects same-origin while allowing its local production smoke", () => {
+    expect(
+      publicSimulationRedirectUrl(
+        "/billing/success?expected_plan=starter",
+        "http://127.0.0.1:3099",
+      ),
+    ).toBe(
+      "http://127.0.0.1:3099/billing/success?expected_plan=starter",
+    );
+    expect(
+      publicSimulationRedirectUrl("/account", "https://demo.example"),
+    ).toBe("https://demo.example/account");
+    expect(() =>
+      publicSimulationRedirectUrl(
+        "https://checkout.stripe.com/test",
+        "https://demo.example",
+      ),
+    ).toThrow("application origin");
+    expect(() =>
+      publicSimulationRedirectUrl("/account", "http://demo.example"),
+    ).toThrow("require HTTPS");
+  });
 });
 
 describe("production demo guard", () => {
@@ -68,6 +93,67 @@ describe("production demo guard", () => {
     ).toBe(false);
     expect(
       isUnsafeProductionDemoConfiguration("development", "mock", "demo-token"),
+    ).toBe(false);
+  });
+
+  it("allows only an acknowledged noindex production simulation", () => {
+    expect(
+      isUnsafeProductionDemoConfiguration(
+        "production",
+        "simulation",
+        undefined,
+        "false",
+        "1",
+      ),
+    ).toBe(false);
+    expect(
+      isUnsafeProductionDemoConfiguration(
+        "production",
+        "simulation",
+        undefined,
+        undefined,
+        "1",
+      ),
+    ).toBe(true);
+    expect(
+      isUnsafeProductionDemoConfiguration(
+        "production",
+        "simulation",
+        undefined,
+        "true",
+        "1",
+      ),
+    ).toBe(true);
+    expect(
+      isUnsafeProductionDemoConfiguration(
+        "production",
+        "simulation",
+        undefined,
+        "false",
+        undefined,
+      ),
+    ).toBe(true);
+  });
+
+  it("requires writable browser session storage for cross-page simulation", () => {
+    const values = new Map<string, string>();
+    expect(
+      isUsableSimulationStorage({
+        getItem: (key) => values.get(key) ?? null,
+        setItem: (key, value) => values.set(key, value),
+        removeItem: (key) => values.delete(key),
+      }),
+    ).toBe(true);
+    expect(values.size).toBe(0);
+
+    expect(
+      isUsableSimulationStorage({
+        getItem: () => null,
+        setItem: () => {
+          throw new Error("storage denied");
+        },
+        removeItem: () => undefined,
+      }),
     ).toBe(false);
   });
 

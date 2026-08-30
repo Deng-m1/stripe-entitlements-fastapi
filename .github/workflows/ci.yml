@@ -119,6 +119,7 @@ jobs:
               "web/package.json",
               "web/package-lock.json",
               "vercel.json",
+              "vercel.simulation.json",
               "vercel.typescript.json",
               "vercel_app.py",
           }
@@ -553,6 +554,10 @@ jobs:
         run: npm run typecheck
       - name: Component tests
         run: npm test
+      - name: Install Chromium for public simulation
+        run: npx playwright install --with-deps chromium
+      - name: Public simulation browser E2E
+        run: npm run test:e2e:simulation
       - name: Production build
         run: npm run build
         env:

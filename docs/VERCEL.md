@@ -1,16 +1,19 @@
 # Deploy Next.js with FastAPI or native TypeScript on Vercel
 
 Railway, Kubernetes, and a separately hosted API are optional. The repository includes
-two Vercel configurations that preserve the same URLs and PostgreSQL billing contract:
+two real-billing Vercel configurations plus one isolated UI simulation:
 
-| Config                   | Backend                | Services                                                |
-| ------------------------ | ---------------------- | ------------------------------------------------------- |
-| `vercel.json`            | Python/FastAPI         | separate Next.js and FastAPI services behind one domain |
-| `vercel.typescript.json` | native TypeScript/Node | one Next.js service with App Router billing handlers    |
+| Config                    | Backend                | Services                                                |
+| ------------------------- | ---------------------- | ------------------------------------------------------- |
+| `vercel.json`             | Python/FastAPI         | separate Next.js and FastAPI services behind one domain |
+| `vercel.typescript.json`  | native TypeScript/Node | one Next.js service with App Router billing handlers    |
+| `vercel.simulation.json`  | none                   | one credential-free Next.js visual simulation           |
 
 Choose one configuration for a deployment; do not deploy both webhook processors merely
-as an experiment. Both require managed PostgreSQL, Stripe, a real identity provider,
-explicit migrations, and scheduler/incident operations.
+as an experiment. The two real-billing configurations require managed PostgreSQL,
+Stripe, a real identity provider, explicit migrations, and scheduler/incident
+operations. The simulation configuration must contain none of them and is never payment
+evidence.
 
 The split Python topology builds the existing Next.js reference UI and billing core as
 two services in one Vercel project:
@@ -37,6 +40,38 @@ PostgreSQL remains required. Vercel Functions are stateless compute and cannot r
 the database, Stripe, the identity provider, backups, or object storage for product
 files. Use a managed PostgreSQL provider with TLS, connection limits suitable for
 serverless traffic, point-in-time recovery, and a region close to the Vercel Functions.
+
+## Frontend-only public simulation
+
+[`vercel.simulation.json`](../vercel.simulation.json) deploys only `web/`. It has one
+catch-all rewrite, no FastAPI service, no billing API/webhook/health rewrite, and no
+Cron. Use it in a dedicated Vercel project with exactly these public variables:
+
+```dotenv
+NEXT_PUBLIC_BILLING_API_MODE=simulation
+NEXT_PUBLIC_SIMULATION_ACKNOWLEDGEMENT=1
+NEXT_PUBLIC_ALLOW_INDEXING=false
+```
+
+The production build rejects browser Stripe/demo keys and inherited server database,
+Stripe, demo, or scheduler credentials. The included Route Handlers return no-store 404
+without loading the billing package, while the versioned browser-local simulation needs
+writable `sessionStorage`. Never substitute `vercel.json` or
+`vercel.typescript.json`: those configurations intentionally own real API routes and
+schedulers. See [the AI-builder guide](AI_BUILDERS.md) and run
+`cd web && npm run test:e2e:simulation` before sharing the link.
+
+Keep project Root Directory at the repository root and select the alternative config
+explicitly:
+
+```bash
+npx vercel@59.10.0 -A vercel.simulation.json deploy
+npx vercel@59.10.0 -A vercel.simulation.json deploy --prod
+```
+
+For a builder that only discovers `vercel.json`, use a dedicated downstream simulation
+repository where this file is copied to that name. Do not replace the main branch's
+real-billing config.
 
 ## Native TypeScript topology
 
@@ -177,7 +212,10 @@ Create a Vercel project from the repository root and set its Framework Preset to
 **Services**. Keep project Root Directory at the repository root. Use Vercel CLI 59.10.0
 or newer for the checked-in stable Services configuration.
 
-Set the following server variables for each environment:
+Use the following server-variable shape for each **real-billing** environment. The
+example below is for Preview or staging and therefore uses only Stripe test mode.
+Bootstrap and configure a separate live catalog, Portal configuration, webhook secret,
+database, and URLs for production; never promote test object IDs or secrets.
 
 ```dotenv
 DATABASE_URL=postgresql://...                         # managed PostgreSQL, TLS
@@ -210,15 +248,21 @@ Services deployment may set an absolute custom catalog path only when that file 
 deliberately included in the billing service artifact; a native TypeScript deployment
 must likewise use an absolute deployed path for a custom catalog.
 
-Set these build-time public variables for the Next.js service:
+For a Preview or staging Next.js service, set these build-time public variables and keep
+indexing disabled:
 
 ```dotenv
 NEXT_PUBLIC_BILLING_API_MODE=http
 NEXT_PUBLIC_BILLING_API_BASE_URL=same-origin
 NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_...
-NEXT_PUBLIC_SITE_URL=https://your-domain.example
-NEXT_PUBLIC_ALLOW_INDEXING=true
+NEXT_PUBLIC_SITE_URL=https://billing-staging.example.com
+NEXT_PUBLIC_ALLOW_INDEXING=false
 ```
+
+Only the canonical live production deployment may switch to its independently
+bootstrapped `pk_live_...`, canonical HTTPS site URL, and
+`NEXT_PUBLIC_ALLOW_INDEXING=true`. The table below is the controlling environment
+boundary.
 
 `same-origin` is an explicit sentinel. An empty base URL is rejected, while the sentinel
 produces relative `/api/...` requests and still requires a non-empty access token from a

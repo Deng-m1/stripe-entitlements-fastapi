@@ -1,4 +1,7 @@
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import nextConfig, {
+  frontendBillingApiMode,
   frontendBuildMode,
   productionE2ERouteAuthSentinel,
   PRODUCTION_E2E_ROUTE_AUTH_SENTINEL,
@@ -27,7 +30,7 @@ describe("Next.js public billing build boundary", () => {
     (mode) => {
       expect(() =>
         validatePublicBillingBuildEnvironment("development", mode, undefined),
-      ).toThrow(/must be either 'http' or 'mock'/);
+      ).toThrow(/must be 'http', 'mock', or 'simulation'/);
     },
   );
 
@@ -38,6 +41,86 @@ describe("Next.js public billing build boundary", () => {
     expect(() =>
       validatePublicBillingBuildEnvironment("development", "mock", "local-token"),
     ).not.toThrow();
+  });
+
+  it("allows only an acknowledged, noindex, credential-free production simulation", () => {
+    expect(() =>
+      validatePublicBillingBuildEnvironment(
+        "production",
+        "simulation",
+        undefined,
+        "false",
+        "1",
+      ),
+    ).not.toThrow();
+  });
+
+  it.each([
+    ["missing acknowledgement", undefined, "false", undefined],
+    ["invalid acknowledgement", undefined, "false", "yes"],
+    ["indexable", undefined, "true", "1"],
+    ["missing explicit noindex", undefined, undefined, "1"],
+    ["browser demo token", "public-token", "false", "1"],
+  ])(
+    "rejects a production simulation that is %s",
+    (_label, token, indexing, acknowledgement) => {
+      expect(() =>
+        validatePublicBillingBuildEnvironment(
+          "production",
+          "simulation",
+          token,
+          indexing,
+          acknowledgement,
+        ),
+      ).toThrow();
+    },
+  );
+
+  it("rejects a stale simulation acknowledgement in HTTP mode", () => {
+    expect(() =>
+      validatePublicBillingBuildEnvironment(
+        "production",
+        "http",
+        undefined,
+        "false",
+        "1",
+      ),
+    ).toThrow(/valid only in simulation mode/);
+  });
+
+  it("rejects a Stripe publishable key in public simulation", () => {
+    expect(() =>
+      validatePublicBillingBuildEnvironment(
+        "production",
+        "simulation",
+        undefined,
+        "false",
+        "1",
+        "pk_test_public",
+      ),
+    ).toThrow(/Stripe publishable key/);
+  });
+
+  it("rejects inherited database, Stripe, demo, or scheduler credentials", () => {
+    expect(() =>
+      validatePublicBillingBuildEnvironment(
+        "production",
+        "simulation",
+        undefined,
+        "false",
+        "1",
+        undefined,
+        {
+          STRIPE_SECRET_KEY: "configured",
+          DATABASE_URL: "configured",
+          STRIPE_WEBHOOK_SECRET: "configured",
+          DEMO_BEARER_TOKEN: "configured",
+          CRON_SECRET: "configured",
+        },
+      ),
+    ).toThrow(
+      /CRON_SECRET, DATABASE_URL, DEMO_BEARER_TOKEN, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET/,
+    );
   });
 
   const safeRouteAuthBuild = {
@@ -115,11 +198,47 @@ describe("Next.js security headers", () => {
     expect(headers.get("x-frontend-build-mode")).toBe(
       frontendBuildMode(process.env.NODE_ENV),
     );
+    expect(headers.get("x-billing-api-mode")).toBe(
+      frontendBillingApiMode(
+        process.env.NODE_ENV,
+        process.env.NEXT_PUBLIC_BILLING_API_MODE,
+      ),
+    );
   });
 
   it("attests production builds independently of browser-supplied state", () => {
     expect(frontendBuildMode("production")).toBe("production");
     expect(frontendBuildMode("development")).toBe("development");
     expect(frontendBuildMode("test")).toBe("development");
+    expect(frontendBillingApiMode("production", undefined)).toBe("http");
+    expect(frontendBillingApiMode("development", undefined)).toBe("mock");
+    expect(frontendBillingApiMode("production", "simulation")).toBe(
+      "simulation",
+    );
+  });
+});
+
+describe("frontend-only Vercel simulation topology", () => {
+  it("deploys only web and contains no backend rewrite or scheduler", async () => {
+    const config = JSON.parse(
+      await readFile(
+        resolve(process.cwd(), "../vercel.simulation.json"),
+        "utf8",
+      ),
+    );
+
+    expect(config.services).toEqual({
+      application: {
+        root: "web/",
+        framework: "nextjs",
+        installCommand: "npm ci",
+      },
+    });
+    expect(config.rewrites).toEqual([
+      { source: "/(.*)", destination: { service: "application" } },
+    ]);
+    expect(config).not.toHaveProperty("crons");
+    expect(JSON.stringify(config)).not.toContain("fastapi");
+    expect(JSON.stringify(config)).not.toContain('"billing"');
   });
 });

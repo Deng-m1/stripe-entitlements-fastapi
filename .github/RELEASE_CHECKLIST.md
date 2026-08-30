@@ -7,8 +7,8 @@
 - [ ] Link every billing behavior change to an invariant and migration.
 - [ ] Separate automated PostgreSQL, automated real Stripe, manual test-mode and
       production evidence.
-- [ ] Bind every pass claim to the exact commit. Clean `e22d5a7` passed 1,254 Python tests
-      with 10 `real_stripe` tests deselected, 807 TypeScript tests across 50 files, and 208
+- [ ] Bind every pass claim to the exact commit. Clean `f757fcc` passed 1,257 Python tests
+      with 10 `real_stripe` tests deselected, 816 TypeScript tests across 50 files, and 208
       Web tests across 19 files, plus both 10/10 Stripe test-mode suites, four
       browser/backend-policy endpoint runs, final artifacts, and the hardened container.
       Do not relabel those results for a later runtime-changing commit; rerun the affected
@@ -50,6 +50,8 @@
 - [ ] `cd web && npm run lint`
 - [ ] `cd web && npm run typecheck`
 - [ ] `cd web && npm test`
+- [ ] `cd web && npx playwright install --with-deps chromium`
+- [ ] `cd web && npm run test:e2e:simulation`
 - [ ] `cd web && npm run build`
 - [ ] `git diff --check`
 

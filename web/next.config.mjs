@@ -10,21 +10,80 @@ export function validatePublicBillingBuildEnvironment(
   environment,
   mode,
   demoToken,
+  allowIndexing,
+  simulationAcknowledgement,
+  stripePublishableKey,
+  serverCredentials = {},
 ) {
-  if (mode && mode !== "http" && mode !== "mock") {
+  if (mode && mode !== "http" && mode !== "mock" && mode !== "simulation") {
     throw new Error(
-      "NEXT_PUBLIC_BILLING_API_MODE must be either 'http' or 'mock'.",
+      "NEXT_PUBLIC_BILLING_API_MODE must be 'http', 'mock', or 'simulation'.",
     );
   }
-  if (environment === "production" && (mode === "mock" || Boolean(demoToken))) {
+  if (simulationAcknowledgement !== undefined && simulationAcknowledgement !== "1") {
+    throw new Error(
+      "NEXT_PUBLIC_SIMULATION_ACKNOWLEDGEMENT must be exactly '1' when set.",
+    );
+  }
+  if (simulationAcknowledgement !== undefined && mode !== "simulation") {
+    throw new Error(
+      "NEXT_PUBLIC_SIMULATION_ACKNOWLEDGEMENT is valid only in simulation mode.",
+    );
+  }
+  if (
+    mode === "simulation" &&
+    (Boolean(demoToken) || Boolean(stripePublishableKey))
+  ) {
+    throw new Error(
+      "Public simulation cannot include browser demo authentication or a Stripe publishable key.",
+    );
+  }
+  if (mode === "simulation" && allowIndexing !== "false") {
+    throw new Error(
+      "Public simulation requires NEXT_PUBLIC_ALLOW_INDEXING=false.",
+    );
+  }
+  if (mode === "simulation") {
+    const configuredServerCredentials = Object.entries(serverCredentials)
+      .filter(([, value]) => typeof value === "string" && value.length > 0)
+      .map(([name]) => name)
+      .sort();
+    if (configuredServerCredentials.length > 0) {
+      throw new Error(
+        `Public simulation cannot include server credentials: ${configuredServerCredentials.join(
+          ", ",
+        )}.`,
+      );
+    }
+  }
+  if (
+    environment === "production" &&
+    (mode === "mock" || Boolean(demoToken))
+  ) {
     throw new Error(
       "Production builds cannot include mock billing mode or NEXT_PUBLIC_DEMO_BEARER_TOKEN.",
+    );
+  }
+  if (
+    environment === "production" &&
+    mode === "simulation" &&
+    simulationAcknowledgement !== "1"
+  ) {
+    throw new Error(
+      "Production simulation requires NEXT_PUBLIC_SIMULATION_ACKNOWLEDGEMENT=1.",
     );
   }
 }
 
 export function frontendBuildMode(environment) {
   return environment === "production" ? "production" : "development";
+}
+
+export function frontendBillingApiMode(environment, mode) {
+  if (mode === "http" || mode === "mock" || mode === "simulation") {
+    return mode;
+  }
+  return environment === "production" ? "http" : "mock";
 }
 
 export const PRODUCTION_E2E_ROUTE_AUTH_SENTINEL =
@@ -84,6 +143,16 @@ validatePublicBillingBuildEnvironment(
   process.env.NODE_ENV,
   process.env.NEXT_PUBLIC_BILLING_API_MODE,
   process.env.NEXT_PUBLIC_DEMO_BEARER_TOKEN,
+  process.env.NEXT_PUBLIC_ALLOW_INDEXING,
+  process.env.NEXT_PUBLIC_SIMULATION_ACKNOWLEDGEMENT,
+  process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY,
+  {
+    CRON_SECRET: process.env.CRON_SECRET,
+    DATABASE_URL: process.env.DATABASE_URL,
+    DEMO_BEARER_TOKEN: process.env.DEMO_BEARER_TOKEN,
+    STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY,
+    STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET,
+  },
 );
 
 const productionRouteAuthSentinel = productionE2ERouteAuthSentinel({
@@ -130,6 +199,13 @@ const nextConfig = {
           {
             key: "X-Frontend-Build-Mode",
             value: frontendBuildMode(process.env.NODE_ENV),
+          },
+          {
+            key: "X-Billing-Api-Mode",
+            value: frontendBillingApiMode(
+              process.env.NODE_ENV,
+              process.env.NEXT_PUBLIC_BILLING_API_MODE,
+            ),
           },
         ],
       },

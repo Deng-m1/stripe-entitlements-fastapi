@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-08-30
+
 - Prevent TypeScript subscription reconciliation from reusing a mutable Stripe
   Subscription snapshot after losing its local projection compare-and-set. The bounded
   retry now rereads and validates Stripe state; a second race stops fail-closed with a
@@ -11,8 +13,16 @@
   HTTP contracts to RFC 3339 without truncating microseconds.
 - Make source-checkout CLI setup, packaged-catalog Vercel configuration, and the FastAPI
   product-identity example reproducible, with documentation contract regressions.
-
-## 0.4.0 - 2026-08-29
+- Add an explicitly acknowledged, credential-free, noindex public simulation with
+  versioned per-tab state, delayed subscription/upgrade/credit-pack projection, Portal
+  return/reset flows, server-route isolation, Stripe.js lazy loading, and a dedicated
+  frontend-only Vercel topology.
+- Add a production-build Chromium simulation gate that attests the target before any
+  interaction, proves no Stripe/API/webhook network traffic, checks reload/context
+  isolation, and fails closed when browser storage is unavailable.
+- Add a bounded Supabase browser-token transport adapter and AI-builder guide while
+  documenting the strict generic JWT `nbf`/UUID requirements, subject-change cleanup,
+  HttpOnly BFF option, unpublished npm boundary, and separate test/live evidence levels.
 
 - Bump the coordinated Python, TypeScript, reference web, and citation metadata to
   `0.4.0`; the immutable `v0.3.0` tag continues to identify the earlier Python-only

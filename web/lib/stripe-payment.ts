@@ -1,4 +1,3 @@
-import { loadStripe } from "@stripe/stripe-js";
 import type { ChangeConfirmResponse } from "@/lib/types";
 
 export async function confirmRequiredStripePayment(
@@ -27,6 +26,10 @@ export async function confirmRequiredStripePayment(
     );
   }
 
+  // Importing @stripe/stripe-js eagerly injects Stripe.js even when no payment is
+  // requested. Keep UI-only simulation, ordinary catalog/account views, and bots free
+  // from Stripe network traffic; load it only for an actual SCA confirmation.
+  const { loadStripe } = await import("@stripe/stripe-js");
   const stripe = await loadStripe(publishableKey);
   if (!stripe) {
     throw new Error("Stripe.js could not be initialized.");

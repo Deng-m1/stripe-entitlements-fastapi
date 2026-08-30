@@ -52,7 +52,7 @@ See [BROWSER_E2E.md](BROWSER_E2E.md) for prerequisites, failure artifacts and th
 browser assertions. A collected, skipped or partially completed Playwright test is not
 evidence.
 
-On exact commit `e22d5a7`, all four Python/TypeScript × transition-policy browser runs
+On exact commit `f757fcc`, all four Python/TypeScript × transition-policy browser runs
 used temporary test-mode endpoints pinned to Dahlia. Each bound five essential Events,
 observed 11 account-related and zero unrelated Events, ended at Pro/1,020 after the Job
 refund path, passed its database verifier, and cleaned its endpoint and run-owned Stripe

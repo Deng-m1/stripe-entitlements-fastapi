@@ -131,7 +131,7 @@ describe("Next.js adapter", () => {
       // Every candidate is a checked-in literal rooted at this test file.
       // eslint-disable-next-line security/detect-non-literal-fs-filename
       const source = await readFile(resolve(root, relative), "utf8");
-      expect(source).toContain("environmentNextBillingRouteHandler");
+      expect(source).toContain("simulationSafeBillingRouteHandler");
       expect(source).toContain('runtime = "nodejs"');
       expect(source).toContain('dynamic = "force-dynamic"');
       expect(source).toContain("maxDuration = 60");

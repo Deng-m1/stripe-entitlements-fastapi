@@ -82,7 +82,7 @@ every bank's 3DS UI, Stripe Tax, coupons, trials, or arbitrary Checkout settings
 runner's local IdP signs real asymmetric JWTs and serves real HTTPS JWKS; it is evidence
 for the starter adapter contract, not a claim that a host application's login page was tested.
 
-The exact-`e22d5a7` results below cover the final subscription, Boost 100, Portal, and Job
+The exact-`f757fcc` results below cover the final subscription, Boost 100, Portal, and Job
 path in all four backend/policy quadrants. Older runs remain regression history only.
 
 ## Real Stripe API credit-pack convergence gate
@@ -114,7 +114,7 @@ metadata is not bound to the database-reserved order. The test retrieves the gen
 Event created by its own confirmed PaymentIntent. Never run it with a shared live key;
 the helper rejects every value that does not begin with `sk_test_` before networking.
 
-On exact commit `e22d5a7`, Python and TypeScript each passed `full_period_reset` and
+On exact commit `f757fcc`, Python and TypeScript each passed `full_period_reset` and
 `prorated_delta` through four temporary Stripe test-mode endpoints. Every run bound five
 essential signed Events, observed 11 account-related and zero unrelated Events, covered
 the pack/Portal/Job path, ended at Pro/1,020, passed the database verifier, and completed
