@@ -12,19 +12,26 @@ JWT authentication starters, an in-process `EntitlementService`, and an optional
 owner-bound internal workload boundary. Neither is a complete product/Job framework.
 
 This guide assumes an exact release-tag source checkout or a matching Python/npm
-artifact. Until a matching tag and published artifact exist, pin the exact
-reviewed commit rather than assuming that the latest older tag or a package index
-contains this code. The Wheel contains the Python backend runtime, migrations, and
-catalog; the npm tarball contains the TypeScript runtime, declarations, CLI, migrations,
-and catalog. The source distribution additionally contains `.env` templates,
-operator scripts, Docker/Compose files, auth and Job examples, tests, and the Next.js
-reference UI needed by the end-to-end commands in this guide.
+artifact. TypeScript adopters can pin the public 0.4.0 registry release directly:
+
+```bash
+npm install --save-exact @tosea/stripe-entitlements@0.4.0
+```
+
+For Python or an unreleased change, pin the exact reviewed Git tag/commit rather than
+assuming an older package index contains the same code. The Wheel contains the Python
+backend runtime, migrations, and catalog; the npm tarball contains the TypeScript
+runtime, declarations, CLI, migrations, and catalog. The source distribution
+additionally contains `.env` templates, operator scripts, Docker/Compose files, auth and
+Job examples, tests, and the Next.js reference UI needed by the end-to-end commands in
+this guide.
 
 For a published version tag, the repository release workflow attaches both Python
 distributions, the verified TypeScript npm tarball, and their checksums to the GitHub
-Release and records the immutable GHCR container digest. That is distinct from PyPI or
-npm-registry publication; do not install an unrelated or older package-index artifact
-merely because its name matches.
+Release, publishes the byte-identical TypeScript tarball to npm, and records the
+immutable GHCR container digest. Python GitHub assets remain distinct from PyPI
+publication; do not install an unrelated or older package-index artifact merely because
+its name matches.
 The published GHCR image is currently native `linux/amd64`; it is not a verified
 multi-architecture manifest. ARM64 adopters should use the Wheel/source distribution or
 build and validate the pinned Dockerfile on their target platform.
@@ -432,9 +439,12 @@ export const OPTIONS = handle;
 ```
 
 Create separate explicit Route Handler files for `/webhooks/stripe` and `/health` as
-shown under [`web/app/`](../web/app/). Stripe and `pg` require the Node runtime; Edge is
+shown in the package-only
+[`tests/npm-next-consumer/app/`](../tests/npm-next-consumer/app/) fixture. Do not copy the
+reference UI's `web/app/` routes into a blank project because those also depend on
+UI-local simulation modules. Stripe and `pg` require the Node runtime; Edge is
 unsupported. The source checkout uses `file:../typescript`, while a downstream project
-should install the exact reviewed npm artifact when one is published.
+should install `@tosea/stripe-entitlements@0.4.0` with `--save-exact`.
 
 Same-process product code reaches
 `runtime.kernel.requireServices().entitlements`. A separately deployed product uses

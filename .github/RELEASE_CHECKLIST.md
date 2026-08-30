@@ -30,6 +30,8 @@
 - [ ] `uv run pytest -m "not real_stripe"`
 - [ ] `uv audit`
 - [ ] `cd typescript && npm ci`
+- [ ] Release runner uses Node 22.22.0 and pinned npm 11.19.1; do not rely on the
+      older npm bundled with Node for OIDC trusted publishing.
 - [ ] `cd typescript && npm audit --omit=dev && npm audit`
 - [ ] `cd typescript && npm run check`
 - [ ] Pack the npm artifact, install it in a clean project, run its CLI, import every
@@ -39,9 +41,13 @@
       CLI against a fresh disposable PostgreSQL 17 database; require exact 001/002
       filename/SHA-256 history, idempotent re-apply, all correctness tables, all six 002
       snapshot columns, and `Database.schemaReady() === true`.
-- [ ] Treat the verified GitHub Release `.tgz` as an artifact, not an npm registry
-      publication; enable npm trusted publishing and a vacancy check before adding
-      `npm publish` to the release workflow.
+- [ ] Install that exact `.tgz` into the locked minimal Next.js consumer and require a
+      production App Router build of the billing catch-all, Stripe webhook, and health
+      Route Handlers.
+- [ ] Require Registry 404 vacancy or byte-identical existing `dist.integrity`, publish
+      the already-verified `.tgz` without repacking, then verify Registry integrity,
+      SLSA provenance metadata/signatures, version, CLI, and all four public ESM exports
+      from a fresh anonymous exact-version install.
 - [ ] Run `stripe-entitlements doctor --json` against the release database and retain a
       secret-free report; do not label it Stripe endpoint or payload evidence.
 - [ ] `cd web && npm ci`
@@ -178,6 +184,15 @@
 ## Publish
 
 - [ ] Update README/docs, changelog and version metadata without overstating evidence.
+- [ ] For the brand-new npm package only, create a least-scope, short-expiry granular
+      token with bypass-2FA publishing, store it temporarily as the `NPM_TOKEN` Actions
+      secret, and let the tag workflow validate that credential before reserving a draft
+      Release, then publish with provenance. Never paste it into an issue, PR, log, or
+      chat.
+- [ ] Immediately after the first npm publish, configure the package Trusted Publisher
+      as `Deng-m1` / `stripe-entitlements-fastapi` / `release.yml` with `npm publish`
+      permission, select “Require 2FA and disallow tokens,” delete the Actions secret,
+      and revoke the bootstrap token. Later releases must use OIDC only.
 - [ ] Before creating `v*`, require an active GitHub tag ruleset targeting
       `refs/tags/v*` that blocks updates and deletion with no ordinary bypass. The
       workflow's repeated tag-object checks do not replace server-side immutability.
@@ -218,26 +233,34 @@
         `0.2.0` visual artifact rather than `0.2.2` code/network evidence.
 - [ ] Tag with an annotated `v<project-version>` only after all applicable networked
       gates above are bound to that exact commit. The tag workflow reruns network-free
-      backend/web gates, creates Wheel/sdist checksums, publishes exact/minor/commit/latest
-      GHCR tags without allowing an older patch to roll back either moving channel. The
+      backend/web gates, creates Wheel/sdist checksums, publishes or byte-verifies the
+      exact npm artifact, and publishes exact/minor/commit/latest GHCR tags without
+      allowing an older patch to roll back either moving channel. The
       immutable commit tag uses the complete Git commit SHA. It refuses an existing
       Release, version image tag, or commit image tag, rechecks the annotated tag object,
-      reserves a draft Release before publishing the immutable image, publishes moving
-      tags last, proves both immutable tags resolve to one digest, records that digest,
-      and attaches those artifacts to the GitHub Release; it does not substitute for real
+      reserves a draft Release before publishing the immutable image, uploads and verifies
+      the draft assets, publishes and digest-verifies every moving tag, and makes the
+      GitHub Release public only as the final commit point. It proves every container tag
+      resolves to one digest and records that digest; it does not substitute for real
       Stripe or live-payload evidence.
 - [ ] If publication stops after reserving the draft Release or pushing only part of the
       immutable/moving tag set, do not blindly rerun: the vacancy guards intentionally
-      fail. Inspect the remote tag object, draft/public Release, exact-version tag,
-      full-SHA tag and each digest; then either finish the same verified digest manually
-      or remove only the unpublished draft/partial package state under administrator
-      review. Record the recovery decision and final digest in the private release log.
+      fail. Inspect the remote tag object, draft/public Release, npm exact version,
+      `dist.integrity`, provenance, dist-tag, OCI exact-version tag, full-SHA tag, and each
+      digest. Never unpublish an npm version to make a retry convenient; if its bytes and
+      provenance match, finish the same verified release under administrator review. Only
+      remove an unpublished draft or recoverable OCI partial state. Record the recovery
+      decision, npm integrity, and final container digest in the private release log.
 - [ ] Download the published GitHub assets, verify `SHA256SUMS`, install the Wheel in a
       clean environment, and require `stripe-entitlements --version` to equal the tag.
 - [ ] Install the downloaded `.tgz` in a second clean Node project; require its CLI
       version, public ESM exports, catalog, licenses, and both migration bytes to match
       the tag and repository canonicals, then repeat the fresh PostgreSQL migration
       contract with that downloaded artifact.
+- [ ] From a third clean project, install
+      `@tosea/stripe-entitlements@<exact-version>` from the public Registry and require
+      its `dist.integrity`, CLI, exports, catalog, licenses, and migrations to match the
+      release tarball. Verify the expected dist-tag only after this succeeds.
 - [ ] Pull the image by the recorded digest, require the same CLI version, apply the fresh
       migration set, and repeat the non-root/read-only health smoke before announcing release.
 - [ ] Record that the release workflow currently publishes a native `linux/amd64` image;

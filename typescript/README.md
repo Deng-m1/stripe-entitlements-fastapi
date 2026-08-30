@@ -1,5 +1,8 @@
 # Stripe entitlements for TypeScript
 
+[![npm](https://img.shields.io/npm/v/%40tosea%2Fstripe-entitlements.svg?label=npm)](https://www.npmjs.com/package/@tosea/stripe-entitlements)
+[![license](https://img.shields.io/npm/l/%40tosea%2Fstripe-entitlements.svg)](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/v0.4.0/LICENSE)
+
 `@tosea/stripe-entitlements` is the native TypeScript/Node implementation of this
 repository's Stripe billing, SaaS entitlement, fractional-credit, and credit-pack
 reference. It does not proxy or spawn the Python service. It uses the same reviewed
@@ -39,17 +42,35 @@ The TypeScript implementation includes:
 The deliberately unsupported scope is the same as the Python implementation: no
 multi-currency, seats/quantities, trials, tax engine, metered billing, mixed arbitrary
 Invoice items, or enabled promotion codes. See the root
-[README](../README.md), [invariants](../docs/INVARIANTS.md), and
-[architecture](../docs/ARCHITECTURE.md) before extending the state machine.
+[README](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/v0.4.0/README.md),
+[invariants](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/v0.4.0/docs/INVARIANTS.md),
+and
+[architecture](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/v0.4.0/docs/ARCHITECTURE.md)
+before extending the state machine.
 
 ## Requirements
 
-- Node.js 22 or newer;
+- Node.js 22 or newer; the package is ESM-only;
 - PostgreSQL 17 (the SQL uses PostgreSQL as the coordination layer);
 - a Stripe test-mode account for development;
 - a public signed webhook endpoint and a scheduler in deployed environments.
 
-From this source checkout:
+For a new Node or Next.js project, install the exact reviewed release:
+
+```bash
+npm install --save-exact @tosea/stripe-entitlements@0.4.0
+npx stripe-entitlements --version
+```
+
+The installed package already contains compiled JavaScript, declarations, the CLI,
+`plans.toml`, migrations 001/002, the environment example, and licenses. It does not
+contain the repository's reference UI, Vercel configuration, test suite, or operator
+scripts. Copy application files from the matching
+[v0.4.0 source tag](https://github.com/Deng-m1/stripe-entitlements-fastapi/tree/v0.4.0)
+only when you need those examples; do not mix another branch or version with the npm
+runtime.
+
+For contributors working from this source checkout instead:
 
 ```bash
 cd typescript
@@ -69,14 +90,11 @@ native Node backend: it can run with `stripe-entitlements serve` on any suitable
 container platform, or PaaS. Next.js and Vercel are optional adapters, and neither Python
 nor a Vercel account is required for the standalone TypeScript path.
 
-The repository's Next.js application consumes the package with
-`file:../typescript`. Once an npm release is published, downstream applications can use
-the matching pinned package version instead. Do not assume an older npm package or Git
-tag contains this working tree.
-
-The current release workflow builds, clean-installs, verifies, and attaches the `.tgz` to
-the GitHub Release; it intentionally does not run `npm publish`. Configure npm trusted
-publishing and add a registry-vacancy/provenance gate before claiming a registry release.
+The repository's own Next.js application intentionally consumes `file:../typescript` so
+CI tests the same working tree. Downstream applications should use the pinned registry
+command above. The tag release workflow tests that tarball locally, builds it in a fresh
+Next.js App Router consumer, publishes the exact bytes to npm, verifies registry
+integrity, and then installs the registry version in another clean project.
 
 ## Initialize PostgreSQL
 
@@ -93,6 +111,16 @@ npx stripe-entitlements migrate
 `DATABASE_POOL_*` bounds); production schema jobs should not receive Stripe secrets.
 Application startup does not migrate by default. `BILLING_APPLY_MIGRATIONS=1`
 is an explicit local-development opt-in, not a production rollout mechanism.
+
+Use a dedicated PostgreSQL 17 database or a deliberately isolated database/search path.
+The migrations create `schema_migrations`, fourteen correctness tables, functions, and
+triggers in the connection's current `search_path`; this release has no
+`BILLING_DB_SCHEMA` option. Do not point it casually at an application's existing
+`public.schema_migrations`, read replica, HTTP database adapter, or browser database
+client. Runtime traffic needs a normal server-side PostgreSQL wire URL to one writable
+primary. In serverless deployments, budget each warm instance's pool separately; start
+with `DATABASE_POOL_MIN=0` and a small `DATABASE_POOL_MAX`, then cap platform concurrency
+against the database-wide connection budget.
 
 The TypeScript build packages the canonical root migration bundle and catalog. CI verifies
 001 and 002 byte-for-byte after `npm pack` and installation in a clean project, then uses
@@ -177,10 +205,12 @@ After bootstrap has produced a Portal configuration ID and the environment has a
 webhook secret plus the actual signed-payload API version:
 
 ```bash
-npm run build
 npx stripe-entitlements doctor
 npx stripe-entitlements serve
 ```
+
+Only a source checkout needs `npm run build` first. A registry installation runs the
+packaged CLI directly.
 
 The listener defaults to `0.0.0.0:8000`. Set `BILLING_HOST`, `BILLING_PORT`, and
 `BILLING_PUBLIC_ORIGIN` when a trusted proxy or non-default port is used. Operational
@@ -217,16 +247,48 @@ export const OPTIONS = handle;
 ```
 
 Add equivalent explicit handlers for `/webhooks/stripe` and `/health`; a catch-all under
-`/api` cannot receive either path. The checked-in files are:
+`/api` cannot receive either path. The matching source-tag examples are
+[`/api/[...billing]`](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/v0.4.0/tests/npm-next-consumer/app/api/%5B...billing%5D/route.ts),
+[`/webhooks/stripe`](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/v0.4.0/tests/npm-next-consumer/app/webhooks/stripe/route.ts),
+and
+[`/health`](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/v0.4.0/tests/npm-next-consumer/app/health/route.ts).
 
-- `web/app/api/[...billing]/route.ts`;
-- `web/app/webhooks/stripe/route.ts`;
-- `web/app/health/route.ts`.
+The catalog and migrations are runtime files, not JavaScript imports. Include them in
+Next.js/Vercel output-file tracing:
+
+```javascript
+// next.config.mjs
+const nextConfig = {
+  outputFileTracingIncludes: {
+    "/*": [
+      "./node_modules/@tosea/stripe-entitlements/dist/plans.toml",
+      "./node_modules/@tosea/stripe-entitlements/dist/migrations/**/*.sql",
+    ],
+  },
+};
+
+export default nextConfig;
+```
+
+The clean-consumer release gate reads every Route Handler's `.nft.json` and fails unless
+all three traces contain the catalog and every packaged migration. If
+`PLAN_CATALOG_PATH` selects a host-owned catalog instead of the bundled file, add that
+exact deployed path to `outputFileTracingIncludes` too and verify it in the built route
+trace; an absolute path that exists only on the developer machine is invalid.
 
 Use the Node runtime, never Edge, because Stripe, `pg`, raw webhook bodies, and database
-transactions are server-only. The included `vercel.typescript.json` deploys this as one
-Next.js service and schedules the two secured Cron routes. Managed PostgreSQL remains
-required; Vercel state or in-memory locks are not a substitute.
+transactions are server-only. The source repository's
+[`vercel.typescript.json`](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/v0.4.0/vercel.typescript.json)
+deploys this as one Next.js service and schedules the two secured Cron routes; it is not
+part of the npm tarball. Managed PostgreSQL remains required; Vercel state or in-memory
+locks are not a substitute.
+
+Import the package only from server modules. Do not import it from a Client Component,
+Next Middleware, an Edge route, or code evaluated during static rendering. Browser code
+calls the same-origin HTTP routes instead. Keep `runtime`, `dynamic`, and `maxDuration`
+as literal exports in each Route Handler because Next.js statically analyzes those
+values. The release gate installs the tarball into a clean Next.js 16.3.2 App Router
+consumer and runs a production build of all three handlers.
 
 ## Connect the host identity system
 
@@ -257,8 +319,45 @@ const auth: AuthAccountAdapter = {
   },
 };
 
-const runtime = await createBillingRuntime({ auth });
+let sharedRuntime: ReturnType<typeof createBillingRuntime> | undefined;
+
+function getBillingRuntime() {
+  sharedRuntime ??= createBillingRuntime({
+    auth,
+    // Required when verifyYourServerSession reads an HttpOnly browser cookie.
+    csrfMode: "same-origin-session",
+  }).catch((error: unknown) => {
+    sharedRuntime = undefined;
+    throw error;
+  });
+  return sharedRuntime;
+}
+
+export async function handleBillingRequest(request: Request) {
+  try {
+    return await (await getBillingRuntime()).handler(request);
+  } catch {
+    return Response.json(
+      { detail: "billing service is unavailable" },
+      {
+        status: 503,
+        headers: {
+          "Cache-Control": "no-store",
+          "Retry-After": "5",
+          "X-Content-Type-Options": "nosniff",
+        },
+      },
+    );
+  }
+}
 ```
+
+Place that singleton in a server-only module and import `handleBillingRequest` from all
+three Route Handlers. Do not call `createBillingRuntime` once per request: every warm
+bundle owns a PostgreSQL pool, and initialization failures must be retryable. The
+packaged `environmentNextBillingRouteHandler` already implements this singleton for the
+strict environment-driven personal-JWT/reject-all modes; use the host-owned wrapper when
+Auth.js, Clerk, Supabase, or another cookie/session provider supplies identity.
 
 For teams, use `TeamJwtAuthAdapter` with a live host-owned membership repository. A
 signed tenant selector alone is not authorization; billing administrators and read-only
@@ -292,6 +391,36 @@ an exact workload-to-owner authorizer. Service scope alone must never grant cros
 credit authority. Job creation/queue dispatch and a credit charge are not one database
 transaction; use a host-owned outbox/saga and fencing workflow.
 
+A browser Checkout request must carry the authenticated host session or Bearer token,
+an allowed `Origin`, JSON content, and one idempotency key created for that user intent.
+Persist and reuse the same key across network retries; rotate it only when the user starts
+a genuinely new Checkout intent. The response is a Stripe-hosted URL; redirect to it,
+then treat the return page only as a signal to poll the webhook-projected account:
+
+```typescript
+const response = await fetch("/api/checkout", {
+  method: "POST",
+  credentials: "same-origin",
+  headers: {
+    "Content-Type": "application/json",
+    "Idempotency-Key": loadOrCreateStableCheckoutIntentKey(),
+  },
+  body: JSON.stringify({
+    plan_key: "starter",
+    interval: "month",
+    success_url: `${location.origin}/billing/success`,
+    cancel_url: `${location.origin}/pricing`,
+  }),
+});
+const { url } = (await response.json()) as { url: string };
+location.assign(url);
+```
+
+For a cross-origin Bearer integration, also send `Authorization`; never expose a shared
+service credential. After Stripe returns, poll `GET /api/account` until the signed
+webhook projection changes `entitlements_enforceable`; the Checkout redirect itself is
+not proof of payment or access.
+
 ## Select a plan-change template
 
 Set exactly one value consistently across every API and worker replica:
@@ -309,11 +438,12 @@ difference, and adds only the catalog credit difference. Downgrades and annual-o
 changes are period-end. The selected policy is persisted on each intent; price amount
 never determines tier direction.
 
-## Verification
+## Repository verification
 
-The network-free gate includes type-aware lint, type checking, unit vectors, real
-PostgreSQL migrations/constraints/transactions/races, cross-Python/TypeScript credit
-contention, and a production build:
+The following commands are for a clone of the source repository; they are not scripts
+shipped inside the npm dependency. The network-free gate includes type-aware lint, type
+checking, unit vectors, real PostgreSQL migrations/constraints/transactions/races,
+cross-Python/TypeScript credit contention, and a production build:
 
 ```bash
 npm audit --omit=dev
@@ -321,13 +451,18 @@ npm audit
 npm run check
 ```
 
-The opt-in real Stripe suite refuses a missing, malformed, or live key before any
-network request. It creates only run-marked test objects and fails if strict cleanup or
-the final zero-inventory check fails:
+The source repository's opt-in real Stripe suite refuses a missing, malformed, or live
+key before any network request. It creates only run-marked test objects and fails if
+strict cleanup or the final zero-inventory check fails:
 
 ```bash
 npm run test:real-stripe
 ```
+
+See the matching
+[testing guide](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/v0.4.0/docs/TESTING.md)
+for the database container and browser E2E runners, which are not bundled in the npm
+tarball.
 
 The repository-level Playwright lifecycle can run the same hosted Checkout, decline,
 3DS, signed webhook, plan upgrade, credit pack, Portal, and product Job journey against
@@ -346,5 +481,7 @@ E2E_TRANSITION_POLICY=prorated_delta \
 Use test credentials from a private ignored environment file. Passing mocked tests does
 not prove Stripe network behavior; Event polling does not prove signed delivery; and a
 test endpoint does not prove a live production webhook contract. The exact evidence
-boundaries are documented in [TESTING](../docs/TESTING.md) and
-[BROWSER_E2E](../docs/BROWSER_E2E.md).
+boundaries are documented in
+[TESTING](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/v0.4.0/docs/TESTING.md)
+and
+[BROWSER_E2E](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/v0.4.0/docs/BROWSER_E2E.md).

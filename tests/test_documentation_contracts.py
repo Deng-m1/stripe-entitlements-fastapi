@@ -12,16 +12,36 @@ def _text(path: str) -> str:
 
 
 def test_source_checkout_guides_build_typescript_before_the_first_cli_call() -> None:
-    for path in (
-        "README.md",
-        "typescript/README.md",
-        "docs/ADOPTION.md",
-        "docs/STRIPE_CLI.md",
-        "docs/VERCEL.md",
-    ):
-        guide = _text(path)
-        assert "npx stripe-entitlements" in guide
-        assert guide.index("npm run build") < guide.index("npx stripe-entitlements"), path
+    source_sections = {
+        "README.md": "For contributors running this source checkout instead:",
+        "typescript/README.md": "For contributors working from this source checkout instead:",
+        "docs/ADOPTION.md": "## Compose a TypeScript application",
+        "docs/STRIPE_CLI.md": "# Native TypeScript / Node operator",
+    }
+    for path, marker in source_sections.items():
+        section = _text(path).split(marker, maxsplit=1)[1]
+        assert "npx stripe-entitlements" in section
+        assert section.index("npm run build") < section.index("npx stripe-entitlements"), path
+
+
+def test_registry_install_guides_run_the_packaged_cli_without_a_source_build() -> None:
+    package_section = (
+        _text("typescript/README.md")
+        .split("For a new Node or Next.js project", maxsplit=1)[1]
+        .split("For contributors working from this source checkout instead:", maxsplit=1)[0]
+    )
+    assert "npm install --save-exact @tosea/stripe-entitlements@0.4.0" in package_section
+    assert "npx stripe-entitlements --version" in package_section
+    assert "npm run build" not in package_section
+
+    vercel_section = (
+        _text("docs/VERCEL.md")
+        .split("## Native TypeScript topology", maxsplit=1)[1]
+        .split("## What the checked-in configuration does", maxsplit=1)[0]
+    )
+    assert "npm install --save-exact @tosea/stripe-entitlements@0.4.0" in vercel_section
+    assert "npx stripe-entitlements migrate" in vercel_section
+    assert "npm run build" not in vercel_section
 
 
 def test_native_typescript_vercel_uses_the_packaged_catalog_default() -> None:

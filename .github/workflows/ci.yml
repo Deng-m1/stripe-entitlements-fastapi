@@ -304,6 +304,8 @@ jobs:
         run: |
           npm audit --omit=dev
           npm audit
+          npm audit --prefix ../tests/npm-next-consumer --package-lock-only --omit=dev
+          npm audit --prefix ../tests/npm-next-consumer --package-lock-only
       - name: Lint, type check, PostgreSQL races, and build
         run: npm run check
       - name: Inspect, install, and migrate with the npm artifact
@@ -369,6 +371,7 @@ jobs:
           JS
           )
           ../scripts/verify_npm_migration_smoke.sh "$archive" "$expected_version"
+          ../scripts/verify_npm_next_consumer.sh "$archive"
 
   container:
     name: Container

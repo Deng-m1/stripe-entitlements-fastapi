@@ -3,11 +3,11 @@
 Railway, Kubernetes, and a separately hosted API are optional. The repository includes
 two real-billing Vercel configurations plus one isolated UI simulation:
 
-| Config                    | Backend                | Services                                                |
-| ------------------------- | ---------------------- | ------------------------------------------------------- |
-| `vercel.json`             | Python/FastAPI         | separate Next.js and FastAPI services behind one domain |
-| `vercel.typescript.json`  | native TypeScript/Node | one Next.js service with App Router billing handlers    |
-| `vercel.simulation.json`  | none                   | one credential-free Next.js visual simulation           |
+| Config                   | Backend                | Services                                                |
+| ------------------------ | ---------------------- | ------------------------------------------------------- |
+| `vercel.json`            | Python/FastAPI         | separate Next.js and FastAPI services behind one domain |
+| `vercel.typescript.json` | native TypeScript/Node | one Next.js service with App Router billing handlers    |
+| `vercel.simulation.json` | none                   | one credential-free Next.js visual simulation           |
 
 Choose one configuration for a deployment; do not deploy both webhook processors merely
 as an experiment. The two real-billing configurations require managed PostgreSQL,
@@ -96,28 +96,48 @@ root schema and catalog and implements the projector, plan changes, credits, pac
 authentication, and workers natively. Route files export `runtime = "nodejs"`, disable
 caching, and set a bounded duration. Stripe and `pg` are not supported on Edge.
 
-Until an exact npm release is published, the source checkout uses
-`@tosea/stripe-entitlements: file:../typescript`; Vercel's build runs the local package
-build before Next.js. For a downstream repository, install an exact reviewed npm
-artifact and retain the three explicit Route Handler modules shown in the
-[TypeScript guide](../typescript/README.md#use-the-native-nextjs-backend).
+This monorepo uses `@tosea/stripe-entitlements: file:../typescript` so Vercel builds and
+tests the same source tree. A downstream repository should instead pin the published
+runtime and retain the three explicit Route Handler modules shown in the
+[TypeScript guide](../typescript/README.md#use-the-native-nextjs-backend):
+
+```bash
+npm install --save-exact @tosea/stripe-entitlements@0.4.0
+```
+
+Also copy the package guide's `outputFileTracingIncludes` entries for `dist/plans.toml`
+and `dist/migrations/**/*.sql` into the downstream `next.config.mjs`; a successful
+JavaScript bundle without those runtime resources is not deployable. If you set
+`PLAN_CATALOG_PATH`, include and deploy that host-owned catalog in the trace as well;
+do not use a build-machine-only absolute path.
 
 Use the same environment matrix below. Migrate with the TypeScript CLI before traffic:
 
 ```bash
-cd typescript
-npm ci
-npm run build
 npx stripe-entitlements migrate
 npx stripe-entitlements doctor --stripe-network
 ```
 
-The explicit build is required only for a source checkout; a release `.tgz` already
+The explicit package build is required only for a source checkout; an npm release already
 contains the generated CLI.
 
-Set the Vercel project to use `vercel.typescript.json` (or copy that reviewed file to
-`vercel.json` in a downstream repository). The Cron paths and `CRON_SECRET` contract are
-identical to the Python topology. Run the browser gate with
+`vercel.typescript.json` is the monorepo configuration: its service root is deliberately
+`web/`, so do not copy it unchanged into a normal root-level v0 project. Let Vercel
+detect that downstream Next.js root and add only the schedules to its `vercel.json`:
+
+```json
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    { "path": "/api/cron/annual-grants", "schedule": "7 * * * *" },
+    { "path": "/api/cron/reconcile", "schedule": "*/5 * * * *" }
+  ]
+}
+```
+
+The Cron paths and `CRON_SECRET` contract are identical to the Python topology. These
+schedules require a Vercel plan that supports their frequency; otherwise call the same
+protected routes from an external scheduler. Run the browser gate with
 `E2E_BACKEND_IMPLEMENTATION=typescript` once for each transition policy before promoting
 the deployment.
 
