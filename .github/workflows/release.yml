@@ -146,6 +146,8 @@ jobs:
           npm run lint
           npm run typecheck
           npm test
+          npx playwright install --with-deps chromium
+          npm run test:e2e:simulation
           npm run build
 
       - name: Build Python distributions

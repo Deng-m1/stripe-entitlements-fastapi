@@ -1,4 +1,4 @@
-import { environmentNextBillingRouteHandler as handle } from "@tosea/stripe-entitlements/next";
+import { simulationSafeBillingRouteHandler as handle } from "@/lib/simulation-server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

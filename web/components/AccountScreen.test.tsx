@@ -101,13 +101,16 @@ describe("account screen states", () => {
     render(<AccountScreen api={accountApi(account)} redirect={vi.fn()} />);
 
     expect(
-      await screen.findByText(/No Stripe subscription is active/),
+      await screen.findByRole("heading", { name: "Free" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/No Stripe subscription is active/),
     ).toBeInTheDocument();
     expect(screen.getByText(/No grant is scheduled/)).toBeInTheDocument();
     expect(screen.getByText("Nothing enforceable yet")).toBeInTheDocument();
-    expect(
-      screen.getAllByText("Not scheduled").length,
-    ).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("Not scheduled").length).toBeGreaterThanOrEqual(
+      2,
+    );
   });
 
   it("renders fractional and large credit values without Number coercion", async () => {
@@ -130,9 +133,7 @@ describe("account screen states", () => {
 
     render(<AccountScreen api={accountApi(account)} redirect={vi.fn()} />);
 
-    expect(
-      await screen.findAllByText("9,007,199,254.740993"),
-    ).toHaveLength(2);
+    expect(await screen.findAllByText("9,007,199,254.740993")).toHaveLength(2);
     expect(screen.getByText("0.000001")).toBeInTheDocument();
   });
 
@@ -204,7 +205,9 @@ describe("account screen states", () => {
       }),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/Product access is paused until Stripe reports the invoice as paid/),
+      screen.getByText(
+        /Product access is paused until Stripe reports the invoice as paid/,
+      ),
     ).toBeInTheDocument();
     expect(screen.getByText("Paused")).toBeInTheDocument();
     expect(screen.getByText("past_due")).toBeInTheDocument();
@@ -243,12 +246,12 @@ describe("account screen states", () => {
     await screen.findByRole("heading", {
       name: "Your latest payment has not settled",
     });
-    expect(screen.getByText("Subscription balance").parentElement).toHaveTextContent(
-      "Subscription balance0",
-    );
-    expect(screen.getByText("Purchased balance").parentElement).toHaveTextContent(
-      "Purchased balance100",
-    );
+    expect(
+      screen.getByText("Subscription balance").parentElement,
+    ).toHaveTextContent("Subscription balance0");
+    expect(
+      screen.getByText("Purchased balance").parentElement,
+    ).toHaveTextContent("Purchased balance100");
     expect(screen.getByText("100 credits")).toBeInTheDocument();
     expect(screen.getByText("Paused")).toBeInTheDocument();
   });
@@ -274,9 +277,7 @@ describe("account screen states", () => {
     expect(
       await screen.findByRole("heading", { name: "Pro · year" }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(/one more payment step/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/one more payment step/)).toBeInTheDocument();
 
     await user.click(
       screen.getByRole("button", { name: "Continue payment on Stripe" }),

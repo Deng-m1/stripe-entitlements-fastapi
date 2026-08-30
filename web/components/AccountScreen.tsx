@@ -13,7 +13,11 @@ import {
   idempotencyKeyForIntent,
 } from "@/lib/idempotency";
 import { formatDate } from "@/lib/money";
-import { browserBillingRedirect, getBillingApi } from "@/lib/runtime";
+import {
+  browserBillingRedirect,
+  getBillingApi,
+  publicSimulationMode,
+} from "@/lib/runtime";
 import type {
   AccountResponse,
   BillingApi,
@@ -113,15 +117,16 @@ export function AccountScreen({
       />
     );
   }
-  if (!account || !catalog) return <LoadingState label="Loading account state…" />;
+  if (!account || !catalog)
+    return <LoadingState label="Loading account state…" />;
 
   const currentName =
     catalog.plans.find((plan) => plan.key === account.plan_key)?.name ??
-    account.plan_key;
+    (account.plan_key === "free" ? "Free" : account.plan_key);
   const pendingName = account.pending_change
-    ? catalog.plans.find(
+    ? (catalog.plans.find(
         (plan) => plan.key === account.pending_change?.target_plan_key,
-      )?.name ?? account.pending_change.target_plan_key
+      )?.name ?? account.pending_change.target_plan_key)
     : null;
   const pendingPaymentUrl = account.pending_change?.payment_url;
   const hasSubscription =
@@ -134,11 +139,16 @@ export function AccountScreen({
       style={{ opacity: loading ? 0.7 : 1, transition: "opacity 160ms ease" }}
     >
       <section className="hero compact">
-        <p className="eyebrow">Webhook-authoritative account projection</p>
+        <p className="eyebrow">
+          {publicSimulationMode
+            ? "Browser-local account simulation"
+            : "Webhook-authoritative account projection"}
+        </p>
         <h1>Your billing account</h1>
         <p>
-          This view reports stored plan identity, interval, credits, and entitlements
-          independently. A price is never used to guess the current tier.
+          {publicSimulationMode
+            ? "This view reports isolated sample plan, credit, and entitlement state stored only for this browser tab."
+            : "This view reports stored plan identity, interval, credits, and entitlements independently. A price is never used to guess the current tier."}
         </p>
       </section>
 
@@ -189,14 +199,17 @@ export function AccountScreen({
       ) : null}
 
       {account.pending_cancellation ? (
-        <section className="pending-banner" aria-labelledby="cancellation-title">
+        <section
+          className="pending-banner"
+          aria-labelledby="cancellation-title"
+        >
           <p className="eyebrow">Cancellation scheduled</p>
           <h2 id="cancellation-title">Current plan → Free</h2>
           <p>
-            Your current benefits remain active until {formatDate(
-              account.pending_cancellation.effective_at,
-            )}. Plan changes are paused while cancellation is pending; use the
-            Stripe Billing Portal to resume the subscription first.
+            Your current benefits remain active until{" "}
+            {formatDate(account.pending_cancellation.effective_at)}. Plan
+            changes are paused while cancellation is pending; use the Stripe
+            Billing Portal to resume the subscription first.
           </p>
         </section>
       ) : null}
@@ -220,9 +233,9 @@ export function AccountScreen({
           <h2>{currentName}</h2>
           {!hasSubscription ? (
             <p>
-              No Stripe subscription is active for this account. Use “Review plan
-              changes” below to start one — access is granted only after the paid
-              webhook is processed, never by the redirect back to this app.
+              {publicSimulationMode
+                ? "No sample subscription is active. Use “Review plan changes” below to simulate one without contacting Stripe."
+                : "No Stripe subscription is active for this account. Use “Review plan changes” below to start one — access is granted only after the paid webhook is processed, never by the redirect back to this app."}
             </p>
           ) : null}
           <dl className="fact-list">
@@ -236,7 +249,13 @@ export function AccountScreen({
             </div>
             <div>
               <dt>Status</dt>
-              <dd><span className={`status status-${account.subscription_status}`}>{account.subscription_status}</span></dd>
+              <dd>
+                <span
+                  className={`status status-${account.subscription_status}`}
+                >
+                  {account.subscription_status}
+                </span>
+              </dd>
             </div>
             <div>
               <dt>Upgrade settlement</dt>
@@ -244,7 +263,9 @@ export function AccountScreen({
             </div>
             <div>
               <dt>Product access</dt>
-              <dd>{account.entitlements_enforceable ? "Enforceable" : "Paused"}</dd>
+              <dd>
+                {account.entitlements_enforceable ? "Enforceable" : "Paused"}
+              </dd>
             </div>
             <div>
               <dt>Current period ends</dt>
@@ -262,8 +283,9 @@ export function AccountScreen({
           {isZeroCreditDecimal(account.credits.balance) &&
           !account.credits.next_grant_at ? (
             <p>
-              No grant is scheduled. Credit grants start with a paid subscription
-              period and are recorded with database-enforced idempotency.
+              No grant is scheduled. Credit grants start with a paid
+              subscription period and are recorded with database-enforced
+              idempotency.
             </p>
           ) : null}
           <dl className="fact-list">
@@ -293,14 +315,16 @@ export function AccountScreen({
                 {account.credits.credit_packs.map((lot) => (
                   <li key={lot.lot_id}>
                     <span>{lot.pack_key}</span>
-                    <strong>{formatCreditDecimal(lot.remaining)} credits</strong>
+                    <strong>
+                      {formatCreditDecimal(lot.remaining)} credits
+                    </strong>
                     <small>expires {formatDate(lot.expires_at)}</small>
                   </li>
                 ))}
               </ul>
               <p>
-                Packs add spendable credits only. They do not change this account&apos;s
-                plan features, limits, or subscription status.
+                Packs add spendable credits only. They do not change this
+                account&apos;s plan features, limits, or subscription status.
               </p>
             </div>
           ) : null}
@@ -318,33 +342,42 @@ export function AccountScreen({
               <p>No entitlements granted</p>
               <strong>Nothing enforceable yet</strong>
               <span>
-                Structured entitlements appear here after a subscription webhook
-                projects them. The product enforces exactly what is listed —
-                nothing is inferred from prices or redirects.
+                {publicSimulationMode
+                  ? "Sample entitlements appear after the browser-local projection. Nothing here is a payment or production entitlement."
+                  : "Structured entitlements appear here after a subscription webhook projects them. The product enforces exactly what is listed — nothing is inferred from prices or redirects."}
               </span>
             </article>
           </div>
         ) : (
           <div className="entitlement-grid">
             {account.entitlements.map((entitlement) => (
-              <EntitlementCard entitlement={entitlement} key={entitlement.key} />
+              <EntitlementCard
+                entitlement={entitlement}
+                key={entitlement.key}
+              />
             ))}
           </div>
         )}
       </section>
 
-      <section aria-labelledby="manage-title" className="account-card" style={{ marginTop: 18 }}>
+      <section
+        aria-labelledby="manage-title"
+        className="account-card"
+        style={{ marginTop: 18 }}
+      >
         <p className="eyebrow">Manage</p>
         <h2 id="manage-title">Plan changes and billing management</h2>
         <p>
-          Plan and interval changes stay in this app so the server can enforce the
-          safe transition matrix. The Stripe Billing Portal handles payment methods,
-          invoices, and cancellation.
+          {publicSimulationMode
+            ? "Plan changes and the Portal return are simulated inside this browser tab. No server, payment method, invoice, or cancellation is changed."
+            : "Plan and interval changes stay in this app so the server can enforce the safe transition matrix. The Stripe Billing Portal handles payment methods, invoices, and cancellation."}
         </p>
         {loadedAt ? (
           <p>
-            Projection loaded {formatDate(loadedAt)}. Refreshing re-reads the
-            webhook-backed account API and never mutates billing state.
+            Projection loaded {formatDate(loadedAt)}. Refreshing{" "}
+            {publicSimulationMode
+              ? "re-reads browser-local sample state."
+              : "re-reads the webhook-backed account API and never mutates billing state."}
           </p>
         ) : null}
         <div className="account-actions">
@@ -355,7 +388,11 @@ export function AccountScreen({
             onClick={() => void refresh()}
             type="button"
           >
-            {loading ? "Refreshing…" : "Refresh projection"}
+            {loading
+              ? "Refreshing…"
+              : publicSimulationMode
+                ? "Refresh simulation"
+                : "Refresh projection"}
           </button>
           <button
             aria-busy={portalBusy}
@@ -364,7 +401,11 @@ export function AccountScreen({
             onClick={() => void openPortal()}
             type="button"
           >
-            {portalBusy ? "Opening Portal…" : "Open Stripe Billing Portal"}
+            {portalBusy
+              ? "Opening Portal…"
+              : publicSimulationMode
+                ? "Open simulated Portal"
+                : "Open Stripe Billing Portal"}
           </button>
           <Link className="button primary" href="/pricing">
             Review plan changes

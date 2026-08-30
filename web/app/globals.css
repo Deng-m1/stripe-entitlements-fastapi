@@ -151,13 +151,32 @@ input {
 }
 
 .demo-notice {
+  align-items: center;
   background: var(--warning-soft);
   border-block: 1px solid #e2c07c;
   color: #6f4a08;
+  display: flex;
+  flex-wrap: wrap;
   font-size: 0.88rem;
   font-weight: 650;
+  gap: 8px 16px;
+  justify-content: center;
   padding: 11px 24px;
   text-align: center;
+}
+
+.demo-reset {
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 3px 10px;
+}
+
+.demo-reset:hover {
+  background: color-mix(in srgb, currentColor 8%, transparent);
 }
 
 .page {

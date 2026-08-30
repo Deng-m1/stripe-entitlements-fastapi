@@ -64,6 +64,12 @@ Next.js service whose Node Route Handlers own `/api/*`, `/webhooks/stripe`, and
 wrappers; it does not create a second in-memory coordinator. See the
 [Vercel guide](VERCEL.md) and [TypeScript guide](../typescript/README.md).
 
+The separate `vercel.simulation.json` is intentionally outside that billing topology. It
+deploys only the reference UI, has no Cron or backend rewrite, returns 404 from compiled
+billing routes, stores versioned sample state in browser `sessionStorage`, and carries no
+billing credential. It demonstrates interaction design only and inherits none of the
+PostgreSQL/Stripe correctness guarantees above.
+
 ## Scope boundary
 
 Each backend supports one recurring subscription item, USD, fixed plan keys,

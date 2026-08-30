@@ -6,6 +6,7 @@ import {
   parseExactCreditAmount,
 } from "@/lib/credit-amount";
 import { formatDate, formatMoney } from "@/lib/money";
+import { publicSimulationMode } from "@/lib/runtime";
 import type { ChangePreview } from "@/lib/types";
 
 const previewRouteStyles = `
@@ -138,9 +139,17 @@ export function ChangePreviewDialog({
         role="dialog"
         tabIndex={-1}
       >
-        <p className="eyebrow">Server-calculated change preview</p>
+        <p className="eyebrow">
+          {publicSimulationMode
+            ? "Browser-local change preview"
+            : "Server-calculated change preview"}
+        </p>
         <h2 id="change-preview-title">
-          {paymentUrl
+          {publicSimulationMode
+            ? immediate
+              ? "This simulated change applies immediately"
+              : "This simulated change starts at period end"
+            : paymentUrl
             ? "Payment required — your current plan remains active"
             : proratedDelta
               ? "Pay the prorated difference for this period"
@@ -161,7 +170,15 @@ export function ChangePreviewDialog({
           </span>
         </p>
 
-        {paymentUrl ? (
+        {publicSimulationMode ? (
+          <div className={immediate ? "timing-panel timing-immediate" : "timing-panel"}>
+            <strong>{immediate ? "Immediate sample projection" : "No sample change today"}</strong>
+            <p>
+              This changes only versioned browser-local simulation state. It creates no
+              Stripe invoice, payment, webhook, database row, or real entitlement.
+            </p>
+          </div>
+        ) : paymentUrl ? (
           <div className="timing-panel timing-immediate">
             <strong>The Stripe invoice is still open</strong>
             <p>
@@ -236,7 +253,9 @@ export function ChangePreviewDialog({
               type="checkbox"
             />
             <span>
-              {immediate
+              {publicSimulationMode
+                ? "I understand this changes only browser-local sample state and does not charge or contact Stripe."
+                : immediate
                 ? proratedDelta
                   ? "I understand that Stripe will charge the prorated difference and the upgrade still requires webhook confirmation."
                   : "I understand that immediate settlement may charge me and still requires webhook confirmation."
@@ -275,7 +294,11 @@ export function ChangePreviewDialog({
               onClick={onConfirm}
               type="button"
             >
-              {busy ? "Confirming…" : "Confirm billing change"}
+              {busy
+                ? "Confirming…"
+                : publicSimulationMode
+                  ? "Confirm simulated change"
+                  : "Confirm billing change"}
             </button>
           )}
         </div>

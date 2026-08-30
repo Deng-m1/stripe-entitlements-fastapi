@@ -4,24 +4,26 @@ The project separates deterministic local/PostgreSQL tests, opt-in automated Str
 test-mode tests, real-browser signed-delivery tests, manual observations, and live
 production verification. Passing one layer must not be described as passing another.
 
-The complete 0.4.0 parity gate below is bound to clean commit
-`e22d5a7eb327e7ef175c23fa76fc1021c9b1184e`. GitHub Actions run
-[`33280721250`](https://github.com/Deng-m1/stripe-entitlements-fastapi/actions/runs/33280721250)
+The billing-core and Stripe-network parity gate below is bound to clean commit
+`f757fcce4aeb1194b3db04f87579e8f5ef169058`. Its Git tree is byte-identical to
+the subsequent squash-merged `main` commit `89646e5`. GitHub Actions run
+[`33283480383`](https://github.com/Deng-m1/stripe-entitlements-fastapi/actions/runs/33283480383)
 passed Backend, TypeScript billing core, Container, and Web:
 
 | Layer                   | Exact-head evidence                                                                                                                                      | Boundary                                                                 |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| Python/FastAPI          | 1,254 passed, 10 `real_stripe` deselected; Ruff format/lint, Mypy, release-version check, and dependency audit passed                                    | Real PostgreSQL and mocked Stripe responses; no Stripe network           |
-| Native TypeScript       | 50 files / 807 tests; format, lint, typecheck, build, coverage gate, and both npm audits passed                                                          | Real PostgreSQL and mocked Stripe responses; no Stripe network           |
+| Python/FastAPI          | 1,257 passed, 10 `real_stripe` deselected; Ruff format/lint, Mypy, release-version check, and dependency audit passed                                    | Real PostgreSQL and mocked Stripe responses; no Stripe network           |
+| Native TypeScript       | 50 files / 816 tests; format, lint, typecheck, build, coverage gate, and both npm audits passed                                                          | Real PostgreSQL and mocked Stripe responses; no Stripe network           |
 | Reference Web           | Clean archive/install; 19 files / 208 tests, lint, typecheck, production build, and both npm audits passed                                               | Browser components and build only; no Stripe network                     |
-| Real Stripe suites      | Python 10/10 in 380.28 seconds and TypeScript 10/10 in 244.11 seconds, including strict run-owned cleanup and zero residual inventory                    | Stripe **test mode** API/Event polling; not signed delivery or live mode |
+| Real Stripe suites      | Python 10/10 in 404.42 seconds and TypeScript 10/10 in 276.03 seconds, including strict run-owned cleanup and zero residual inventory                    | Stripe **test mode** API/Event polling; not signed delivery or live mode |
 | Browser policy gates    | Python and TypeScript × both policies: four production-build journeys passed, each ending Pro/1,020 with 11 related, 0 unrelated, and 5 essential Events | Temporary signed **test-mode** endpoints; not live-production payloads   |
 | Distribution/container  | Wheel, sdist, npm `.tgz`, fresh/upgrade migrations, and hardened Docker readiness/secret-scan gates passed                                               | Built artifacts from the stated commit; not a registry publication       |
 | Live production payload | **not run**                                                                                                                                              | Test mode never substitutes for live mode                                |
 
-The 807-test count includes three regressions for a test-only PostgreSQL teardown race
-found after all 804 then-current assertions had passed on the first clean runner. Ten
-additional isolated-container repetitions completed without the earlier `57P01` noise.
+The 816-test count includes regressions for the PostgreSQL teardown race, reconciliation
+compare-and-set refresh and second-race failure, stale cancellation versus a newer active
+webhook, RFC 3339 timestamp normalization, and reproducible adoption documentation.
+Repeated isolated-container runs completed without the earlier `57P01` teardown noise.
 The earlier 2026-08-01 pre-hardening baseline—239 local/backend, 7 real Stripe,
 60 frontend, and 2 browser policy runs—remains historical regression evidence only.
 
@@ -197,6 +199,8 @@ npm audit
 npm run lint
 npm run typecheck
 npm test
+npx playwright install --with-deps chromium
+npm run test:e2e:simulation
 npm run build
 ```
 
@@ -209,6 +213,13 @@ redirect and access-token validation, no-store fetch options, sanitized provider
 build-time production demo rejection, security headers, fail-closed public-site URL and
 indexing configuration, server-rendered reference plans, visible landing/FAQ JSON-LD,
 and metadata-route defaults.
+The production public-simulation browser gate starts from Free, completes a simulated
+subscription, immediate upgrade, credit-pack purchase and Portal return, proves reload
+persistence, browser-context isolation and reset, and observes zero application API,
+webhook, or Stripe-domain requests. Before any remote-base interaction it requires
+an explicit remote-run acknowledgement, production/simulation response headers, and
+disabled server routes; unexpected API/Stripe requests are browser-blocked, and denied
+browser storage fails closed.
 The browser-process environment test proves that Chromium receives only a narrow
 runtime allowlist, not the Node helper's Stripe test key or database DSN.
 The backend additionally verifies that the public JSON catalog cannot drift from
@@ -232,6 +243,10 @@ package-bundled catalog: the service root is `web/`, so a repository-relative
 `plans.toml` override would resolve to a nonexistent file. Documentation contract tests
 hold that environment boundary, while TypeScript resource/package tests verify the
 bundled catalog is readable from the installed artifact.
+
+The frontend suite separately parses `vercel.simulation.json` and requires exactly one
+`web/` service, one catch-all rewrite, no FastAPI/backend destination, and no Cron. This
+prevents a nominally UI-only link from inheriting either real-billing topology.
 
 The pinned local platform smoke is:
 
@@ -284,7 +299,7 @@ artifact handling, and evidence boundaries.
 Endpoint metadata, signed transport, database projection and live-production evidence
 requirements are separated in [the webhook verification runbook](WEBHOOK_VERIFICATION.md).
 
-On exact commit `e22d5a7`, all four backend/policy quadrants passed through temporary
+On exact commit `f757fcc`, all four backend/policy quadrants passed through temporary
 Stripe test-mode Webhook Endpoints:
 
 - Python × `full_period_reset`;
@@ -316,8 +331,8 @@ Tests marked `real_stripe` make network calls only when `STRIPE_SECRET_KEY` star
 `sk_test_`. Live keys fail before a network call. Objects are uniquely marked and cleanup
 targets only objects created by that run.
 
-The Python and native TypeScript ten-case suites both passed on exact commit `e22d5a7`
-(380.28 seconds and 244.11 seconds respectively). Their shared lifecycle inventory
+The Python and native TypeScript ten-case suites both passed on exact commit `f757fcc`
+(404.42 seconds and 276.03 seconds respectively). Their shared lifecycle inventory
 asserts:
 
 - creation of isolated real test-mode Products, monthly/yearly Prices, Customers and
@@ -410,7 +425,7 @@ rerun before a release that changes plan transitions or Stripe API version.
 There are three version records that must remain independent:
 
 - outbound SDK requests are configured with `STRIPE_API_VERSION=2026-06-24.dahlia`;
-- the four exact-`e22d5a7` temporary endpoints were pinned to Dahlia and delivered signed
+- the four exact-`f757fcc` temporary endpoints were pinned to Dahlia and delivered signed
   payloads with `api_version=2026-06-24.dahlia`; and
 - the independently retrieved Event API view in those same runs reported
   `2025-12-15.clover`.

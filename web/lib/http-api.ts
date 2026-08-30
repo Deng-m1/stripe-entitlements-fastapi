@@ -39,13 +39,13 @@ interface HttpApiOptions {
 
 const defaultTimeoutMs = 30_000;
 const maximumTimeoutMs = 120_000;
-const maximumAccessTokenBytes = 8_192;
+export const MAXIMUM_ACCESS_TOKEN_BYTES = 8_192;
 export const SAME_ORIGIN_BILLING_API = "same-origin";
 
 function validAccessToken(value: string): boolean {
   return (
     /^[\x21-\x7E]+$/u.test(value) &&
-    new TextEncoder().encode(value).length <= maximumAccessTokenBytes
+    new TextEncoder().encode(value).length <= MAXIMUM_ACCESS_TOKEN_BYTES
   );
 }
 

@@ -7,31 +7,47 @@ import {
   createHttpBillingApi,
   SAME_ORIGIN_BILLING_API,
 } from "@/lib/http-api";
-import { createMockBillingApi } from "@/lib/mock-api";
+import {
+  createMockBillingApi,
+  createPublicSimulationBillingApi,
+  resetPublicSimulationStorage,
+  type MockBillingStorage,
+} from "@/lib/mock-api";
 import type { BillingApi, Redirect } from "@/lib/types";
 
 const configuredMode = process.env.NEXT_PUBLIC_BILLING_API_MODE;
 export const billingApiMode =
-  configuredMode === "mock" || configuredMode === "http"
+  configuredMode === "mock" ||
+  configuredMode === "simulation" ||
+  configuredMode === "http"
     ? configuredMode
     : process.env.NODE_ENV === "production"
       ? "http"
       : "mock";
 
 const demoToken = process.env.NEXT_PUBLIC_DEMO_BEARER_TOKEN;
+const simulationAcknowledgement =
+  process.env.NEXT_PUBLIC_SIMULATION_ACKNOWLEDGEMENT;
 const e2eRouteAuthSentinel =
   process.env.NEXT_PUBLIC_E2E_ROUTE_AUTH_SENTINEL;
+export const publicSimulationMode = billingApiMode === "simulation";
 export const usesDemoConfiguration =
   billingApiMode === "mock" ||
+  publicSimulationMode ||
   Boolean(demoToken) ||
   Boolean(e2eRouteAuthSentinel);
 
 export function isUnsafeProductionDemoConfiguration(
   environment: string | undefined,
-  mode: "mock" | "http",
+  mode: "mock" | "simulation" | "http",
   token: string | undefined,
+  allowIndexing?: string,
+  acknowledgement?: string,
 ): boolean {
-  return environment === "production" && (mode === "mock" || Boolean(token));
+  if (environment !== "production") return false;
+  if (mode === "mock" || Boolean(token)) return true;
+  if (mode !== "simulation") return false;
+  return acknowledgement !== "1" || allowIndexing !== "false";
 }
 
 export const unsafeProductionDemoConfiguration =
@@ -39,6 +55,8 @@ export const unsafeProductionDemoConfiguration =
     process.env.NODE_ENV,
     billingApiMode,
     demoToken,
+    process.env.NEXT_PUBLIC_ALLOW_INDEXING,
+    simulationAcknowledgement,
   );
 
 export function configuredBillingApiBaseUrl(
@@ -49,17 +67,87 @@ export function configuredBillingApiBaseUrl(
 
 let runtimeApi: BillingApi | undefined;
 
+const SIMULATION_STORAGE_PROBE =
+  "stripe-entitlements:public-simulation:storage-probe";
+const SIMULATION_STORAGE_ERROR =
+  "Public simulation requires available browser sessionStorage. Enable session storage or open the demo in a standard browser tab; no billing request was sent.";
+
+export function isUsableSimulationStorage(
+  storage: MockBillingStorage,
+): boolean {
+  let previous: string | null = null;
+  let wroteProbe = false;
+  let usable = false;
+  try {
+    previous = storage.getItem(SIMULATION_STORAGE_PROBE);
+    storage.setItem(SIMULATION_STORAGE_PROBE, "1");
+    wroteProbe = true;
+    usable = storage.getItem(SIMULATION_STORAGE_PROBE) === "1";
+  } catch {
+    usable = false;
+  } finally {
+    if (wroteProbe) {
+      try {
+        if (previous === null) storage.removeItem(SIMULATION_STORAGE_PROBE);
+        else storage.setItem(SIMULATION_STORAGE_PROBE, previous);
+      } catch {
+        usable = false;
+      }
+    }
+  }
+  return usable;
+}
+
+function browserSimulationStorage(): MockBillingStorage | null | undefined {
+  if (typeof window === "undefined") return undefined;
+  try {
+    const storage = window.sessionStorage;
+    return isUsableSimulationStorage(storage) ? storage : null;
+  } catch {
+    return null;
+  }
+}
+
+function unavailablePublicSimulationApi(): BillingApi {
+  async function unavailable<T>(): Promise<T> {
+    throw new Error(SIMULATION_STORAGE_ERROR);
+  }
+  return {
+    getCatalog: unavailable,
+    getAccount: unavailable,
+    createCheckout: unavailable,
+    createCreditPackCheckout: unavailable,
+    createPortal: unavailable,
+    previewPlanChange: unavailable,
+    confirmPlanChange: unavailable,
+  };
+}
+
+export function resetPublicSimulation(): void {
+  if (!publicSimulationMode) return;
+  const storage = browserSimulationStorage();
+  if (storage) resetPublicSimulationStorage(storage);
+  runtimeApi = undefined;
+}
+
 export function getBillingApi(): BillingApi {
   if (unsafeProductionDemoConfiguration) {
     throw new Error(
-      "Demo billing mode and browser-exposed demo authentication are disabled in production.",
+      "The public billing configuration is unsafe for production. Use HTTP mode, or an explicitly acknowledged credential-free noindex simulation.",
     );
   }
   if (runtimeApi) return runtimeApi;
-  runtimeApi =
-    billingApiMode === "mock"
-      ? createMockBillingApi()
-      : createHttpBillingApi({
+  if (publicSimulationMode) {
+    const storage = browserSimulationStorage();
+    runtimeApi =
+      storage === null
+        ? unavailablePublicSimulationApi()
+        : createPublicSimulationBillingApi(storage);
+  } else {
+    runtimeApi =
+      billingApiMode === "mock"
+        ? createMockBillingApi()
+        : createHttpBillingApi({
           baseUrl: configuredBillingApiBaseUrl(
             process.env.NEXT_PUBLIC_BILLING_API_BASE_URL,
           ),
@@ -69,6 +157,7 @@ export function getBillingApi(): BillingApi {
               ? createE2ERouteAuth(e2eRouteAuthSentinel)
               : noAuthAdapter,
         });
+  }
   return runtimeApi;
 }
 
@@ -149,10 +238,49 @@ export function billingRedirectUrl(
   return destination.toString();
 }
 
+export function publicSimulationRedirectUrl(
+  url: string,
+  origin: string,
+): string {
+  let destination: URL;
+  let applicationOrigin: URL;
+  try {
+    applicationOrigin = new URL(origin);
+    destination = new URL(url, applicationOrigin);
+  } catch {
+    throw new Error("Public simulation redirect URL is invalid.");
+  }
+  if (
+    destination.username ||
+    destination.password ||
+    destination.origin !== applicationOrigin.origin
+  ) {
+    throw new Error("Public simulation redirects must stay on this application origin.");
+  }
+  const secure = destination.protocol === "https:";
+  const loopback =
+    destination.protocol === "http:" &&
+    isLoopbackHostname(destination.hostname);
+  if (!secure && !loopback) {
+    throw new Error(
+      "Public simulation redirects require HTTPS (loopback HTTP is allowed for local tests).",
+    );
+  }
+  return destination.toString();
+}
+
 export const browserInternalRedirect: Redirect = (url) => {
-  window.location.assign(internalRedirectUrl(url, window.location.origin));
+  window.location.assign(
+    publicSimulationMode
+      ? publicSimulationRedirectUrl(url, window.location.origin)
+      : internalRedirectUrl(url, window.location.origin),
+  );
 };
 
 export const browserBillingRedirect: Redirect = (url) => {
-  window.location.assign(billingRedirectUrl(url, window.location.origin));
+  window.location.assign(
+    publicSimulationMode
+      ? publicSimulationRedirectUrl(url, window.location.origin)
+      : billingRedirectUrl(url, window.location.origin),
+  );
 };

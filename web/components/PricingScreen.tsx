@@ -24,6 +24,7 @@ import {
   browserBillingRedirect,
   browserInternalRedirect,
   getBillingApi,
+  publicSimulationMode,
 } from "@/lib/runtime";
 import {
   confirmRequiredStripePayment,
@@ -218,7 +219,9 @@ export function PricingScreen({
       setPreview(null);
       setPaymentUrl(null);
       setMessage(
-        "The server accepted the request. The account API reports the pending period-end change.",
+        publicSimulationMode
+          ? "The browser-local simulation records the pending period-end change."
+          : "The server accepted the request. The account API reports the pending period-end change.",
       );
     } catch (caught) {
       setPreviewError(errorMessage(caught));
@@ -418,9 +421,9 @@ export function PricingScreen({
           <p className="eyebrow">One-time credit packs</p>
           <h2 id="credit-pack-heading">Add burst capacity without changing your plan</h2>
           <p>
-            Packs are one-time Stripe payments, not subscriptions. They add only product
-            credits, never plan features or higher limits, and remain separate from
-            monthly grant resets.
+            {publicSimulationMode
+              ? "Sample packs add browser-local credits without changing plan features or limits. No payment is created."
+              : "Packs are one-time Stripe payments, not subscriptions. They add only product credits, never plan features or higher limits, and remain separate from monthly grant resets."}
           </p>
         </div>
         <div className="credit-pack-grid">
@@ -438,7 +441,9 @@ export function PricingScreen({
                   </p>
                   <p>
                     {formatMoney(pack.price.unit_amount, pack.price.currency)} one time ·
-                    expires {pack.expires_days} days after payment
+                    expires {pack.expires_days} days after {publicSimulationMode
+                      ? "the simulated purchase"
+                      : "payment"}
                   </p>
                   <button
                     aria-busy={busyKey === packBusyKey}
@@ -450,7 +455,9 @@ export function PricingScreen({
                     {!account
                       ? "Loading account…"
                       : busyKey === packBusyKey
-                        ? "Preparing Stripe Checkout…"
+                        ? publicSimulationMode
+                          ? "Preparing simulation…"
+                          : "Preparing Stripe Checkout…"
                         : `Buy ${pack.name}`}
                   </button>
                 </article>
@@ -458,15 +465,23 @@ export function PricingScreen({
             })}
         </div>
         <p className="pricing-footnote">
-          The return page does not grant credits. The balance changes only after a
-          signed <code>payment_intent.succeeded</code> webhook is committed.
+          {publicSimulationMode ? (
+            "The simulation delays its browser-local projection so the return page does not grant sample credits synchronously."
+          ) : (
+            <>
+              The return page does not grant credits. The balance changes only after a
+              signed <code>payment_intent.succeeded</code> webhook is committed.
+            </>
+          )}
         </p>
       </section>
 
       <section aria-labelledby="plan-comparison-heading" className="pricing-compare">
         <h2 id="plan-comparison-heading">Compare plans</h2>
         <p>
-          Every value below comes from the same catalog the billing server enforces.
+          Every value below comes from {publicSimulationMode
+            ? "the canonical sample catalog."
+            : "the same catalog the billing server enforces."}
           The yearly discount is the catalog&apos;s explicit annual price—no Stripe
           Coupon or promotion code is created or simulated.
         </p>
@@ -541,9 +556,9 @@ export function PricingScreen({
           </table>
         </div>
         <p className="pricing-footnote">
-          Choosing a plan starts the demo Checkout or a server-calculated change
-          preview; entitlements change only after webhook-verified account state,
-          never from the redirect alone.
+          {publicSimulationMode
+            ? "Choosing a plan changes only browser-local sample state after a simulated projection delay. It never creates Checkout or contacts Stripe."
+            : "Choosing a plan starts Checkout or a server-calculated change preview; entitlements change only after webhook-verified account state, never from the redirect alone."}
         </p>
       </section>
 

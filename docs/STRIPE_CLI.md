@@ -26,7 +26,7 @@ Do not reuse one label for two Stripe contracts:
 - Webhook payloads contain Event `api_version` from the endpoint/account snapshot.
   `STRIPE_WEBHOOK_API_VERSION` must equal that actual value.
 
-The four exact-`e22d5a7` browser gates used isolated Stripe test-mode endpoints pinned to
+The four exact-`f757fcc` browser gates used isolated Stripe test-mode endpoints pinned to
 Dahlia and received signed Dahlia payloads while the independently retrieved Event API
 view remained Clover. Neither value changes the outbound request version. Stripe CLI
 forwarding can prove signed transport but not endpoint metadata. You may inspect the
@@ -235,8 +235,9 @@ delta case performs a real full refund and checks cross-Invoice allocation/rever
 other cases cover an annual-origin two-phase Schedule and repeatable authentication-
 required/customer-charge-failure pending updates. The added case covers a one-time pack
 PaymentIntent, exact metadata/lineage and cash/product-refund convergence. All ten passed
-on the 0.3 working-tree candidate on 2026-08-28 with strict run-owned cleanup; they still
-need to be rebound to the exact release commit before publication.
+on exact commit `f757fcc` on 2026-08-29 with strict run-owned cleanup in both Python and
+TypeScript. A later change that touches these runtime paths must rerun the affected gate
+rather than inherit that evidence.
 Both pre-pack browser policies also passed that day through signed Stripe CLI forwarding
 on the production Next.js build.
 The earlier seven-case network run is historical evidence only. The remaining 2026-07-31
