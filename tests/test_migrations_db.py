@@ -15,6 +15,8 @@ from tests.conftest import TEST_DSN
 
 ROOT = Path(__file__).parents[1]
 BASELINE = "001_v3_baseline.sql"
+REQUEST_SNAPSHOTS = "002_stripe_request_snapshots.sql"
+CURRENT_MIGRATIONS = (BASELINE, REQUEST_SNAPSHOTS)
 CORRECTNESS_TABLES = (
     "billing_accounts",
     "stripe_webhook_events",
@@ -31,7 +33,7 @@ CORRECTNESS_TABLES = (
     "billing_clawback_debts",
     "billing_incidents",
 )
-V3_SCHEMA_CATALOG_SHA256 = "b003fa5e39cd2163f5b686bb140c78730a0c47afb438f4a9b86cd80cccbcc1bc"
+V4_SCHEMA_CATALOG_SHA256 = "fdd08d8cf430ceb34e9564ccedc14bd7809201bf92f5f6e259451417b4565bb5"
 
 
 async def _create_database(prefix: str) -> tuple[str, str]:
@@ -74,8 +76,8 @@ async def test_migration_runner_serializes_and_records_baseline_checksum(
     await asyncio.gather(*(database.apply_migrations(ROOT / "migrations") for _ in range(8)))
     async with pool.acquire() as conn:
         rows = await conn.fetch("select filename,sha256 from schema_migrations order by filename")
-    assert [row["filename"] for row in rows] == [BASELINE]
-    assert len(rows[0]["sha256"]) == 64
+    assert [row["filename"] for row in rows] == list(CURRENT_MIGRATIONS)
+    assert all(len(row["sha256"]) == 64 for row in rows)
     assert await database.schema_ready()
 
 
@@ -100,8 +102,8 @@ async def test_fresh_baseline_is_safe_under_concurrent_first_apply() -> None:
                     order by tablename""",
                 list(CORRECTNESS_TABLES),
             )
-        assert [row["filename"] for row in rows] == [BASELINE]
-        assert len(rows[0]["sha256"]) == 64
+        assert [row["filename"] for row in rows] == list(CURRENT_MIGRATIONS)
+        assert all(len(row["sha256"]) == 64 for row in rows)
         assert [row["tablename"] for row in tables] == sorted(CORRECTNESS_TABLES)
         assert all(await asyncio.gather(*(database.schema_ready() for database in databases)))
     finally:
@@ -137,6 +139,225 @@ async def test_failed_baseline_rolls_back_every_schema_effect(tmp_path: Path) ->
     finally:
         await database.close()
         await _drop_database(database_name)
+
+
+async def test_002_upgrades_legacy_rows_without_inventing_remote_request_facts(
+    tmp_path: Path,
+) -> None:
+    database_name, dsn = await _create_database("migration_002_upgrade")
+    baseline_bundle = tmp_path / "baseline-only"
+    baseline_bundle.mkdir()
+    shutil.copy2(ROOT / "migrations" / BASELINE, baseline_bundle / BASELINE)
+    database = Database(dsn)
+    account_id = uuid.uuid4()
+    try:
+        await database.connect()
+        await database.apply_migrations(baseline_bundle)
+        assert not await database.schema_ready()
+        async with database.require_pool().acquire() as conn:
+            await conn.execute(
+                "insert into billing_accounts(id,external_ref) values($1,$2)",
+                account_id,
+                f"migration-legacy-{account_id}",
+            )
+            await conn.execute(
+                """insert into checkout_claims(
+                       account_id,claim_token,plan_key,plan_interval,expires_at,
+                       client_request_key
+                     ) values($1,$2,'starter','month',clock_timestamp()+interval '1 hour',$3)""",
+                account_id,
+                uuid.uuid4(),
+                f"checkout-{uuid.uuid4()}",
+            )
+            await conn.execute(
+                """insert into credit_pack_orders(
+                       id,account_id,client_idempotency_key,stripe_request_key,
+                       pack_key,pack_credits,price_amount,currency,expires_days,
+                       price_lookup_key,claim_expires_at
+                     ) values($1,$2,$3,$4,'boost_100',100000000,900,'usd',365,
+                              'pack_boost_100',clock_timestamp()+interval '1 hour')""",
+                uuid.uuid4(),
+                account_id,
+                f"pack-client-{uuid.uuid4()}",
+                f"pack-stripe-{uuid.uuid4()}",
+            )
+            await conn.execute(
+                """insert into billing_plan_changes(
+                       id,account_id,idempotency_key,stripe_subscription_id,
+                       from_plan_key,from_interval,target_plan_key,target_interval,
+                       effective_mode,status,stripe_request_key,expected_grant_epoch,
+                       expected_subscription_status,expected_cancel_at_period_end
+                     ) values($1,$2,$3,'sub_legacy','starter','month','pro','month',
+                              'immediate','failed',$4,0,'active',false)""",
+                uuid.uuid4(),
+                account_id,
+                f"plan-client-{uuid.uuid4()}",
+                f"plan-stripe-{uuid.uuid4()}",
+            )
+
+        await database.apply_migrations(ROOT / "migrations")
+        assert await database.schema_ready()
+        async with database.require_pool().acquire() as conn:
+            history = await conn.fetch("select filename from schema_migrations order by filename")
+            legacy = await conn.fetchrow(
+                """select
+                     (select request_snapshot_version from checkout_claims
+                       where account_id=$1) as checkout_version,
+                     (select stripe_request_snapshot from checkout_claims
+                       where account_id=$1) as checkout_snapshot,
+                     (select request_snapshot_version from credit_pack_orders
+                       where account_id=$1) as pack_version,
+                     (select stripe_request_snapshot from credit_pack_orders
+                       where account_id=$1) as pack_snapshot,
+                     (select request_snapshot_version from billing_plan_changes
+                       where account_id=$1) as plan_version,
+                     (select stripe_request_snapshot from billing_plan_changes
+                       where account_id=$1) as plan_snapshot""",
+                account_id,
+            )
+        assert [row["filename"] for row in history] == list(CURRENT_MIGRATIONS)
+        assert legacy is not None
+        assert tuple(legacy) == (None, None, None, None, None, None)
+    finally:
+        await database.close()
+        await _drop_database(database_name)
+
+
+async def test_failed_002_rolls_back_columns_constraints_and_history(tmp_path: Path) -> None:
+    database_name, dsn = await _create_database("migration_002_atomic")
+    baseline_bundle = tmp_path / "baseline"
+    broken_bundle = tmp_path / "broken-002"
+    baseline_bundle.mkdir()
+    broken_bundle.mkdir()
+    shutil.copy2(ROOT / "migrations" / BASELINE, baseline_bundle / BASELINE)
+    shutil.copy2(ROOT / "migrations" / BASELINE, broken_bundle / BASELINE)
+    migration = (ROOT / "migrations" / REQUEST_SNAPSHOTS).read_text(encoding="utf-8")
+    (broken_bundle / REQUEST_SNAPSHOTS).write_text(
+        f"{migration}\nselect * from migration_002_statement_that_must_not_exist;\n",
+        encoding="utf-8",
+    )
+    database = Database(dsn)
+    try:
+        await database.connect()
+        await database.apply_migrations(baseline_bundle)
+        with pytest.raises(asyncpg.UndefinedTableError):
+            await database.apply_migrations(broken_bundle)
+        async with database.require_pool().acquire() as conn:
+            history = await conn.fetch("select filename from schema_migrations order by filename")
+            snapshot_columns = await conn.fetchval(
+                """select count(*) from information_schema.columns
+                     where table_schema='public'
+                       and table_name in (
+                         'checkout_claims','credit_pack_orders','billing_plan_changes'
+                       )
+                       and column_name in (
+                         'request_snapshot_version','stripe_request_snapshot'
+                       )"""
+            )
+        assert [row["filename"] for row in history] == [BASELINE]
+        assert snapshot_columns == 0
+
+        await database.apply_migrations(ROOT / "migrations")
+        assert await database.schema_ready()
+    finally:
+        await database.close()
+        await _drop_database(database_name)
+
+
+async def test_002_enforces_reserved_and_frozen_snapshot_states(
+    pool: asyncpg.Pool,
+) -> None:
+    account_id = uuid.uuid4()
+    pack_id = uuid.uuid4()
+    plan_change_id = uuid.uuid4()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "insert into billing_accounts(id,external_ref) values($1,$2)",
+            account_id,
+            f"migration-snapshot-{account_id}",
+        )
+        await conn.execute(
+            """insert into checkout_claims(
+                   account_id,claim_token,plan_key,plan_interval,expires_at,
+                   client_request_key,request_snapshot_version
+                 ) values($1,$2,'starter','month',clock_timestamp()+interval '1 hour',
+                          $3,0)""",
+            account_id,
+            uuid.uuid4(),
+            f"checkout-{uuid.uuid4()}",
+        )
+        await conn.execute(
+            """insert into credit_pack_orders(
+                   id,account_id,client_idempotency_key,stripe_request_key,
+                   pack_key,pack_credits,price_amount,currency,expires_days,
+                   price_lookup_key,claim_expires_at,request_snapshot_version
+                 ) values($1,$2,$3,$4,'boost_100',100000000,900,'usd',365,
+                          'pack_boost_100',clock_timestamp()+interval '1 hour',0)""",
+            pack_id,
+            account_id,
+            f"pack-client-{uuid.uuid4()}",
+            f"pack-stripe-{uuid.uuid4()}",
+        )
+        await conn.execute(
+            """insert into billing_plan_changes(
+                   id,account_id,idempotency_key,stripe_subscription_id,
+                   from_plan_key,from_interval,target_plan_key,target_interval,
+                   effective_mode,status,stripe_request_key,expected_grant_epoch,
+                   expected_subscription_status,expected_cancel_at_period_end,
+                   request_snapshot_version
+                 ) values($1,$2,$3,'sub_snapshot','starter','month','pro','month',
+                          'immediate','failed',$4,0,'active',false,0)""",
+            plan_change_id,
+            account_id,
+            f"plan-client-{uuid.uuid4()}",
+            f"plan-stripe-{uuid.uuid4()}",
+        )
+        rows = (
+            ("checkout_claims", "account_id", account_id),
+            ("credit_pack_orders", "id", pack_id),
+            ("billing_plan_changes", "id", plan_change_id),
+        )
+        for table, key, value in rows:
+            with pytest.raises(asyncpg.CheckViolationError):
+                async with conn.transaction():
+                    await conn.execute(
+                        f"update {table} set stripe_request_snapshot='{{}}'::jsonb where {key}=$1",
+                        value,
+                    )
+            await conn.execute(
+                f"update {table} set request_snapshot_version=1, "
+                f"stripe_request_snapshot='{{}}'::jsonb where {key}=$1",
+                value,
+            )
+            with pytest.raises(asyncpg.CheckViolationError):
+                async with conn.transaction():
+                    await conn.execute(
+                        f"update {table} set request_snapshot_version=2 where {key}=$1",
+                        value,
+                    )
+            with pytest.raises(asyncpg.CheckViolationError):
+                async with conn.transaction():
+                    await conn.execute(
+                        f"update {table} set stripe_request_snapshot=null where {key}=$1",
+                        value,
+                    )
+            # PostgreSQL CHECK constraints accept UNKNOWN unless the whole
+            # predicate is forced to TRUE.  This is the critical NULL-version +
+            # non-NULL-snapshot corruption case that migration 002 must reject.
+            with pytest.raises(asyncpg.CheckViolationError):
+                async with conn.transaction():
+                    await conn.execute(
+                        f"update {table} set request_snapshot_version=null where {key}=$1",
+                        value,
+                    )
+            for invalid_json in ("[]", '"scalar"', "null"):
+                with pytest.raises(asyncpg.CheckViolationError):
+                    async with conn.transaction():
+                        await conn.execute(
+                            f"update {table} set stripe_request_snapshot=$2::jsonb where {key}=$1",
+                            value,
+                            invalid_json,
+                        )
 
 
 async def test_pre_v3_history_is_rejected_without_partial_baseline() -> None:
@@ -205,7 +426,7 @@ async def test_pre_v3_binary_is_rejected_by_v3_history_without_schema_changes(
                       and column_name='payload_sha256'
                  )"""
         )
-    assert [row["filename"] for row in rows] == [BASELINE]
+    assert [row["filename"] for row in rows] == list(CURRENT_MIGRATIONS)
     assert payload_sha256_exists is False
 
 
@@ -232,7 +453,7 @@ async def test_v3_can_append_a_future_migration_that_reuses_an_old_suffix(
 ) -> None:
     future_bundle = tmp_path / "future-v3-migrations"
     shutil.copytree(ROOT / "migrations", future_bundle)
-    future_name = "002_plan_transitions.sql"
+    future_name = "003_plan_transitions.sql"
     (future_bundle / future_name).write_text("select 1;\n", encoding="utf-8")
     database = Database(TEST_DSN)
     database.pool = pool
@@ -241,7 +462,7 @@ async def test_v3_can_append_a_future_migration_that_reuses_an_old_suffix(
     async with pool.acquire() as conn:
         filenames = await conn.fetch("select filename from schema_migrations order by filename")
         await conn.execute("delete from schema_migrations where filename=$1", future_name)
-    assert [row["filename"] for row in filenames] == [BASELINE, future_name]
+    assert [row["filename"] for row in filenames] == [*CURRENT_MIGRATIONS, future_name]
 
 
 async def test_schema_ready_does_not_read_or_rehash_migration_contents(
@@ -291,7 +512,7 @@ async def test_migration_runner_rejects_changed_applied_file(
 ) -> None:
     migration_dir = tmp_path / "migrations"
     shutil.copytree(ROOT / "migrations", migration_dir)
-    filename = "002_checksum_probe.sql"
+    filename = "003_checksum_probe.sql"
     migration = migration_dir / filename
     migration.write_text("select 1;\n", encoding="utf-8")
     database = Database(TEST_DSN)
@@ -335,7 +556,7 @@ async def test_migration_runner_allows_database_ahead_of_binary(
     async with pool.acquire() as conn:
         await conn.execute(
             """insert into schema_migrations(filename,sha256)
-                 values('002_forward_probe.sql',$1)""",
+                 values('003_forward_probe.sql',$1)""",
             "a" * 64,
         )
     database = Database(TEST_DSN)
@@ -345,7 +566,7 @@ async def test_migration_runner_allows_database_ahead_of_binary(
     finally:
         async with pool.acquire() as conn:
             await conn.execute(
-                "delete from schema_migrations where filename='002_forward_probe.sql'"
+                "delete from schema_migrations where filename='003_forward_probe.sql'"
             )
 
 
@@ -356,12 +577,12 @@ async def test_schema_ready_allows_extra_forward_migration_history(
     database.pool = pool
     async with pool.acquire() as conn:
         await conn.execute(
-            "insert into schema_migrations(filename,sha256) values('002_removed.sql',$1)",
+            "insert into schema_migrations(filename,sha256) values('003_removed.sql',$1)",
             "a" * 64,
         )
     assert await database.schema_ready()
     async with pool.acquire() as conn:
-        await conn.execute("delete from schema_migrations where filename='002_removed.sql'")
+        await conn.execute("delete from schema_migrations where filename='003_removed.sql'")
     assert await database.schema_ready()
 
 
@@ -466,6 +687,8 @@ async def test_baseline_declares_exact_runtime_columns(pool: asyncpg.Pool) -> No
             "expires_days",
             "price_lookup_key",
             "request_customer_id",
+            "request_snapshot_version",
+            "stripe_request_snapshot",
             "checkout_status",
             "payment_status",
             "stripe_checkout_session_id",
@@ -530,6 +753,8 @@ async def test_baseline_declares_exact_runtime_columns(pool: asyncpg.Pool) -> No
             "expires_at",
             "client_request_key",
             "session_url",
+            "request_snapshot_version",
+            "stripe_request_snapshot",
             "created_at",
         },
         "billing_incidents": {
@@ -580,6 +805,8 @@ async def test_baseline_declares_exact_runtime_columns(pool: asyncpg.Pool) -> No
             "expected_entitlement_revoked",
             "settlement_invoice_id",
             "remote_started_at",
+            "request_snapshot_version",
+            "stripe_request_snapshot",
             "estimated_source_proration",
             "estimated_target_proration",
             "estimated_period_start",
@@ -638,7 +865,7 @@ async def test_baseline_declares_exact_runtime_columns(pool: asyncpg.Pool) -> No
     assert observed == expected
 
 
-async def test_v3_schema_catalog_fingerprint_is_exact(pool: asyncpg.Pool) -> None:
+async def test_v4_schema_catalog_fingerprint_is_exact(pool: asyncpg.Pool) -> None:
     async with pool.acquire() as conn:
         table_rows = await conn.fetch(
             """select tablename
@@ -725,7 +952,7 @@ async def test_v3_schema_catalog_fingerprint_is_exact(pool: asyncpg.Pool) -> Non
     }
     serialized = json.dumps(manifest, ensure_ascii=True, separators=(",", ":"))
     fingerprint = hashlib.sha256(serialized.encode()).hexdigest()
-    assert fingerprint == V3_SCHEMA_CATALOG_SHA256, fingerprint
+    assert fingerprint == V4_SCHEMA_CATALOG_SHA256, fingerprint
 
 
 async def test_baseline_preserves_ownership_causality_and_audit_contracts(

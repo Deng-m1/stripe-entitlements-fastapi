@@ -1,0 +1,96 @@
+{
+  "name": "@tosea/stripe-entitlements",
+  "version": "0.4.0",
+  "description": "Race-safe Stripe billing, SaaS entitlements, fractional credits, and credit packs for TypeScript",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Deng-m1/stripe-entitlements-fastapi.git",
+    "directory": "typescript"
+  },
+  "homepage": "https://github.com/Deng-m1/stripe-entitlements-fastapi/tree/main/typescript#readme",
+  "bugs": "https://github.com/Deng-m1/stripe-entitlements-fastapi/issues",
+  "keywords": [
+    "stripe",
+    "typescript",
+    "nextjs",
+    "postgresql",
+    "subscriptions",
+    "entitlements",
+    "credits",
+    "webhooks",
+    "idempotency",
+    "saas"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./next": {
+      "types": "./dist/next/index.d.ts",
+      "import": "./dist/next/index.js"
+    },
+    "./http": {
+      "types": "./dist/http/index.d.ts",
+      "import": "./dist/http/index.js"
+    },
+    "./node": {
+      "types": "./dist/node/index.d.ts",
+      "import": "./dist/node/index.js"
+    }
+  },
+  "bin": {
+    "stripe-entitlements": "./dist/node/bin.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    ".env.example",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "prebuild": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true })\"",
+    "build": "tsc -p tsconfig.build.json",
+    "postbuild": "node dist/build/copy-resources.js",
+    "prepack": "npm run build",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --project unit --project postgres",
+    "test:unit": "vitest run --project unit",
+    "test:postgres": "vitest run --project postgres",
+    "test:real-stripe": "bash scripts/run-real-stripe.sh",
+    "test:coverage": "vitest run --coverage --project unit --project postgres",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test:coverage && npm run build"
+  },
+  "dependencies": {
+    "jose": "6.2.10",
+    "pg": "8.23.0",
+    "smol-toml": "1.8.0",
+    "stripe": "22.6.0",
+    "zod": "4.5.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.2",
+    "@types/node": "22.20.1",
+    "@types/pg": "8.23.1",
+    "@vitest/coverage-v8": "4.1.11",
+    "eslint": "9.39.2",
+    "eslint-plugin-security": "3.0.1",
+    "prettier": "3.6.2",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.56.1",
+    "vitest": "4.1.11"
+  }
+}

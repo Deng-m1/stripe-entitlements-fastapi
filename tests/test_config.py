@@ -61,3 +61,38 @@ def test_settings_accept_explicit_test_and_live_secret_modes(secret_key: str) ->
     assert settings.stripe_secret_key == secret_key
     assert settings.product_line == "example-entitlements"
     assert settings.log_level == "INFO"
+
+
+def test_settings_load_bounded_database_pool_configuration() -> None:
+    settings = Settings(
+        **_valid(
+            database_pool_min=0,
+            database_pool_max=4,
+            database_pool_idle_timeout_ms=30_000,
+            database_connect_timeout_ms=5_000,
+        )
+    )  # type: ignore[arg-type]
+    assert settings.database_pool_min == 0
+    assert settings.database_pool_max == 4
+    assert settings.database_pool_idle_timeout_ms == 30_000
+    assert settings.database_connect_timeout_ms == 5_000
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("database_pool_min", -1),
+        ("database_pool_max", 0),
+        ("database_pool_max", 101),
+        ("database_pool_idle_timeout_ms", 999),
+        ("database_connect_timeout_ms", 120_001),
+    ],
+)
+def test_settings_reject_invalid_database_pool_configuration(field: str, value: int) -> None:
+    with pytest.raises(ValidationError):
+        Settings(**_valid(**{field: value}))  # type: ignore[arg-type]
+
+
+def test_settings_reject_database_pool_minimum_above_maximum() -> None:
+    with pytest.raises(ValidationError, match="DATABASE_POOL_MIN"):
+        Settings(**_valid(database_pool_min=5, database_pool_max=4))  # type: ignore[arg-type]

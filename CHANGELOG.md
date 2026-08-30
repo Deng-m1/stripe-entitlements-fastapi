@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- Prevent TypeScript subscription reconciliation from reusing a mutable Stripe
+  Subscription snapshot after losing its local projection compare-and-set. The bounded
+  retry now rereads and validates Stripe state; a second race stops fail-closed with a
+  durable incident instead of overwriting newer webhook status, cancellation, or period
+  facts.
+- Normalize every PostgreSQL `timestamptz` exposed by the TypeScript public and internal
+  HTTP contracts to RFC 3339 without truncating microseconds.
+- Make source-checkout CLI setup, packaged-catalog Vercel configuration, and the FastAPI
+  product-identity example reproducible, with documentation contract regressions.
+
+## 0.4.0 - 2026-08-29
+
+- Bump the coordinated Python, TypeScript, reference web, and citation metadata to
+  `0.4.0`; the immutable `v0.3.0` tag continues to identify the earlier Python-only
+  release line.
+- Add an independent TypeScript/Node/Next.js billing implementation over the canonical
+  PostgreSQL schema and `plans.toml`, including native webhook projection, both plan
+  transition templates, yearly grants, fractional credits, credit packs, reconciliation,
+  personal/team auth starters, internal entitlement APIs, Node CLI, Fetch facade, and
+  Next.js Route Handlers.
+- Add append-only migration `002_stripe_request_snapshots.sql` and versioned, validated
+  Stripe mutation snapshots for subscription Checkout, credit-pack Checkout, and plan
+  changes. Same-key unknown-result recovery now replays the frozen Price, URL, Customer
+  mode, product-line, API-version, parameters, and Stripe idempotency identity instead
+  of rereading mutable deployment configuration; legacy unfrozen remote mutations fail
+  closed for operator reconciliation.
+- Add TypeScript unit, golden-vector, PostgreSQL constraint/race, cross-runtime credit,
+  real Stripe test-mode, package-install, and selectable shared-browser E2E gates. The
+  browser runner now executes one Playwright journey against either Python or TypeScript
+  and retains the same signed-webhook/database verifier.
+- Add a pure TypeScript Vercel topology, npm adoption guide, environment template, package
+  metadata, and dual-runtime architecture/deployment documentation.
 - Add a stable Vercel Services topology that deploys the Next.js reference UI and the
   existing FastAPI billing core behind one domain, without requiring Railway or a second
   public backend deployment.

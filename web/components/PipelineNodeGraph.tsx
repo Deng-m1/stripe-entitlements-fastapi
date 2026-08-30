@@ -13,7 +13,7 @@ const NODES = [
   },
   {
     title: "Verify signature on raw body",
-    tech: "FastAPI",
+    tech: "FastAPI / Node",
     chip: "chip-mint",
   },
   {
@@ -28,7 +28,7 @@ const NODES = [
   },
   {
     title: "Project entitlements",
-    tech: "FastAPI",
+    tech: "FastAPI / Node",
     chip: "chip-mint",
   },
 ];

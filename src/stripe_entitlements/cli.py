@@ -52,7 +52,7 @@ async def _run_candidate_batch(
 
 async def _migrate() -> None:
     settings = get_database_settings()
-    db = Database(settings.database_url)
+    db = Database.from_settings(settings)
     await db.connect()
     try:
         await db.apply_migrations(default_migration_directory())
@@ -62,7 +62,7 @@ async def _migrate() -> None:
 
 async def _grant_due() -> None:
     settings = get_settings()
-    db = Database(settings.database_url)
+    db = Database.from_settings(settings)
     await db.connect()
     try:
         catalog = PlanCatalog.from_toml(settings.plan_catalog_path, settings.lookup_prefix)
@@ -108,7 +108,7 @@ async def _grant_due() -> None:
 
 async def _reconcile() -> None:
     settings = get_settings()
-    db = Database(settings.database_url)
+    db = Database.from_settings(settings)
     await db.connect()
     try:
         catalog = PlanCatalog.from_toml(settings.plan_catalog_path, settings.lookup_prefix)

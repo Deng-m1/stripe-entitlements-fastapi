@@ -8,7 +8,8 @@ export function SiteHeader() {
         <Link className="brand" href="/">
           <span aria-hidden="true" className="brand-mark" />
           <span>
-            Stripe Entitlements<span className="brand-suffix"> for FastAPI</span>
+            Stripe Entitlements
+            <span className="brand-suffix"> for FastAPI + TypeScript</span>
           </span>
         </Link>
         <nav aria-label="Primary navigation">

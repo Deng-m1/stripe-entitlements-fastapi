@@ -18,6 +18,10 @@ from stripe_entitlements.plan_changes import (
     PlanChangeEstimate,
     RemotePlanChange,
 )
+from stripe_entitlements.stripe_request_snapshots import (
+    build_credit_pack_checkout_request_snapshot,
+    build_subscription_checkout_request_snapshot,
+)
 from tests.conftest import TEST_DSN
 from tests.credit_helpers import PRO_CREDITS, STARTER_CREDITS
 
@@ -53,22 +57,66 @@ class IdentityAuth:
 class FakeBillingGateway:
     def __init__(self) -> None:
         self.secret_key = "sk_test_fake_billing_gateway"
+        self.api_version = "2026-06-24.dahlia"
+        self.product_line = "example-entitlements"
+        self.checkout_success_url = "http://localhost:3000/billing/success"
+        self.checkout_cancel_url = "http://localhost:3000/pricing"
+        self.portal_return_url = "http://localhost:3000/account"
+        self.portal_configuration_id = "bpc_test"
         self.checkout_kwargs = None
         self.pack_checkout_kwargs = None
         self.portal_keys: list[str] = []
+        self.prepare_calls = 0
+        self.preview_calls = 0
         self.apply_calls = 0
         self.last_apply_kwargs = None
 
-    async def create_checkout_session(self, **kwargs):  # type: ignore[no-untyped-def]
+    async def prepare_checkout_session(self, **kwargs):  # type: ignore[no-untyped-def]
         self.checkout_kwargs = kwargs
-        return "cs_api", "https://checkout.test/api"
+        return build_subscription_checkout_request_snapshot(
+            account_id=kwargs["account_id"],
+            claim_token=kwargs["claim_token"],
+            customer_id=kwargs["customer_id"],
+            price_id="price_api_subscription",
+            lookup_key=kwargs["lookup_key"],
+            currency=kwargs["expected_currency"],
+            unit_amount=kwargs["expected_unit_amount"],
+            interval=kwargs["expected_interval"],
+            plan_key=kwargs["plan_key"],
+            product_line="example-entitlements",
+            success_url="https://app.example.test/success",
+            cancel_url="https://app.example.test/pricing",
+            expires_at=int(kwargs["expires_at"].timestamp()),
+            request_api_version="2026-06-24.dahlia",
+        )
 
-    async def create_credit_pack_checkout_session(
+    async def prepare_credit_pack_checkout_session(
         self,
         **kwargs,  # type: ignore[no-untyped-def]
-    ) -> tuple[str, str]:
+    ) -> dict[str, object]:
         self.pack_checkout_kwargs = kwargs
-        return "cs_pack_api", "https://checkout.test/pack"
+        return build_credit_pack_checkout_request_snapshot(
+            order_id=kwargs["order_id"],
+            account_id=kwargs["account_id"],
+            customer_id=kwargs["customer_id"],
+            price_id="price_api_pack",
+            lookup_key=kwargs["lookup_key"],
+            currency=kwargs["expected_currency"],
+            unit_amount=kwargs["expected_unit_amount"],
+            pack_key=kwargs["pack_key"],
+            pack_credits=kwargs["pack_credits"],
+            expires_days=kwargs["expires_days"],
+            product_line="example-entitlements",
+            success_url="https://app.example.test/success",
+            cancel_url="https://app.example.test/pricing",
+            expires_at=int(kwargs["expires_at"].timestamp()),
+            request_api_version="2026-06-24.dahlia",
+        )
+
+    async def create_checkout_session_from_snapshot(self, snapshot):  # type: ignore[no-untyped-def]
+        if snapshot["kind"] == "credit_pack":
+            return "cs_pack_api", "https://checkout.test/pack"
+        return "cs_api", "https://checkout.test/api"
 
     async def create_portal_session(
         self, *, customer_id: str, idempotency_key: str
@@ -84,6 +132,7 @@ class FakeBillingGateway:
         **kwargs,  # type: ignore[no-untyped-def]
     ) -> PlanChangeContext:
         del kwargs
+        self.prepare_calls += 1
         return PlanChangeContext(
             subscription_id,
             "si_api",
@@ -101,6 +150,7 @@ class FakeBillingGateway:
         context: PlanChangeContext,
         **kwargs,  # type: ignore[no-untyped-def]
     ) -> PlanChangeEstimate:
+        self.preview_calls += 1
         if kwargs.get("policy") == "prorated_delta":
             proration_date = int(kwargs["proration_date"])
             return PlanChangeEstimate(
@@ -195,11 +245,13 @@ def test_checkout_success_url_base_rejects_query_and_fragment_at_startup(
     # model_copy deliberately bypasses Pydantic validation and proves the runtime
     # kernel independently enforces the same integration contract.
     settings = _settings().model_copy(update={"checkout_success_url": checkout_success_url})
+    gateway = FakeBillingGateway()
+    gateway.checkout_success_url = checkout_success_url
     with pytest.raises(ValueError, match="query or fragment"):
         create_app(
             settings,
             database=Database(TEST_DSN),
-            gateway=FakeBillingGateway(),  # type: ignore[arg-type]
+            gateway=gateway,  # type: ignore[arg-type]
         )
 
 
@@ -286,6 +338,72 @@ def test_injected_gateway_mode_must_match_settings() -> None:
     settings = _settings().model_copy(update={"stripe_secret_key": "sk_live_dummy"})
     with pytest.raises(ValueError, match="modes do not match"):
         create_app(settings, database=Database(TEST_DSN), gateway=FakeBillingGateway())  # type: ignore[arg-type]
+
+
+def test_injected_gateway_api_version_must_match_settings() -> None:
+    gateway = FakeBillingGateway()
+    gateway.api_version = "2025-12-15.clover"
+    with pytest.raises(ValueError, match="Stripe API versions do not match"):
+        create_app(
+            _settings(),
+            database=Database(TEST_DSN),
+            gateway=gateway,  # type: ignore[arg-type]
+        )
+
+
+def test_injected_gateway_product_line_must_match_before_database_connect() -> None:
+    gateway = FakeBillingGateway()
+    gateway.product_line = "different-product-line"
+    database = Database(TEST_DSN)
+    with pytest.raises(ValueError, match="product lines do not match"):
+        create_app(
+            _settings(),
+            database=database,
+            gateway=gateway,  # type: ignore[arg-type]
+        )
+    assert database.pool is None
+
+
+@pytest.mark.parametrize(
+    ("attribute", "value", "message"),
+    [
+        (
+            "checkout_success_url",
+            "https://different.example/billing/success",
+            "Checkout success URLs do not match",
+        ),
+        (
+            "checkout_cancel_url",
+            "https://different.example/pricing",
+            "Checkout cancel URLs do not match",
+        ),
+        (
+            "portal_return_url",
+            "https://different.example/account",
+            "Portal return URLs do not match",
+        ),
+        (
+            "portal_configuration_id",
+            "bpc_different",
+            "Portal configuration IDs do not match",
+        ),
+    ],
+)
+def test_injected_gateway_urls_and_portal_configuration_must_match_before_connect(
+    attribute: str,
+    value: str,
+    message: str,
+) -> None:
+    gateway = FakeBillingGateway()
+    setattr(gateway, attribute, value)
+    database = Database(TEST_DSN)
+    with pytest.raises(ValueError, match=message):
+        create_app(
+            _settings(),
+            database=database,
+            gateway=gateway,  # type: ignore[arg-type]
+        )
+    assert database.pool is None
 
 
 def test_settings_reject_non_secret_stripe_key_even_with_injected_gateway() -> None:
@@ -486,6 +604,9 @@ async def test_checkout_test_mode_requirement_rejects_live_before_account_write(
     )
     gateway = FakeBillingGateway()
     gateway.secret_key = "sk_live_fake_billing_gateway"
+    gateway.checkout_success_url = settings.checkout_success_url
+    gateway.checkout_cancel_url = settings.checkout_cancel_url
+    gateway.portal_return_url = settings.portal_return_url
     database = Database(TEST_DSN)
     app = create_app(
         settings,
@@ -524,6 +645,149 @@ async def test_checkout_test_mode_requirement_rejects_live_before_account_write(
     assert gateway.checkout_kwargs is None
 
 
+async def test_stripe_mode_requirement_is_uniform_and_precedes_billing_io(
+    monkeypatch: pytest.MonkeyPatch,
+    postgres_container: None,
+) -> None:
+    requests = [
+        (
+            "checkout",
+            "/api/checkout",
+            {"Idempotency-Key": "mode-checkout"},
+            {
+                "plan_key": "starter",
+                "interval": "month",
+                "success_url": "http://localhost:3000/billing/success",
+                "cancel_url": "http://localhost:3000/pricing",
+            },
+        ),
+        (
+            "credit_pack",
+            "/api/credit-packs/checkout",
+            {"Idempotency-Key": "mode-pack"},
+            {
+                "pack_key": "boost-100",
+                "success_url": "http://localhost:3000/billing/success",
+                "cancel_url": "http://localhost:3000/pricing",
+            },
+        ),
+        (
+            "portal",
+            "/api/billing/portal",
+            {"Idempotency-Key": "mode-portal"},
+            {"return_url": "http://localhost:3000/account"},
+        ),
+        (
+            "preview",
+            "/api/billing/change/preview",
+            {"Idempotency-Key": "mode-preview"},
+            {"plan_key": "pro", "interval": "month"},
+        ),
+        (
+            "confirm",
+            "/api/billing/change/confirm",
+            {},
+            {"preview_id": "00000000-0000-4000-8000-000000000001"},
+        ),
+    ]
+
+    async def reject_business_account_lookup(external_ref: str) -> None:
+        raise AssertionError(f"unexpected billing account lookup for {external_ref}")
+
+    def assert_gateway_idle(gateway: FakeBillingGateway) -> None:
+        assert gateway.checkout_kwargs is None
+        assert gateway.pack_checkout_kwargs is None
+        assert gateway.portal_keys == []
+        assert gateway.prepare_calls == 0
+        assert gateway.preview_calls == 0
+        assert gateway.apply_calls == 0
+
+    test_gateway = FakeBillingGateway()
+    test_database = Database(TEST_DSN)
+    monkeypatch.setattr(
+        test_database,
+        "existing_account_for_external_ref",
+        reject_business_account_lookup,
+    )
+    test_app = create_app(
+        _settings(),
+        database=test_database,
+        gateway=test_gateway,  # type: ignore[arg-type]
+        auth_adapter=StaticAuth(),
+    )
+    invalid_responses: dict[str, httpx.Response] = {}
+    async with test_app.router.lifespan_context(test_app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=test_app), base_url="http://test"
+        ) as client:
+            for name, path, headers, body in requests:
+                invalid_responses[name] = await client.post(
+                    path,
+                    headers={
+                        "Authorization": "Bearer ignored",
+                        "X-Stripe-Mode-Requirement": "live",
+                        **headers,
+                    },
+                    json=body,
+                )
+
+    assert set(invalid_responses) == {name for name, *_ in requests}
+    for response in invalid_responses.values():
+        assert response.status_code == 400
+        assert response.json() == {"detail": "X-Stripe-Mode-Requirement must be test when supplied"}
+    assert_gateway_idle(test_gateway)
+
+    live_settings = _settings().model_copy(
+        update={
+            "stripe_secret_key": "sk_live_dummy",
+            "checkout_success_url": "https://app.example/billing/success",
+            "checkout_cancel_url": "https://app.example/pricing",
+            "portal_return_url": "https://app.example/account",
+            "frontend_origins": "https://app.example",
+        }
+    )
+    live_gateway = FakeBillingGateway()
+    live_gateway.secret_key = "sk_live_fake_billing_gateway"
+    live_gateway.checkout_success_url = live_settings.checkout_success_url
+    live_gateway.checkout_cancel_url = live_settings.checkout_cancel_url
+    live_gateway.portal_return_url = live_settings.portal_return_url
+    live_database = Database(TEST_DSN)
+    monkeypatch.setattr(
+        live_database,
+        "existing_account_for_external_ref",
+        reject_business_account_lookup,
+    )
+    live_app = create_app(
+        live_settings,
+        database=live_database,
+        gateway=live_gateway,  # type: ignore[arg-type]
+        auth_adapter=StaticAuth(),
+    )
+    live_responses: dict[str, httpx.Response] = {}
+    async with live_app.router.lifespan_context(live_app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=live_app), base_url="http://test"
+        ) as client:
+            for name, path, headers, body in requests:
+                live_responses[name] = await client.post(
+                    path,
+                    headers={
+                        "Authorization": "Bearer ignored",
+                        "X-Stripe-Mode-Requirement": "test",
+                        **headers,
+                    },
+                    json=body,
+                )
+
+    assert set(live_responses) == {name for name, *_ in requests}
+    for response in live_responses.values():
+        assert response.status_code == 409
+        assert response.json() == {
+            "detail": "billing backend is not in the required Stripe test mode"
+        }
+    assert_gateway_idle(live_gateway)
+
+
 async def test_health_returns_503_when_schema_is_not_ready(
     postgres_container: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -559,8 +823,8 @@ async def test_checkout_invalid_remote_identity_returns_retryable_error_and_keep
     postgres_container: None,
 ) -> None:
     class InvalidCheckoutGateway(FakeBillingGateway):
-        async def create_checkout_session(self, **kwargs):  # type: ignore[no-untyped-def]
-            self.checkout_kwargs = kwargs
+        async def create_checkout_session_from_snapshot(self, snapshot):  # type: ignore[no-untyped-def]
+            del snapshot
             return "cs_invalid", "http://checkout.invalid/session"
 
     gateway = InvalidCheckoutGateway()
@@ -593,6 +857,312 @@ async def test_checkout_invalid_remote_identity_returns_retryable_error_and_keep
     assert response.status_code == 502
     assert "retry the same request" in response.json()["detail"]
     assert claim is not None and tuple(claim) == ("invalid-remote-session", None)
+
+
+async def test_subscription_frozen_recovery_survives_catalog_and_url_drift(
+    postgres_container: None,
+) -> None:
+    class UnknownOnceGateway(FakeBillingGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.create_calls = 0
+
+        async def create_checkout_session_from_snapshot(self, snapshot):  # type: ignore[no-untyped-def]
+            self.create_calls += 1
+            if self.create_calls == 1:
+                raise TimeoutError("unknown Stripe outcome")
+            return await super().create_checkout_session_from_snapshot(snapshot)
+
+    gateway = UnknownOnceGateway()
+    database = Database(TEST_DSN)
+    auth = IdentityAuth("subscription-recovery-owner", "owner@example.test")
+    app = create_app(
+        _settings(),
+        database=database,
+        gateway=gateway,  # type: ignore[arg-type]
+        auth_adapter=auth,
+    )
+    headers = {"Authorization": "Bearer ignored", "Idempotency-Key": "frozen-sub"}
+    valid = {
+        "plan_key": "starter",
+        "interval": "month",
+        "success_url": "http://localhost:3000/billing/success",
+        "cancel_url": "http://localhost:3000/pricing",
+    }
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            first = await client.post("/api/checkout", headers=headers, json=valid)
+            app.state.stripe_entitlements.catalog.plans.pop("starter")
+            recovered = await client.post(
+                "/api/checkout",
+                headers=headers,
+                json={
+                    **valid,
+                    "success_url": "https://configuration-drift.invalid/success",
+                    "cancel_url": "https://configuration-drift.invalid/cancel",
+                },
+            )
+            wrong_target = await client.post(
+                "/api/checkout",
+                headers=headers,
+                json={**valid, "plan_key": "pro"},
+            )
+            new_key = await client.post(
+                "/api/checkout",
+                headers={**headers, "Idempotency-Key": "new-missing-plan"},
+                json=valid,
+            )
+            auth.identity = AuthenticatedIdentity("subscription-recovery-other")
+            wrong_owner = await client.post("/api/checkout", headers=headers, json=valid)
+        async with database.require_pool().acquire() as conn:
+            claims = await conn.fetch(
+                """select request_snapshot_version,session_id
+                     from checkout_claims order by client_request_key"""
+            )
+
+    assert first.status_code == 502
+    assert recovered.status_code == 200
+    assert recovered.json() == {"url": "https://checkout.test/api"}
+    assert wrong_target.status_code == 409
+    assert new_key.status_code == 400
+    assert wrong_owner.status_code == 400
+    assert gateway.create_calls == 2
+    assert len(claims) == 1
+    assert tuple(claims[0]) == (1, "cs_api")
+
+
+async def test_credit_pack_frozen_recovery_survives_catalog_and_url_drift(
+    postgres_container: None,
+) -> None:
+    class UnknownOnceGateway(FakeBillingGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.create_calls = 0
+
+        async def create_checkout_session_from_snapshot(self, snapshot):  # type: ignore[no-untyped-def]
+            self.create_calls += 1
+            if self.create_calls == 1:
+                raise TimeoutError("unknown Stripe outcome")
+            return await super().create_checkout_session_from_snapshot(snapshot)
+
+    gateway = UnknownOnceGateway()
+    database = Database(TEST_DSN)
+    auth = IdentityAuth("pack-recovery-owner", "owner@example.test")
+    app = create_app(
+        _settings(),
+        database=database,
+        gateway=gateway,  # type: ignore[arg-type]
+        auth_adapter=auth,
+    )
+    headers = {"Authorization": "Bearer ignored", "Idempotency-Key": "frozen-pack"}
+    valid = {
+        "pack_key": "boost-100",
+        "success_url": "http://localhost:3000/billing/success",
+        "cancel_url": "http://localhost:3000/pricing",
+    }
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            first = await client.post("/api/credit-packs/checkout", headers=headers, json=valid)
+            app.state.stripe_entitlements.catalog.credit_packs.pop("boost-100")
+            recovered = await client.post(
+                "/api/credit-packs/checkout",
+                headers=headers,
+                json={
+                    **valid,
+                    "success_url": "https://configuration-drift.invalid/success",
+                    "cancel_url": "https://configuration-drift.invalid/cancel",
+                },
+            )
+            wrong_target = await client.post(
+                "/api/credit-packs/checkout",
+                headers=headers,
+                json={**valid, "pack_key": "boost-500"},
+            )
+            new_key = await client.post(
+                "/api/credit-packs/checkout",
+                headers={**headers, "Idempotency-Key": "new-missing-pack"},
+                json=valid,
+            )
+            auth.identity = AuthenticatedIdentity("pack-recovery-other")
+            wrong_owner = await client.post(
+                "/api/credit-packs/checkout", headers=headers, json=valid
+            )
+        async with database.require_pool().acquire() as conn:
+            orders = await conn.fetch(
+                """select request_snapshot_version,stripe_checkout_session_id
+                     from credit_pack_orders order by client_idempotency_key"""
+            )
+
+    assert first.status_code == 502
+    assert recovered.status_code == 200
+    assert recovered.json() == {
+        "session_id": "cs_pack_api",
+        "url": "https://checkout.test/pack",
+    }
+    assert wrong_target.status_code == 409
+    assert new_key.status_code == 400
+    assert wrong_owner.status_code == 400
+    assert gateway.create_calls == 2
+    assert len(orders) == 1
+    assert tuple(orders[0]) == (1, "cs_pack_api")
+
+
+async def test_legacy_checkout_snapshots_map_to_conflict_without_gateway_io(
+    postgres_container: None,
+) -> None:
+    gateway = FakeBillingGateway()
+    database = Database(TEST_DSN)
+    auth = IdentityAuth("legacy-checkout-owner")
+    app = create_app(
+        _settings(),
+        database=database,
+        gateway=gateway,  # type: ignore[arg-type]
+        auth_adapter=auth,
+    )
+    async with app.router.lifespan_context(app):
+        kernel = app.state.stripe_entitlements
+        account = await database.account_for_external_ref("legacy-checkout-owner")
+        checkout = await kernel.require_services().checkout.reserve(
+            str(account["id"]), "starter", "month", request_key="legacy-sub"
+        )
+        async with database.require_pool().acquire() as conn:
+            await conn.execute(
+                """update checkout_claims set request_snapshot_version=null
+                     where account_id=$1::uuid""",
+                account["id"],
+            )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            subscription = await client.post(
+                "/api/checkout",
+                headers={
+                    "Authorization": "Bearer ignored",
+                    "Idempotency-Key": "legacy-sub",
+                },
+                json={
+                    "plan_key": "starter",
+                    "interval": "month",
+                    "success_url": "http://localhost:3000/billing/success",
+                    "cancel_url": "http://localhost:3000/pricing",
+                },
+            )
+
+            auth.identity = AuthenticatedIdentity("legacy-pack-owner")
+            pack_account = await database.account_for_external_ref("legacy-pack-owner")
+            pack = kernel.catalog.require_credit_pack("boost-100")
+            order = await kernel.require_services().credit_packs.reserve(
+                str(pack_account["id"]), pack, "legacy-pack"
+            )
+            async with database.require_pool().acquire() as conn:
+                await conn.execute(
+                    """update credit_pack_orders set request_snapshot_version=null
+                         where id=$1::uuid""",
+                    order.order_id,
+                )
+            credit_pack = await client.post(
+                "/api/credit-packs/checkout",
+                headers={
+                    "Authorization": "Bearer ignored",
+                    "Idempotency-Key": "legacy-pack",
+                },
+                json={
+                    "pack_key": "boost-100",
+                    "success_url": "http://localhost:3000/billing/success",
+                    "cancel_url": "http://localhost:3000/pricing",
+                },
+            )
+
+    assert checkout.request_snapshot_version == 0
+    assert subscription.status_code == 409
+    assert "predates durable request snapshots" in subscription.json()["detail"]
+    assert credit_pack.status_code == 409
+    assert "predates durable request snapshots" in credit_pack.json()["detail"]
+    assert gateway.checkout_kwargs is None
+    assert gateway.pack_checkout_kwargs is None
+
+
+async def test_malformed_frozen_checkout_snapshots_require_operator_reconciliation(
+    postgres_container: None,
+) -> None:
+    gateway = FakeBillingGateway()
+    database = Database(TEST_DSN)
+    auth = IdentityAuth("malformed-checkout-owner")
+    app = create_app(
+        _settings(),
+        database=database,
+        gateway=gateway,  # type: ignore[arg-type]
+        auth_adapter=auth,
+    )
+    async with app.router.lifespan_context(app):
+        kernel = app.state.stripe_entitlements
+        account = await database.account_for_external_ref("malformed-checkout-owner")
+        await kernel.require_services().checkout.reserve(
+            str(account["id"]), "starter", "month", request_key="malformed-sub"
+        )
+        async with database.require_pool().acquire() as conn:
+            await conn.execute(
+                """update checkout_claims
+                      set request_snapshot_version=1,stripe_request_snapshot='{}'::jsonb
+                    where account_id=$1::uuid""",
+                account["id"],
+            )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            subscription = await client.post(
+                "/api/checkout",
+                headers={
+                    "Authorization": "Bearer ignored",
+                    "Idempotency-Key": "malformed-sub",
+                },
+                json={
+                    "plan_key": "starter",
+                    "interval": "month",
+                    "success_url": "http://localhost:3000/billing/success",
+                    "cancel_url": "http://localhost:3000/pricing",
+                },
+            )
+
+            auth.identity = AuthenticatedIdentity("malformed-pack-owner")
+            pack_account = await database.account_for_external_ref("malformed-pack-owner")
+            order = await kernel.require_services().credit_packs.reserve(
+                str(pack_account["id"]),
+                kernel.catalog.require_credit_pack("boost-100"),
+                "malformed-pack",
+            )
+            async with database.require_pool().acquire() as conn:
+                await conn.execute(
+                    """update credit_pack_orders
+                          set request_snapshot_version=1,
+                              stripe_request_snapshot='{}'::jsonb
+                        where id=$1::uuid""",
+                    order.order_id,
+                )
+            credit_pack = await client.post(
+                "/api/credit-packs/checkout",
+                headers={
+                    "Authorization": "Bearer ignored",
+                    "Idempotency-Key": "malformed-pack",
+                },
+                json={
+                    "pack_key": "boost-100",
+                    "success_url": "http://localhost:3000/billing/success",
+                    "cancel_url": "http://localhost:3000/pricing",
+                },
+            )
+
+    assert subscription.status_code == 409
+    assert "operator reconciliation is required" in subscription.json()["detail"]
+    assert credit_pack.status_code == 409
+    assert "operator reconciliation is required" in credit_pack.json()["detail"]
+    assert gateway.checkout_kwargs is None
+    assert gateway.pack_checkout_kwargs is None
 
 
 async def test_account_entitlements_fail_closed_without_database_clock(
@@ -996,6 +1566,73 @@ async def test_http_preview_confirm_contract(postgres_container: None) -> None:
     assert confirm.status_code == 200, confirm.text
     assert confirm.json()["status"] == "confirmed"
     assert gateway.apply_calls == 1
+
+
+async def test_malformed_plan_change_snapshot_requires_operator_reconciliation_without_io(
+    postgres_container: None,
+) -> None:
+    gateway = FakeBillingGateway()
+    database = Database(TEST_DSN)
+    app = create_app(
+        _settings(),
+        database=database,
+        gateway=gateway,  # type: ignore[arg-type]
+        auth_adapter=StaticAuth(),
+    )
+    headers = {
+        "Authorization": "Bearer ignored",
+        "Idempotency-Key": "malformed-plan-snapshot",
+    }
+    async with app.router.lifespan_context(app):
+        account = await database.account_for_external_ref("api-user")
+        period_end = datetime(2030, 8, 1, tzinfo=UTC)
+        async with database.require_pool().acquire() as conn:
+            await conn.execute(
+                """update billing_accounts set stripe_customer_id='cus_api',
+                     stripe_subscription_id='sub_api',plan_key='starter',plan_interval='month',
+                     subscription_status='active',current_period_end=$2,
+                     entitlement_period_end=$2,credit_expires_at=$2
+                     where id=$1""",
+                account["id"],
+                period_end,
+            )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            preview = await client.post(
+                "/api/billing/change/preview",
+                headers=headers,
+                json={"plan_key": "pro", "interval": "month"},
+            )
+            preview_id = preview.json()["preview_id"]
+            calls_after_preview = (
+                gateway.prepare_calls,
+                gateway.preview_calls,
+                gateway.apply_calls,
+            )
+            async with database.require_pool().acquire() as conn:
+                await conn.execute(
+                    """update billing_plan_changes
+                          set request_snapshot_version=1,
+                              stripe_request_snapshot='{}'::jsonb
+                        where id=$1::uuid""",
+                    preview_id,
+                )
+            confirm = await client.post(
+                "/api/billing/change/confirm",
+                headers={"Authorization": "Bearer ignored"},
+                json={"preview_id": preview_id},
+            )
+
+    assert preview.status_code == 200, preview.text
+    assert confirm.status_code == 409
+    assert "operator reconciliation is required" in confirm.json()["detail"]
+    assert calls_after_preview == (1, 1, 0)
+    assert (
+        gateway.prepare_calls,
+        gateway.preview_calls,
+        gateway.apply_calls,
+    ) == calls_after_preview
 
 
 async def test_http_prorated_delta_contract_is_explicit_and_server_calculated(

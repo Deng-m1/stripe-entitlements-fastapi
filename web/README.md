@@ -106,8 +106,12 @@ subdomains. Arbitrary HTTP(S) destinations are rejected.
       "description": "Core conversion tools for individual workflows.",
       "display_order": 10,
       "prices": {
-        "month": {"currency": "usd", "unit_amount": 1900, "interval": "month"},
-        "year": {"currency": "usd", "unit_amount": 13700, "interval": "year"}
+        "month": {
+          "currency": "usd",
+          "unit_amount": 1900,
+          "interval": "month"
+        },
+        "year": { "currency": "usd", "unit_amount": 13700, "interval": "year" }
       },
       "entitlements": [
         {
@@ -130,7 +134,7 @@ subdomains. Arbitrary HTTP(S) destinations are rejected.
       "credits": "100",
       "credits_atoms": "100000000",
       "credit_scale": 1000000,
-      "price": {"currency": "usd", "unit_amount": 1500},
+      "price": { "currency": "usd", "unit_amount": 1500 },
       "expires_days": 365
     }
   ]
@@ -429,7 +433,7 @@ mode-`0600` `E2E_STORAGE_STATE` for the same one-run subject as `E2E_EXTERNAL_RE
 Prefer the isolated full-stack runner and follow all prerequisites in
 [the browser E2E runbook](../docs/BROWSER_E2E.md).
 
-The `0.3.0` gate covers exact fractional-credit decoding, subscription/purchased balance
+The `0.4.0` gate covers exact fractional-credit decoding, subscription/purchased balance
 separation, credit-pack UI, annual pricing math, both transition policies, reusable
 billing intents, Checkout/Portal redirect boundaries, strict Stripe.js result validation,
 webhook polling, browser secret isolation, security headers, SEO metadata/JSON-LD, and
@@ -439,5 +443,5 @@ Checkout, and pack `payment_intent.succeeded`; incidental account-related Events
 audited separately and never turned into a fixed total-count assertion. Exact pass counts
 and network artifacts must be recorded against the final commit in the repository release
 checklist and browser runbook. Earlier `0.2.x`, three-essential-Event, and temporary-
-endpoint artifacts are historical test-mode evidence, not `0.3.0` or live-production
+endpoint artifacts are historical test-mode evidence, not `0.4.0` or live-production
 proof.

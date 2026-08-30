@@ -64,17 +64,21 @@ def test_default_resources_ignore_untrusted_current_working_directory(
     assert migrations != shadow_migrations.resolve()
     assert catalog.name == "plans.toml"
     assert (migrations / "001_v3_baseline.sql").is_file()
+    assert (migrations / "002_stripe_request_snapshots.sql").is_file()
 
 
 def test_default_repository_resources_are_complete() -> None:
     catalog = Path(default_plan_catalog_path())
     migrations = default_migration_directory()
     assert catalog.is_file()
-    assert [path.name for path in sorted(migrations.glob("*.sql"))] == ["001_v3_baseline.sql"]
+    assert [path.name for path in sorted(migrations.glob("*.sql"))] == [
+        "001_v3_baseline.sql",
+        "002_stripe_request_snapshots.sql",
+    ]
 
 
 def test_source_version_matches_release() -> None:
-    assert __version__ == "0.3.0"
+    assert __version__ == "0.4.0"
 
 
 async def test_migrate_requires_only_database_configuration(
@@ -376,6 +380,10 @@ async def test_migrate_uses_resolved_resource_and_always_closes(
         def __init__(self, dsn: str) -> None:
             calls.append(("init", dsn))
 
+        @classmethod
+        def from_settings(cls, settings: DatabaseSettings) -> FakeDatabase:
+            return cls(settings.database_url)
+
         async def connect(self) -> None:
             calls.append("connect")
 
@@ -411,6 +419,10 @@ async def test_reconcile_cli_uses_database_clock_and_excludes_attempted_accounts
     class FakeDatabase:
         def __init__(self, dsn: str) -> None:
             calls.append(("database", dsn))
+
+        @classmethod
+        def from_settings(cls, settings) -> FakeDatabase:  # type: ignore[no-untyped-def]
+            return cls(settings.database_url)
 
         async def connect(self) -> None:
             calls.append("connect")
@@ -548,7 +560,7 @@ async def test_cli_doctor_json_is_machine_readable_and_uses_failure_exit_contrac
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     report = DoctorReport(
-        "0.3.0",
+        "0.4.0",
         (DoctorCheck("example", "fail", "safe failure"),),
     )
 

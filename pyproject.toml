@@ -1,6 +1,6 @@
 [project]
 name = "stripe-entitlements-fastapi"
-version = "0.3.0"
+version = "0.4.0"
 description = "Race-safe Stripe billing, SaaS entitlements, fractional credits, and credit packs for FastAPI"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -103,15 +103,20 @@ include = [
   "/examples",
   "/scripts",
   "/tests",
+  "/typescript",
   "/web",
   "/Dockerfile",
   "/docker-compose.yml",
   "/LICENSE",
   "/NOTICE",
   "/vercel.json",
+  "/vercel.typescript.json",
   "/vercel_app.py",
 ]
 exclude = [
+  "/typescript/coverage",
+  "/typescript/dist",
+  "/typescript/node_modules",
   "/web/.next",
   "/web/node_modules",
   "/web/playwright-report",

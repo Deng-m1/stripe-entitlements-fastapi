@@ -4,25 +4,27 @@ This guide explains how to connect the repository to an existing user system,
 organization model, product jobs, and frontend. It distinguishes code this repository
 already implements from policy and coordination that the host application must own.
 
-The current working tree supports both a standalone FastAPI billing application and
-native installation into an existing FastAPI root through `BillingKernel`,
-`create_billing_router`, and `install_billing`. It also includes production-oriented
-personal/team JWT authentication starters, an in-process `EntitlementService`, and an
-optional owner-bound internal workload router. It is still not a language-neutral SDK
-or a complete product/Job framework.
+The current working tree supports two independent backend implementations. Python can
+run as a standalone FastAPI billing application or install into an existing FastAPI
+root. TypeScript can run as a standalone Node service, a Fetch-compatible handler, or
+native Next.js App Router Route Handlers. Both include production-oriented personal/team
+JWT authentication starters, an in-process `EntitlementService`, and an optional
+owner-bound internal workload boundary. Neither is a complete product/Job framework.
 
-This guide assumes an exact release-tag source checkout or the matching source
-distribution. Until a matching 0.3 tag and published artifact exist, pin the exact
+This guide assumes an exact release-tag source checkout or a matching Python/npm
+artifact. Until a matching tag and published artifact exist, pin the exact
 reviewed commit rather than assuming that the latest older tag or a package index
-contains this code. The Wheel deliberately contains only the Python backend runtime,
-migrations, and catalog. The source distribution additionally contains `.env` templates,
+contains this code. The Wheel contains the Python backend runtime, migrations, and
+catalog; the npm tarball contains the TypeScript runtime, declarations, CLI, migrations,
+and catalog. The source distribution additionally contains `.env` templates,
 operator scripts, Docker/Compose files, auth and Job examples, tests, and the Next.js
 reference UI needed by the end-to-end commands in this guide.
 
 For a published version tag, the repository release workflow attaches both Python
-distributions and their checksums to the GitHub Release and records the immutable GHCR
-container digest. That is distinct from PyPI publication; do not install an unrelated or
-older package-index artifact merely because its name matches.
+distributions, the verified TypeScript npm tarball, and their checksums to the GitHub
+Release and records the immutable GHCR container digest. That is distinct from PyPI or
+npm-registry publication; do not install an unrelated or older package-index artifact
+merely because its name matches.
 The published GHCR image is currently native `linux/amd64`; it is not a verified
 multi-architecture manifest. ARM64 adopters should use the Wheel/source distribution or
 build and validate the pinned Dockerfile on their target platform.
@@ -33,6 +35,7 @@ build and validate the pinned Dockerfile on their target platform.
 - [Runtime and host-system dependencies](#runtime-dependencies)
 - [Users, tenants and other host entities](#define-the-billable-owner-first)
 - [Authentication, authorization and FastAPI composition](#connect-authentication-and-tenant-authorization)
+- [Node and Next.js composition](#compose-a-typescript-application)
 - [Entitlement enforcement](#enforce-product-entitlements-on-the-server)
 - [Credits and durable Job coordination](#associate-credits-with-product-jobs)
 - [Standalone-service private APIs](#standalone-service-private-apis)
@@ -44,33 +47,35 @@ build and validate the pinned Dockerfile on their target platform.
 
 ## Responsibility boundary
 
-| Capability | Repository | Host application |
-| --- | --- | --- |
-| Stripe Checkout, Portal, plan changes and signed webhooks | Implemented | Configure and operate |
-| Duplicate, delayed, concurrent and out-of-order Event handling | Implemented | Preserve the database invariants |
-| Billing account resolution from one stable subject | Implemented | Choose and verify that subject |
-| Session, JWT or OIDC verification | Strict JWT/JWKS starter plus adapter protocol | Configure the starter or implement another verifier |
-| Tenant membership and billing-admin authorization | Team starter and explicit route policy | Supply the live membership repository and lifecycle |
-| Catalog, account and billing mutation HTTP APIs | Implemented | Authenticate and consume |
-| FastAPI router, service facade and composed lifespan | Implemented | Choose a prefix and preserve host startup/shutdown tests |
-| Entitlement check and atomic credit charge/refund | Implemented in-process and as an optional internal router | Bind each workload to the requested owner |
-| Job creation plus credit charge as one business workflow | Runnable reference schema/workflow/demo | Adapt it to host Job/queue tables and operate the outbox/repair loop |
-| Feature and numeric-limit enforcement | Returned as data | Enforce in the product backend |
-| Concurrent-job and API-key limits | Returned as data | Enforce transactionally in host tables |
-| Production frontend authentication | TypeScript adapter only | Implement or add a BFF |
-| Annual grants and reconciliation | Commands implemented | Schedule and monitor |
-| Identity merge, transfer, deletion and plan grandfathering | Not implemented | Define and implement |
+| Capability                                                     | Repository                                                | Host application                                                     |
+| -------------------------------------------------------------- | --------------------------------------------------------- | -------------------------------------------------------------------- |
+| Stripe Checkout, Portal, plan changes and signed webhooks      | Implemented                                               | Configure and operate                                                |
+| Duplicate, delayed, concurrent and out-of-order Event handling | Implemented                                               | Preserve the database invariants                                     |
+| Billing account resolution from one stable subject             | Implemented                                               | Choose and verify that subject                                       |
+| Session, JWT or OIDC verification                              | Strict JWT/JWKS starter plus adapter protocol             | Configure the starter or implement another verifier                  |
+| Tenant membership and billing-admin authorization              | Team starter and explicit route policy                    | Supply the live membership repository and lifecycle                  |
+| Catalog, account and billing mutation HTTP APIs                | Implemented                                               | Authenticate and consume                                             |
+| FastAPI router or TypeScript Fetch/Node/Next facade            | Implemented in each runtime                               | Choose one runtime and preserve its lifecycle tests                  |
+| Entitlement check and atomic credit charge/refund              | Implemented in-process and as an optional internal router | Bind each workload to the requested owner                            |
+| Job creation plus credit charge as one business workflow       | Runnable reference schema/workflow/demo                   | Adapt it to host Job/queue tables and operate the outbox/repair loop |
+| Feature and numeric-limit enforcement                          | Returned as data                                          | Enforce in the product backend                                       |
+| Concurrent-job and API-key limits                              | Returned as data                                          | Enforce transactionally in host tables                               |
+| Production frontend authentication                             | Browser adapter plus server JWT/session boundaries        | Configure an identity provider or add a BFF                          |
+| Annual grants and reconciliation                               | Commands implemented                                      | Schedule and monitor                                                 |
+| Identity merge, transfer, deletion and plan grandfathering     | Not implemented                                           | Define and implement                                                 |
 
 ## Choose an adoption shape
 
-| Shape | Current fit | Use when | Important limitation |
-| --- | --- | --- | --- |
-| Fork the complete repository | Best supported | Building a new FastAPI billing boundary | You own future upstream merges |
-| Vercel Services full stack | Supported | New Next.js + FastAPI SaaS on one domain | Still needs managed PostgreSQL, Stripe, and real identity integration |
-| Standalone billing service | Supported | The host is large, separately deployed or not Python | Configure both workload authentication and owner authorization before enabling private APIs |
-| Same-process FastAPI composition | Supported | The host is Python and already owns a FastAPI root | Install before startup and test route-prefix conflicts |
-| Python service facade | Supported | Product code runs in the billing process | Services exist only inside the installed lifespan |
-| Generic cross-language SDK | Not currently supported | — | Use the authenticated internal HTTP boundary or build a typed client |
+| Shape                             | Current fit            | Use when                                                | Important limitation                                                                        |
+| --------------------------------- | ---------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Fork the complete repository      | Best supported         | Building a new FastAPI billing boundary                 | You own future upstream merges                                                              |
+| Vercel Services full stack        | Supported              | New Next.js + FastAPI SaaS on one domain                | Still needs managed PostgreSQL, Stripe, and real identity integration                       |
+| Native TypeScript/Next.js backend | Supported              | A Node-only or full-stack Next.js SaaS                  | Requires Node runtime Route Handlers and managed PostgreSQL; Edge is unsupported            |
+| Standalone Node billing service   | Supported              | The product is TypeScript or uses a Fetch/HTTP boundary | Product Job/queue coordination remains host-owned                                           |
+| Standalone billing service        | Supported              | The host is large, separately deployed or not Python    | Configure both workload authentication and owner authorization before enabling private APIs |
+| Same-process FastAPI composition  | Supported              | The host is Python and already owns a FastAPI root      | Install before startup and test route-prefix conflicts                                      |
+| Python service facade             | Supported              | Product code runs in the billing process                | Services exist only inside the installed lifespan                                           |
+| Other-language client SDK         | Not currently supplied | —                                                       | Use the authenticated internal HTTP boundary or build a typed client                        |
 
 For an existing FastAPI application, `install_billing` is the supported same-process
 path. It installs a native `APIRouter`, scopes browser CORS/Origin handling to public
@@ -85,13 +90,19 @@ behind one domain and supplies secured bounded Cron routes. It does not fork or 
 the billing state machine. Follow [the Vercel guide](VERCEL.md); PostgreSQL and host
 identity remain explicit dependencies.
 
+The alternative [`vercel.typescript.json`](../vercel.typescript.json) keeps the same UI,
+public paths, database contract, and Cron cadence but implements the backend in native
+Next.js Node Route Handlers. It has no Python runtime dependency. Follow the
+[TypeScript package guide](../typescript/README.md); do not deploy these handlers on the
+Edge runtime.
+
 For a standalone service, the browser-facing billing APIs are usable after injecting
 real authentication. The optional internal router exposes owner-bound check, charge,
 and refund operations to authenticated workloads; it is reject-all until the host
 supplies both a workload identity adapter and an owner authorizer. Never expose that
 router or `CreditService` directly to a browser.
 
-The documented 0.3 Python integration surface is intentionally small:
+The documented Python integration surface is intentionally small:
 
 - package-root `BillingKernel`, `BillingServices`, `create_app`,
   `create_billing_router`, and `install_billing`;
@@ -108,19 +119,33 @@ router/`EntitlementService`/reconciler own their behavior. Direct imports of pro
 pack-accounting, or SQL helpers are reference-internal coupling unless this guide names
 the exact class as an integration boundary.
 
+The equivalent TypeScript integration surface is:
+
+- package-root `BillingKernel`, `createBillingRuntime`, and
+  `createBillingFetchHandler`;
+- `@tosea/stripe-entitlements/node` for the standalone server/CLI adapter;
+- `@tosea/stripe-entitlements/next` for App Router Route Handlers;
+- `AuthAccountAdapter` plus personal/team JWT starter classes;
+- `runtime.kernel.requireServices().entitlements` for same-process product checks and
+  exact credit operations; and
+- `createInternalBillingFetchHandler` for an owner-authorized service boundary.
+
+The npm artifact includes `.d.ts` declarations and packaged canonical resources. Product
+code should use those facades rather than importing projector/accounting internals.
+
 ## Runtime dependencies
 
 The repository does not require the host to use a particular user ORM, job queue, or
 identity provider. Its hard runtime assumptions are narrower but significant:
 
-- Python 3.12+, FastAPI and the bundled Python dependencies for the billing API;
+- either Python 3.12+/FastAPI or Node.js 22+/TypeScript for the billing API;
 - PostgreSQL as both durable state and the distributed coordination layer;
-- `asyncpg` and the repository's unqualified SQL schema for in-process database access;
+- `asyncpg` (Python) or `pg` (TypeScript) and the same unqualified SQL schema;
 - one Stripe account/mode, one product line, one recurring Subscription item and USD;
 - a public signed Stripe webhook endpoint;
 - a scheduler for annual grants and reconciliation (including the checked-in Vercel
   Cron option); and
-- Node.js 22+ and npm only when reusing the Next.js reference UI.
+- Node.js 22+ and npm when using the TypeScript backend or Next.js reference UI.
 
 Redis, Celery and a particular JWT library are not required. If the host uses SQLAlchemy,
 Django ORM, another database, or another language, run billing as a separate service
@@ -147,15 +172,16 @@ lineage/checksum guard. Once a baseline is published, keep it immutable and appe
 
 ### Host-system compatibility
 
-| Existing host | Integration effort | Reason |
-| --- | --- | --- |
-| FastAPI plus verified Bearer JWT/OIDC | Low to moderate | Personal/team JWT starters are supplied; issuer settings and team membership remain host-owned |
-| FastAPI plus server session/HttpOnly cookie | Moderate in one process | The backend adapter can read the cookie; the reference browser client needs a BFF or transport change |
-| SQLAlchemy or Django application | Moderate as a sidecar | Billing uses fixed `asyncpg` SQL and does not expose ORM models |
-| Non-Python service | Moderate to high | Public billing plus the optional workload-authenticated internal router are HTTP-accessible; the host still needs a client and saga |
-| User-only SaaS | Lower | One immutable user subject maps directly to one billing account |
-| Multi-tenant/team SaaS | Higher | Membership, selected-tenant validation, billing roles and tenant lifecycle remain host concerns |
-| Existing job queue/workflow engine | Moderate to high | The queue is unrestricted, but charge/job atomicity needs a durable saga/outbox |
+| Existing host                                    | Integration effort      | Reason                                                                                                                                |
+| ------------------------------------------------ | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| FastAPI plus verified Bearer JWT/OIDC            | Low to moderate         | Personal/team JWT starters are supplied; issuer settings and team membership remain host-owned                                        |
+| FastAPI plus server session/HttpOnly cookie      | Moderate in one process | The backend adapter can read the cookie; the reference browser client needs a BFF or transport change                                 |
+| SQLAlchemy or Django application                 | Moderate as a sidecar   | Billing uses fixed `asyncpg` SQL and does not expose ORM models                                                                       |
+| Node/Next.js with verified JWT or server session | Low to moderate         | Native TypeScript runtime and Fetch/Route Handler adapters are supplied                                                               |
+| Other non-Python service                         | Moderate to high        | Public billing plus the optional workload-authenticated internal boundary are HTTP-accessible; the host still needs a client and saga |
+| User-only SaaS                                   | Lower                   | One immutable user subject maps directly to one billing account                                                                       |
+| Multi-tenant/team SaaS                           | Higher                  | Membership, selected-tenant validation, billing roles and tenant lifecycle remain host concerns                                       |
+| Existing job queue/workflow engine               | Moderate to high        | The queue is unrestricted, but charge/job atomicity needs a durable saga/outbox                                                       |
 
 An identity proxy may supply a subject header only when the billing service is unreachable
 from the public network, the proxy strips every inbound copy of that header, and the hop
@@ -187,10 +213,10 @@ class BillingOwner:
 
 Recommended mappings:
 
-| Product model | Stable billing subject |
-| --- | --- |
-| One subscription per person | `v1:user:<immutable-user-uuid>` |
-| One subscription shared by organization members | `v1:tenant:<immutable-tenant-uuid>` |
+| Product model                                        | Stable billing subject              |
+| ---------------------------------------------------- | ----------------------------------- |
+| One subscription per person                          | `v1:user:<immutable-user-uuid>`     |
+| One subscription shared by organization members      | `v1:tenant:<immutable-tenant-uuid>` |
 | A user in several independently billed organizations | One tenant subject per organization |
 
 `external_ref` is globally unique in `billing_accounts`, contains 1–512 visible UTF-8
@@ -228,16 +254,16 @@ defines personal-to-tenant or tenant-to-tenant transfer semantics.
 
 ### Host entity dependency map
 
-| Host entity | Required coupling to billing |
-| --- | --- |
-| User | One immutable ID only for personal billing; no billing FK is required |
-| Tenant/organization | One immutable ID for team billing; membership stays in the host |
-| Membership/role | Verified on every relevant request; no role is stored by billing |
-| Job/conversion/AI call | Immutable attempt key plus host outbox state; no built-in Job FK |
-| Uploaded file or request input | Host validates catalog feature and numeric limits |
-| API key | Host stores/counts keys transactionally against the catalog limit |
-| Queue worker | Host owns execution leases, fencing and idempotent delivery |
-| Stripe Customer/Subscription | Billing-owned; host must not use either as user identity |
+| Host entity                    | Required coupling to billing                                          |
+| ------------------------------ | --------------------------------------------------------------------- |
+| User                           | One immutable ID only for personal billing; no billing FK is required |
+| Tenant/organization            | One immutable ID for team billing; membership stays in the host       |
+| Membership/role                | Verified on every relevant request; no role is stored by billing      |
+| Job/conversion/AI call         | Immutable attempt key plus host outbox state; no built-in Job FK      |
+| Uploaded file or request input | Host validates catalog feature and numeric limits                     |
+| API key                        | Host stores/counts keys transactionally against the catalog limit     |
+| Queue worker                   | Host owns execution leases, fencing and idempotent delivery           |
+| Stripe Customer/Subscription   | Billing-owned; host must not use either as user identity              |
 
 An optional host table can map `(owner_kind, owner_id)` to `external_ref` for lifecycle
 and audit, but a deterministic encoding often makes it unnecessary. Do not add a foreign
@@ -335,6 +361,89 @@ capability. The supplied team policy therefore keeps viewers on catalog-only dat
 requires a billing administrator for the full account view and every mutation. Extend
 its explicit route-to-capability map and tests when adding routes; never authorize a
 viewer by HTTP method alone.
+
+## Compose a TypeScript application
+
+The native package does not call the Python service. Initialize its canonical schema,
+then run the standalone Node server:
+
+```bash
+cd typescript
+npm ci
+npm run build
+cp .env.example .env
+chmod 600 .env
+set -a
+. ./.env
+set +a
+npx stripe-entitlements migrate
+npx stripe-entitlements doctor
+npx stripe-entitlements serve
+```
+
+The build must precede the first CLI invocation in a source checkout because generated
+`dist/` files are not committed. An installed release tarball already includes them.
+
+Production defaults to reject-all authentication. `BILLING_AUTH_MODE=personal_jwt` plus
+the complete issuer/audience/JWKS configuration enables the strict personal-user
+starter. For a host session or team model, inject an adapter and own the returned
+runtime lifecycle:
+
+```typescript
+import {
+  createBillingRuntime,
+  type AuthAccountAdapter,
+} from "@tosea/stripe-entitlements";
+
+const auth: AuthAccountAdapter = {
+  async authenticate(request) {
+    const session = await verifyYourServerSession(request);
+    return { externalRef: `v1:user:${session.immutableUserId}` };
+  },
+};
+
+const runtime = await createBillingRuntime({ auth });
+export const billingHandler = runtime.handler;
+
+export async function shutdownBilling() {
+  // Register this with the host's process/application shutdown hook.
+  await runtime.close();
+}
+```
+
+The `runtime.handler` value uses the standard Fetch `Request → Response` contract, so a
+host can adapt it without reimplementing signature verification, origin checks, route
+contracts, or error sanitization. One runtime owns one connected kernel. Do not create a
+new runtime per request.
+
+For Next.js App Router, the environment-backed adapter lazily shares one runtime across
+warm Node invocations:
+
+```typescript
+// app/api/[...billing]/route.ts
+import { environmentNextBillingRouteHandler as handle } from "@tosea/stripe-entitlements/next";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
+export const GET = handle;
+export const POST = handle;
+export const OPTIONS = handle;
+```
+
+Create separate explicit Route Handler files for `/webhooks/stripe` and `/health` as
+shown under [`web/app/`](../web/app/). Stripe and `pg` require the Node runtime; Edge is
+unsupported. The source checkout uses `file:../typescript`, while a downstream project
+should install the exact reviewed npm artifact when one is published.
+
+Same-process product code reaches
+`runtime.kernel.requireServices().entitlements`. A separately deployed product uses
+`createInternalBillingFetchHandler` with both a verified workload identity and an exact
+workload-to-owner authorizer. In either form, host Job state, queue dispatch, concurrency
+limits, API-key tables, and the Job/credit outbox-saga remain host-owned.
+
+Complete standalone, Next.js, authentication, worker, and test commands are in the
+[TypeScript package guide](../typescript/README.md).
 
 ## Compose the FastAPI application
 
@@ -509,28 +618,55 @@ mutable Stripe Subscription read, or cached client-side account JSON.
 
 Static limits require host behavior:
 
-| Entitlement | Enforcement point |
-| --- | --- |
-| Feature flag such as `api_access` | API authorization before work starts |
-| `max_file_mb` / `max_pages_per_job` | Request validation before upload/queue admission |
-| `concurrent_jobs` | Transactional host job lease/count |
-| `api_keys` | Transactional host API-key table constraint |
-| Subscription and pack credits | owner-bound `EntitlementService.charge` before execution |
+| Entitlement                         | Enforcement point                                        |
+| ----------------------------------- | -------------------------------------------------------- |
+| Feature flag such as `api_access`   | API authorization before work starts                     |
+| `max_file_mb` / `max_pages_per_job` | Request validation before upload/queue admission         |
+| `concurrent_jobs`                   | Transactional host job lease/count                       |
+| `api_keys`                          | Transactional host API-key table constraint              |
+| Subscription and pack credits       | owner-bound `EntitlementService.charge` before execution |
 
 In-process product routes can use the initialized `EntitlementService` facade without
 reading billing tables or accepting an internal billing UUID:
 
 ```python
-from fastapi import APIRouter, HTTPException, Request
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from stripe_entitlements.auth import AuthenticatedIdentity, AuthenticationError
+from stripe_entitlements.owner_reference import (
+    InvalidOwnerReferenceError,
+    validate_owner_external_ref,
+)
+
+from host.auth import personal_auth
 
 router = APIRouter()
 
 
+async def current_billing_identity(request: Request) -> AuthenticatedIdentity:
+    # Reuse the same verified adapter injected into BillingKernel. For a team
+    # adapter, this call also performs its live membership/role authorization.
+    try:
+        identity = await personal_auth.authenticate(request)
+        validate_owner_external_ref(identity.external_ref)
+    except (AuthenticationError, InvalidOwnerReferenceError) as exc:
+        raise HTTPException(401, "authentication failed") from exc
+    return identity
+
+
+BillingIdentity = Annotated[
+    AuthenticatedIdentity,
+    Depends(current_billing_identity),
+]
+
+
 @router.post("/convert")
-async def convert(request: Request):
+async def convert(request: Request, identity: BillingIdentity):
     kernel = request.app.state.stripe_entitlements
     decision = await kernel.services.entitlements.check(
-        request.state.billing_owner_external_ref,
+        identity.external_ref,
         required_features=("pdf_to_ppt",),
         required_limits={"max_pages_per_job": 80},
     )
@@ -539,8 +675,10 @@ async def convert(request: Request):
     return {"accepted": True}
 ```
 
-The owner reference in this example must already come from verified personal/team
-identity and membership, not the request body. `EntitlementService.check` returns a
+The owner reference in this example comes directly from the same verified adapter used by
+the billing router; the library does not invent a `request.state` identity attribute.
+Factor this dependency into the host's normal authentication layer instead of accepting
+an owner from the request body. `EntitlementService.check` returns a
 fail-closed `owner_not_found` decision for an unknown owner; its owner-bound `charge`
 and `refund` methods preserve exact decimal amounts, idempotency, and credit-epoch
 semantics. `credits_spendable` and `credit_balance` describe only currently usable
@@ -571,7 +709,7 @@ refund(idempotency_key)
 
 The lower-level module remains importable for existing integrations. New in-process
 code should normally enter through `kernel.services.entitlements`, which resolves stable
-owners before delegating to the same credit primitive. Until a matching 0.3 artifact is
+owners before delegating to the same credit primitive. Until a matching 0.4 artifact is
 published, pin the reviewed source commit and retain host contract tests.
 
 The debit key is global across `credit_debits`. It must identify one immutable business
@@ -763,11 +901,11 @@ install_billing(
 
 This installs:
 
-| Method | Effective route | Required scope |
-| --- | --- | --- |
-| POST | `/stripe/internal/v1/entitlements/check` | `entitlements:check` |
-| POST | `/stripe/internal/v1/credits/charge` | `credits:charge` |
-| POST | `/stripe/internal/v1/credits/refund` | `credits:refund` |
+| Method | Effective route                          | Required scope       |
+| ------ | ---------------------------------------- | -------------------- |
+| POST   | `/stripe/internal/v1/entitlements/check` | `entitlements:check` |
+| POST   | `/stripe/internal/v1/credits/charge`     | `credits:charge`     |
+| POST   | `/stripe/internal/v1/credits/refund`     | `credits:refund`     |
 
 `charge` and `refund` require the immutable `Idempotency-Key`; charge amounts are exact
 decimal strings. Responses use no-store headers and exact decimal/atom balances.
@@ -1006,7 +1144,8 @@ evidence. The integration-specific order is:
      stripe-entitlements migrate
    ```
 
-   The migration command loads only `DATABASE_URL`. Prefer a database-only secret for
+   The migration command loads only `DATABASE_URL` and optional `DATABASE_POOL_*`
+   bounds. Prefer a database-only secret for
    this schema-init Job; it does not need the live Stripe key, webhook signing secret, or
    browser configuration. Supply the complete runtime contract separately to API and
    worker processes.
@@ -1038,9 +1177,9 @@ evidence. The integration-specific order is:
 9. replace the frontend runtime composition with production auth/BFF code, set HTTP API
    and canonical-site variables before `npm run build`, and keep demo auth disabled;
 10. set `NEXT_PUBLIC_ALLOW_INDEXING=true` only for the canonical public site, never a
-   staging or preview deployment;
+    staging or preview deployment;
 11. enable hourly annual grants, five-minute reconciliation, incidents/webhook/scheduler alerts
-   and backup monitoring; and
+    and backup monitoring; and
 12. run host contract tests, repository gates, a low-risk live delivery/payment-recovery
     smoke, and a low-traffic observation window before increasing traffic.
 
@@ -1109,10 +1248,12 @@ credits without weakening the billing invariants.
 
 For a Python/FastAPI product using dedicated PostgreSQL, both standalone and native
 same-process adoption are practical through the implemented app/router/service facade.
-For a Next.js product, the stable Vercel Services topology is also practical without a
-separate Railway deployment: it retains Python FastAPI as the trusted backend and uses
-one same-origin public route table.
+For a Node/Next.js product, the independent TypeScript runtime, Fetch facade, Node CLI,
+and App Router handlers provide the same billing boundary without a Python or Railway
+deployment. The split Next.js + FastAPI Vercel Services topology remains an alternative;
+both use one same-origin public route table and the same PostgreSQL contract.
 The personal/team JWT starters and owner-bound internal API remove common bootstrap
 work, while leaving issuer configuration, tenant membership, and service-to-owner grants
 under host control. ORM models, cookie/BFF auth, a transactional Job/outbox workflow,
-and generated clients for other languages still require explicit host integration.
+and generated clients for languages other than Python/TypeScript still require explicit
+host integration.

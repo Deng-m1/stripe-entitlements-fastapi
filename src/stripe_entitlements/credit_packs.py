@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -45,10 +45,12 @@ class CreditPackReservation:
     claim_expires_at: datetime
     session_id: str | None = None
     session_url: str | None = None
+    request_snapshot_version: int | None = None
+    stripe_request_snapshot: Mapping[str, Any] | None = None
 
 
 class CreditPackCheckoutCreator(Protocol):
-    async def create_credit_pack_checkout_session(
+    async def prepare_credit_pack_checkout_session(
         self,
         *,
         order_id: str,
@@ -62,6 +64,10 @@ class CreditPackCheckoutCreator(Protocol):
         pack_credits: str,
         expires_days: int,
         expires_at: datetime,
+    ) -> Mapping[str, Any]: ...
+
+    async def create_checkout_session_from_snapshot(
+        self, snapshot: Mapping[str, Any]
     ) -> tuple[str, str]: ...
 
 
@@ -327,6 +333,8 @@ class CreditPackCoordinator:
             claim_expires_at=row["claim_expires_at"],
             session_id=row["stripe_checkout_session_id"],
             session_url=row["session_url"],
+            request_snapshot_version=row["request_snapshot_version"],
+            stripe_request_snapshot=row["stripe_request_snapshot"],
         )
 
     async def reserve(
@@ -411,8 +419,9 @@ class CreditPackCoordinator:
                 """insert into credit_pack_orders(
                        id,account_id,client_idempotency_key,stripe_request_key,pack_key,
                        pack_credits,price_amount,currency,expires_days,price_lookup_key,
-                       request_customer_id,claim_expires_at)
-                     values($1,$2::uuid,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning *""",
+                       request_customer_id,claim_expires_at,request_snapshot_version)
+                     values($1,$2::uuid,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,0)
+                     returning *""",
                 order_id,
                 account_id,
                 request_key,
@@ -429,6 +438,149 @@ class CreditPackCoordinator:
             assert row is not None
             return self._reservation(row)
 
+    async def _existing_for_create(
+        self, account_id: str, pack_key: str, request_key: str
+    ) -> CreditPackReservation | None:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """select * from credit_pack_orders
+                     where account_id=$1::uuid and client_idempotency_key=$2""",
+                account_id,
+                request_key,
+            )
+            if row is None:
+                return None
+            database_now = await conn.fetchval("select clock_timestamp()")
+        if row["pack_key"] != pack_key:
+            raise CreditPackConflictError(
+                "Idempotency-Key was already used for a different credit pack"
+            )
+        if row["checkout_status"] == "expired":
+            raise CreditPackConflictError(
+                "this credit-pack Checkout expired; start a new intent with a new Idempotency-Key"
+            )
+        if row["claim_expires_at"] <= database_now:
+            raise CreditPackConflictError(
+                "the safe same-key Checkout recovery window expired; operator "
+                "reconciliation is required before starting a new intent"
+            )
+        return self._reservation(row)
+
+    async def freeze_request_snapshot(
+        self, reservation: CreditPackReservation, snapshot: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """update credit_pack_orders set request_snapshot_version=1,
+                         stripe_request_snapshot=$2::jsonb,updated_at=now()
+                     where id=$1::uuid and request_snapshot_version=0
+                       and stripe_request_snapshot is null
+                     returning *""",
+                reservation.order_id,
+                dict(snapshot),
+            )
+            if row is None:
+                row = await conn.fetchrow(
+                    "select * from credit_pack_orders where id=$1::uuid",
+                    reservation.order_id,
+                )
+        if (
+            row is None
+            or row["request_snapshot_version"] != 1
+            or not isinstance(row["stripe_request_snapshot"], Mapping)
+        ):
+            raise CreditPackConflictError(
+                "credit-pack Checkout request snapshot could not be frozen safely"
+            )
+        return row["stripe_request_snapshot"]
+
+    @staticmethod
+    def _validated_frozen_snapshot(
+        reservation: CreditPackReservation,
+    ) -> dict[str, Any]:
+        from .stripe_request_snapshots import (
+            StripeRequestSnapshotError,
+            validate_checkout_request_snapshot,
+        )
+
+        try:
+            return validate_checkout_request_snapshot(
+                reservation.stripe_request_snapshot,
+                expected_kind="credit_pack",
+                expected_account_id=reservation.account_id,
+                expected_request_identity=reservation.order_id,
+                expected_lookup_key=reservation.lookup_key,
+                expected_currency=reservation.currency,
+                expected_unit_amount=reservation.price_amount,
+                expected_offering_key=reservation.pack_key,
+                expected_expires_at=int(reservation.claim_expires_at.timestamp()),
+                expected_customer_id=reservation.request_customer_id,
+                expected_pack_credits=str(reservation.credits),
+                expected_expires_days=reservation.expires_days,
+            )
+        except StripeRequestSnapshotError as exc:
+            raise CreditPackConflictError(
+                "the persisted credit-pack Checkout request snapshot is invalid; "
+                "operator reconciliation is required"
+            ) from exc
+
+    async def _execute_frozen(
+        self,
+        creator: CreditPackCheckoutCreator,
+        reservation: CreditPackReservation,
+        snapshot: Mapping[str, Any],
+    ) -> tuple[str, str]:
+        if reservation.session_id and reservation.session_url:
+            return reservation.session_id, reservation.session_url
+        session_id, session_url = await creator.create_checkout_session_from_snapshot(snapshot)
+        session_id = _visible(session_id, field="Checkout Session id", max_bytes=255)
+        session_url = _safe_session_url(session_url)
+        async with self.pool.acquire() as conn:
+            attached = await conn.fetchval(
+                """update credit_pack_orders
+                      set stripe_checkout_session_id=coalesce(stripe_checkout_session_id,$2),
+                          session_url=$3,
+                          checkout_status=case when checkout_status='reserved'
+                                               then 'session_created'
+                                               else checkout_status end,
+                          updated_at=now()
+                    where id=$1::uuid
+                      and request_snapshot_version=1
+                      and stripe_request_snapshot is not null
+                      and (stripe_checkout_session_id is null
+                           or stripe_checkout_session_id=$2)
+                    returning id""",
+                reservation.order_id,
+                session_id,
+                session_url,
+            )
+            if attached is None:
+                existing = await conn.fetchrow(
+                    "select * from credit_pack_orders where id=$1::uuid",
+                    reservation.order_id,
+                )
+                if existing is None or existing["stripe_checkout_session_id"] != session_id:
+                    raise RuntimeError("credit-pack order changed during Checkout creation")
+        return session_id, session_url
+
+    async def recover_frozen(
+        self,
+        creator: CreditPackCheckoutCreator,
+        *,
+        account_id: str,
+        pack_key: str,
+        request_key: str,
+    ) -> tuple[str, str] | None:
+        """Replay an exact v1 order before consulting the mutable pack catalog."""
+
+        pack_key = _visible(pack_key, field="pack_key", max_bytes=64)
+        request_key = _visible(request_key, field="Idempotency-Key", max_bytes=200)
+        reservation = await self._existing_for_create(account_id, pack_key, request_key)
+        if reservation is None or reservation.request_snapshot_version != 1:
+            return None
+        snapshot = self._validated_frozen_snapshot(reservation)
+        return await self._execute_frozen(creator, reservation, snapshot)
+
     async def create(
         self,
         creator: CreditPackCheckoutCreator,
@@ -443,54 +595,59 @@ class CreditPackCoordinator:
         # durable reservation below is the only authority for replayed Stripe
         # parameters because either value may change after an early webhook.
         del customer_id, customer_email
-        pack = self.catalog.require_credit_pack(pack_key)
-        reservation = await self.reserve(account_id, pack, request_key)
+        reservation = await self._existing_for_create(account_id, pack_key, request_key)
+        if reservation is None:
+            pack = self.catalog.require_credit_pack(pack_key)
+            reservation = await self.reserve(account_id, pack, request_key)
         if reservation.session_id and reservation.session_url:
             return reservation.session_id, reservation.session_url
-        session_id, session_url = await creator.create_credit_pack_checkout_session(
-            order_id=reservation.order_id,
-            account_id=reservation.account_id,
-            # A later webhook may bind the account Customer before this process can
-            # persist the Session identity. Same-key recovery must therefore replay
-            # the immutable reservation parameters, not current account/auth state.
-            customer_id=reservation.request_customer_id,
-            # Omitting the prefill when Checkout creates the first Customer avoids
-            # retaining PII solely to make Stripe idempotency parameters replayable.
-            customer_email=None,
-            lookup_key=reservation.lookup_key,
-            expected_currency=pack.currency,
-            expected_unit_amount=pack.price_usd * 100,
-            pack_key=pack.key,
-            pack_credits=str(pack.credits),
-            expires_days=reservation.expires_days,
-            expires_at=reservation.claim_expires_at,
-        )
-        session_id = _visible(session_id, field="Checkout Session id", max_bytes=255)
-        session_url = _safe_session_url(session_url)
-        async with self.pool.acquire() as conn:
-            attached = await conn.fetchval(
-                """update credit_pack_orders
-                      set stripe_checkout_session_id=coalesce(stripe_checkout_session_id,$2),
-                          session_url=$3,
-                          checkout_status=case when checkout_status='reserved'
-                                               then 'session_created'
-                                               else checkout_status end,
-                          updated_at=now()
-                    where id=$1::uuid
-                      and (stripe_checkout_session_id is null
-                           or stripe_checkout_session_id=$2)
-                    returning id""",
-                reservation.order_id,
-                session_id,
-                session_url,
+        from .stripe_request_snapshots import validate_checkout_request_snapshot
+
+        if reservation.request_snapshot_version is None:
+            raise CreditPackConflictError(
+                "this credit-pack order predates durable request snapshots; operator "
+                "reconciliation is required"
             )
-            if attached is None:
-                existing = await conn.fetchrow(
-                    "select * from credit_pack_orders where id=$1::uuid", reservation.order_id
+        if reservation.request_snapshot_version == 1:
+            snapshot = self._validated_frozen_snapshot(reservation)
+        else:
+            prepared = await creator.prepare_credit_pack_checkout_session(
+                order_id=reservation.order_id,
+                account_id=reservation.account_id,
+                customer_id=reservation.request_customer_id,
+                customer_email=None,
+                lookup_key=reservation.lookup_key,
+                expected_currency=reservation.currency,
+                expected_unit_amount=reservation.price_amount,
+                pack_key=reservation.pack_key,
+                pack_credits=str(reservation.credits),
+                expires_days=reservation.expires_days,
+                expires_at=reservation.claim_expires_at,
+            )
+            snapshot = validate_checkout_request_snapshot(
+                prepared,
+                expected_kind="credit_pack",
+                expected_account_id=reservation.account_id,
+                expected_request_identity=reservation.order_id,
+                expected_lookup_key=reservation.lookup_key,
+                expected_currency=reservation.currency,
+                expected_unit_amount=reservation.price_amount,
+                expected_offering_key=reservation.pack_key,
+                expected_expires_at=int(reservation.claim_expires_at.timestamp()),
+                expected_customer_id=reservation.request_customer_id,
+                expected_pack_credits=str(reservation.credits),
+                expected_expires_days=reservation.expires_days,
+            )
+            snapshot = self._validated_frozen_snapshot(
+                replace(
+                    reservation,
+                    request_snapshot_version=1,
+                    stripe_request_snapshot=await self.freeze_request_snapshot(
+                        reservation, snapshot
+                    ),
                 )
-                if existing is None or existing["stripe_checkout_session_id"] != session_id:
-                    raise RuntimeError("credit-pack order changed during Checkout creation")
-        return session_id, session_url
+            )
+        return await self._execute_frozen(creator, reservation, snapshot)
 
 
 class CreditPackEventProcessor:

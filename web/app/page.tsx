@@ -25,9 +25,9 @@ import {
 } from "@/lib/site";
 
 export const metadata: Metadata = {
-  title: "Stripe Billing, Credit Packs & Entitlements for FastAPI",
+  title: "Stripe Billing, Credit Packs & Entitlements for FastAPI & TypeScript",
   description:
-    "An open-source Stripe billing template with FastAPI, PostgreSQL, exact fractional credits, one-time credit packs, and complete full-period or prorated subscription upgrades.",
+    "An open-source Stripe billing template with native FastAPI and TypeScript backends, PostgreSQL, exact fractional credits, credit packs, and full-period or prorated upgrades.",
   alternates: absoluteSiteUrl(publicSiteUrl, "/")
     ? { canonical: absoluteSiteUrl(publicSiteUrl, "/") }
     : undefined,
@@ -128,6 +128,11 @@ const frequentlyAskedQuestions = [
       "No. It is an independent, open-source reference implementation for a deliberately bounded single-item subscription and credit-entitlement policy.",
   },
   {
+    question: "Can I use the Stripe billing backend without Python?",
+    answer:
+      "Yes. Choose either the independent Python/FastAPI implementation or the native TypeScript/Node/Next.js implementation. Both use the same PostgreSQL schema, plan catalog, settlement policies, and accounting invariants.",
+  },
+  {
     question: "Does the template support monthly and annual subscriptions?",
     answer:
       "Yes. Starter, Pro, and Ultra each have monthly and annual prices. Annual invoices fund monthly credit slots, and an opt-in Stripe Test Clock gate covers cross-year renewal.",
@@ -219,9 +224,10 @@ export default function HomePage() {
                 </span>
               </h1>
               <p className="hero-support">
-                An open-source Stripe billing reference for FastAPI, PostgreSQL,
-                and Next.js that turns subscriptions, one-time credit packs, and
-                noisy webhook streams into deterministic access.
+                An open-source Stripe billing reference with native FastAPI and
+                TypeScript/Next.js backends over PostgreSQL that turns subscriptions,
+                one-time credit packs, and noisy webhook streams into deterministic
+                access.
               </p>
               <div className="hero-actions">
                 <Link className="button primary" href="/pricing">
@@ -591,6 +597,7 @@ export default function HomePage() {
         <div className="shell stack-strip-inner">
           <ul className="stack-marks">
             <li>FastAPI</li>
+            <li>TypeScript / Node</li>
             <li>PostgreSQL</li>
             <li>Stripe test mode</li>
             <li>Next.js</li>

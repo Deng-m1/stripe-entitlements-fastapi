@@ -4,12 +4,16 @@
 Host identity provider
   │ verified stable subject through AuthAccountAdapter / JWT starters
   ▼
-FastAPI root
-  ├─ standalone create_app()
-  └─ host app + install_billing(BillingKernel, prefix)
-       │ native APIRouter + composed lifespan + route-scoped middleware
+Choose one native server runtime
+  ├─ Python / FastAPI
+  │    ├─ standalone create_app()
+  │    └─ host app + install_billing(BillingKernel, prefix)
+  └─ TypeScript / Node
+       ├─ standalone Node CLI/server or Fetch handler
+       └─ Next.js App Router Route Handlers
+       │
        ▼
-FastAPI billing API ───────────────► Stripe request API
+Billing API ───────────────────────► Stripe request API
   │ catalog/account                  Checkout / Portal / invoice preview
   │ Checkout + Idempotency-Key       pending_if_incomplete / Schedule
   │ preview + confirm / selected settlement policy
@@ -22,7 +26,7 @@ PostgreSQL primary
 Stripe
   │ signed, at-least-once webhook Event snapshots
   ▼
-FastAPI raw-body endpoint
+Python or TypeScript raw-body endpoint
   │ verify signature before JSON trust
   │ prefetch Price / Charge references (no DB transaction open)
   ▼
@@ -50,18 +54,19 @@ Next.js reference UI
 Authenticated product workload
   │ WorkloadIdentityAdapter + operation scope + WorkloadOwnerAuthorizer
   ▼
-optional internal APIRouter ──► EntitlementService ──► credit/account rows
+optional internal router/handler ──► EntitlementService ──► credit/account rows
 ```
 
-The checked-in Vercel Services topology preserves this boundary in one deployment:
-Next.js owns the catch-all route while FastAPI owns `/api/*`, `/webhooks/*`, and
-`/health`. Vercel Cron reaches secured, bounded annual and reconciliation wrappers; it
-does not create a second processor or move coordination into function memory. See
-[the Vercel deployment guide](VERCEL.md).
+Both checked-in Vercel topologies preserve this boundary. `vercel.json` splits Next.js
+and FastAPI into two Services behind one domain. `vercel.typescript.json` uses one
+Next.js service whose Node Route Handlers own `/api/*`, `/webhooks/stripe`, and
+`/health`. In either case Cron reaches secured, bounded annual and reconciliation
+wrappers; it does not create a second in-memory coordinator. See the
+[Vercel guide](VERCEL.md) and [TypeScript guide](../typescript/README.md).
 
 ## Scope boundary
 
-The backend supports one recurring subscription item, USD, fixed plan keys,
+Each backend supports one recurring subscription item, USD, fixed plan keys,
 monthly/yearly intervals, exact fixed-point monthly credit grants, and two explicit transition
 policies. The prorated template is bounded to same-interval monthly tier upgrades. It is
 not an arbitrary Invoice reducer. Unknown/ambiguous Invoice shapes fail closed.
@@ -135,6 +140,35 @@ The service facade does not make a product Job and a credit operation one transa
 Job state, queue dispatch, outbox/saga repair, concurrency limits, API-key limits, and
 workload audit remain host-owned responsibilities.
 
+## TypeScript integration and service boundary
+
+The TypeScript `BillingKernel` owns the same conceptual graph with native `pg`, Stripe
+SDK, and TypeScript services. `createBillingRuntime()` starts one kernel and exposes a
+standard Fetch handler; the standalone Node server adapts Node HTTP streams without
+changing the raw webhook bytes. The Node CLI supplies explicit migration, doctor,
+server, annual-grant, and reconciliation entrypoints.
+
+`@tosea/stripe-entitlements/next` adapts the Fetch handler to App Router. Its
+environment-backed handler lazily shares one connected runtime across warm Node
+invocations, retries a failed initialization later, and returns sanitized 503 responses.
+Route modules must export `runtime = "nodejs"`, `dynamic = "force-dynamic"`, and a
+bounded duration. Edge runtime and request-local in-memory coordination are unsupported.
+
+Construction performs no network request. Startup owns only a database connection it
+opened, and production migrations remain an explicit operator action. One `Database`
+object binds to one kernel so a lifecycle owner cannot close another kernel's pool. An
+injected gateway must match the complete outbound contract in settings before a database
+connection opens: Stripe test/live mode, request API version, product line, Checkout
+success/cancel URLs, Portal return URL, and Portal configuration identity. This prevents
+a successful payment from being projected under another product line or freezing an old
+redirect into a durable request snapshot. Public CORS/origin, raw webhook,
+scheduler-secret, authentication, and sanitized-error rules are enforced by the shared
+Fetch facade rather than reimplemented in each framework adapter.
+
+The TypeScript `EntitlementService` and internal Fetch handler preserve the same
+workload-identity plus owner-authorization boundary as Python. They likewise do not make
+host Job state, queue dispatch, or a credit operation one distributed transaction.
+
 ## Why external Stripe reads happen first
 
 Network calls while holding row locks amplify latency and deadlock probability. The
@@ -171,9 +205,9 @@ branches. No correctness decision relies on process memory or an expiring Redis 
 The implementation uses PostgreSQL `READ COMMITTED` plus explicit locks and constraints.
 Paths that touch account and invoice state lock account first, then invoice.
 
-## Data model and schema baseline
+## Data model and schema migrations
 
-`001_v3_baseline.sql` directly creates the complete 0.3 schema for fresh installations:
+`001_v3_baseline.sql` directly creates the complete 0.3 table model and remains immutable:
 
 - `billing_accounts`: locally enforced plan, status, credit, expiry and annual state;
 - `stripe_webhook_events`: committed Event inbox with a minimal allowlisted audit snapshot;
@@ -224,6 +258,19 @@ v0.2.x checkout. The filename is a generation sentinel: new code rejects old his
 old code rejects the new history before applying SQL. Starting with 0.3, never edit the
 baseline after release; append `002_...sql` and later migrations, preserving checksums and
 backward compatibility whenever rolling deployment is promised.
+
+Version 0.4.0 appends `002_stripe_request_snapshots.sql`. It adds nullable
+`request_snapshot_version` and `stripe_request_snapshot` pairs to `checkout_claims`,
+`credit_pack_orders`, and `billing_plan_changes`. `NULL` preserves the honest legacy
+state, `0` means reserved but not remotely started, and `1` requires a JSON object that
+the runtime validates against the owning row before use. The request is frozen by a
+compare-and-set transaction before Stripe mutation; all Stripe I/O remains outside the
+transaction. Retries execute the frozen request and API version, not a later catalog,
+URL, Customer observation, or product-line configuration.
+
+The SQL change tolerates an older binary reading the database, but v0.3 remote-mutation
+coordinators do not understand v1 snapshots. Therefore 0.3 → 0.4 uses a coordinated
+writer cutover, and 0.4 → 0.3 is prohibited while any v0.4 claim/order/intent is in flight.
 
 ## Supported webhook Event contract
 

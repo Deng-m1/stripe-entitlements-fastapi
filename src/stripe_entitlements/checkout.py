@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Protocol
+from typing import Any, Protocol, cast
 from urllib.parse import urlsplit
 
 import asyncpg
@@ -21,6 +22,10 @@ class CheckoutActiveSubscriptionError(RuntimeError):
     pass
 
 
+class CheckoutReplayUnsafeError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class CheckoutReservation:
     account_id: str
@@ -32,10 +37,12 @@ class CheckoutReservation:
     request_customer_id: str | None = None
     session_id: str | None = None
     session_url: str | None = None
+    request_snapshot_version: int | None = None
+    stripe_request_snapshot: Mapping[str, Any] | None = None
 
 
 class CheckoutCreator(Protocol):
-    async def create_checkout_session(
+    async def prepare_checkout_session(
         self,
         *,
         account_id: str,
@@ -49,6 +56,10 @@ class CheckoutCreator(Protocol):
         customer_email: str | None,
         plan_key: str,
         interval: str,
+    ) -> Mapping[str, Any]: ...
+
+    async def create_checkout_session_from_snapshot(
+        self, snapshot: Mapping[str, Any]
     ) -> tuple[str, str]: ...
 
 
@@ -156,6 +167,8 @@ class CheckoutCoordinator:
                         request_customer_id=existing["request_customer_id"],
                         session_id=existing["session_id"],
                         session_url=existing["session_url"],
+                        request_snapshot_version=existing["request_snapshot_version"],
+                        stripe_request_snapshot=existing["stripe_request_snapshot"],
                     )
                 raise CheckoutBusyError("an unexpired Checkout claim already exists")
             if existing is not None:
@@ -165,8 +178,8 @@ class CheckoutCoordinator:
             await conn.execute(
                 """insert into checkout_claims
                        (account_id,claim_token,plan_key,plan_interval,expires_at,
-                        client_request_key,request_customer_id)
-                     values($1::uuid,$2,$3,$4,$5,$6,$7)""",
+                        client_request_key,request_customer_id,request_snapshot_version)
+                     values($1::uuid,$2,$3,$4,$5,$6,$7,0)""",
                 account_id,
                 token,
                 plan_key,
@@ -183,7 +196,38 @@ class CheckoutCoordinator:
             expires_at=expires_at,
             request_key=request_key,
             request_customer_id=account["stripe_customer_id"],
+            request_snapshot_version=0,
         )
+
+    async def freeze_request_snapshot(
+        self, reservation: CheckoutReservation, snapshot: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        async with self.pool.acquire() as conn:
+            frozen = await conn.fetchrow(
+                """update checkout_claims set request_snapshot_version=1,
+                         stripe_request_snapshot=$3::jsonb
+                     where account_id=$1::uuid and claim_token=$2::uuid
+                       and request_snapshot_version=0
+                       and stripe_request_snapshot is null
+                     returning *""",
+                reservation.account_id,
+                reservation.claim_token,
+                dict(snapshot),
+            )
+            if frozen is None:
+                frozen = await conn.fetchrow(
+                    """select * from checkout_claims
+                         where account_id=$1::uuid and claim_token=$2::uuid""",
+                    reservation.account_id,
+                    reservation.claim_token,
+                )
+        if (
+            frozen is None
+            or frozen["request_snapshot_version"] != 1
+            or not isinstance(frozen["stripe_request_snapshot"], Mapping)
+        ):
+            raise CheckoutReplayUnsafeError("Checkout request snapshot could not be frozen safely")
+        return frozen["stripe_request_snapshot"]
 
     async def attach_session(
         self, reservation: CheckoutReservation, session_id: str, session_url: str
@@ -193,6 +237,8 @@ class CheckoutCoordinator:
             updated = await conn.fetchval(
                 """update checkout_claims set session_id=$3,session_url=$4
                      where account_id=$1::uuid and claim_token=$2::uuid
+                       and request_snapshot_version=1
+                       and stripe_request_snapshot is not null
                      returning account_id""",
                 reservation.account_id,
                 reservation.claim_token,
@@ -205,7 +251,11 @@ class CheckoutCoordinator:
         async with self.pool.acquire() as conn:
             deleted = await conn.fetchval(
                 """delete from checkout_claims
-                     where account_id=$1::uuid and claim_token=$2::uuid returning account_id""",
+                     where account_id=$1::uuid and claim_token=$2::uuid
+                       and request_snapshot_version=0
+                       and stripe_request_snapshot is null
+                       and session_id is null
+                     returning account_id""",
                 reservation.account_id,
                 reservation.claim_token,
             )
@@ -224,6 +274,96 @@ class CheckoutCoordinator:
         return bool(
             row is not None and row["stripe_subscription_id"] and row["claim_token"] is None
         )
+
+    async def _execute_frozen(
+        self,
+        creator: CheckoutCreator,
+        reservation: CheckoutReservation,
+        snapshot: Mapping[str, Any],
+    ) -> tuple[str, str]:
+        if reservation.session_id and reservation.session_url:
+            return reservation.session_id, reservation.session_url
+        session_id, url = await creator.create_checkout_session_from_snapshot(snapshot)
+        try:
+            _validate_session_identity(session_id, url)
+        except ValueError as exc:
+            raise RuntimeError("Checkout creator returned an invalid Session identity") from exc
+        # A generic Stripe/network exception has an unknown outcome. Keep this claim;
+        # the caller must retry the same request key/claim token so Stripe idempotency
+        # can return the original Session instead of opening a second payable Session.
+        if not await self.attach_session(reservation, session_id, url):
+            if await self.completed_during_creation(reservation):
+                return session_id, url
+            raise RuntimeError(
+                "Checkout claim identity changed while Stripe was creating a session"
+            )
+        return session_id, url
+
+    async def recover_frozen(
+        self,
+        creator: CheckoutCreator,
+        *,
+        account_id: str,
+        plan_key: str,
+        interval: str,
+        request_key: str,
+    ) -> tuple[str, str] | None:
+        """Replay an exact v1 claim before consulting mutable catalog/URL config."""
+
+        plan_key = _validate_visible(plan_key, field="plan_key", max_bytes=64)
+        request_key = _validate_visible(request_key, field="request_key", max_bytes=200)
+        if "_" in plan_key or interval not in {"month", "year"}:
+            raise ValueError("invalid frozen Checkout recovery identity")
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """select * from checkout_claims
+                     where account_id=$1::uuid and client_request_key=$2
+                       and plan_key=$3 and plan_interval=$4
+                       and expires_at > clock_timestamp()
+                       and request_snapshot_version=1
+                       and stripe_request_snapshot is not null""",
+                account_id,
+                request_key,
+                plan_key,
+                interval,
+            )
+        if row is None:
+            return None
+        reservation = CheckoutReservation(
+            account_id=account_id,
+            claim_token=str(row["claim_token"]),
+            plan_key=str(row["plan_key"]),
+            interval=str(row["plan_interval"]),
+            expires_at=row["expires_at"],
+            request_key=str(row["client_request_key"]),
+            request_customer_id=row["request_customer_id"],
+            session_id=row["session_id"],
+            session_url=row["session_url"],
+            request_snapshot_version=row["request_snapshot_version"],
+            stripe_request_snapshot=row["stripe_request_snapshot"],
+        )
+        from .stripe_request_snapshots import (
+            StripeRequestSnapshotError,
+            validate_checkout_request_snapshot,
+        )
+
+        try:
+            snapshot = validate_checkout_request_snapshot(
+                reservation.stripe_request_snapshot,
+                expected_kind="subscription",
+                expected_account_id=reservation.account_id,
+                expected_request_identity=reservation.claim_token,
+                expected_interval=cast(Any, reservation.interval),
+                expected_offering_key=reservation.plan_key,
+                expected_expires_at=int(reservation.expires_at.timestamp()),
+                expected_customer_id=reservation.request_customer_id,
+            )
+        except StripeRequestSnapshotError as exc:
+            raise CheckoutReplayUnsafeError(
+                "the persisted Checkout request snapshot is invalid; operator "
+                "reconciliation is required"
+            ) from exc
+        return await self._execute_frozen(creator, reservation, snapshot)
 
     async def create(
         self,
@@ -245,38 +385,80 @@ class CheckoutCoordinator:
         # Customer/create-mode snapshot committed with the durable claim. As with
         # credit packs, first-Customer mode omits email rather than retaining PII
         # solely to reproduce Stripe idempotency parameters.
+        if interval != expected_interval:
+            raise CheckoutCreationRejected(
+                "Checkout interval does not match the catalog expectation"
+            )
         del customer_id, customer_email
         reservation = await self.reserve(account_id, plan_key, interval, request_key=request_key)
         if reservation.session_id and reservation.session_url:
             return reservation.session_id, reservation.session_url
-        try:
-            session_id, url = await creator.create_checkout_session(
-                account_id=account_id,
-                customer_id=reservation.request_customer_id,
-                lookup_key=lookup_key,
-                expected_currency=expected_currency,
-                expected_unit_amount=expected_unit_amount,
-                expected_interval=expected_interval,
-                claim_token=reservation.claim_token,
-                expires_at=reservation.expires_at,
-                customer_email=None,
-                plan_key=plan_key,
-                interval=interval,
+        from .stripe_request_snapshots import (
+            StripeRequestSnapshotError,
+            validate_checkout_request_snapshot,
+        )
+
+        if reservation.request_snapshot_version is None:
+            raise CheckoutReplayUnsafeError(
+                "this Checkout claim predates durable request snapshots; operator "
+                "reconciliation is required"
             )
-        except CheckoutCreationRejected:
-            await self.release(reservation)
-            raise
-        try:
-            _validate_session_identity(session_id, url)
-        except ValueError as exc:
-            raise RuntimeError("Checkout creator returned an invalid Session identity") from exc
-        # A generic Stripe/network exception has an unknown outcome. Keep this claim;
-        # the caller must retry the same request key/claim token so Stripe idempotency
-        # can return the original Session instead of opening a second payable Session.
-        if not await self.attach_session(reservation, session_id, url):
-            if await self.completed_during_creation(reservation):
-                return session_id, url
-            raise RuntimeError(
-                "Checkout claim identity changed while Stripe was creating a session"
+        if reservation.request_snapshot_version == 1:
+            try:
+                snapshot = validate_checkout_request_snapshot(
+                    reservation.stripe_request_snapshot,
+                    expected_kind="subscription",
+                    expected_account_id=reservation.account_id,
+                    expected_request_identity=reservation.claim_token,
+                    expected_interval=cast(Any, reservation.interval),
+                    expected_offering_key=reservation.plan_key,
+                    expected_expires_at=int(reservation.expires_at.timestamp()),
+                    expected_customer_id=reservation.request_customer_id,
+                )
+            except StripeRequestSnapshotError as exc:
+                raise CheckoutReplayUnsafeError(
+                    "the persisted Checkout request snapshot is invalid; operator "
+                    "reconciliation is required"
+                ) from exc
+        else:
+            try:
+                prepared = await creator.prepare_checkout_session(
+                    account_id=account_id,
+                    customer_id=reservation.request_customer_id,
+                    lookup_key=lookup_key,
+                    expected_currency=expected_currency,
+                    expected_unit_amount=expected_unit_amount,
+                    expected_interval=expected_interval,
+                    claim_token=reservation.claim_token,
+                    expires_at=reservation.expires_at,
+                    customer_email=None,
+                    plan_key=plan_key,
+                    interval=interval,
+                )
+                snapshot = validate_checkout_request_snapshot(
+                    prepared,
+                    expected_kind="subscription",
+                    expected_account_id=reservation.account_id,
+                    expected_request_identity=reservation.claim_token,
+                    expected_lookup_key=lookup_key,
+                    expected_currency=expected_currency,
+                    expected_unit_amount=expected_unit_amount,
+                    expected_interval=cast(Any, expected_interval),
+                    expected_offering_key=plan_key,
+                    expected_expires_at=int(reservation.expires_at.timestamp()),
+                    expected_customer_id=reservation.request_customer_id,
+                )
+            except CheckoutCreationRejected:
+                await self.release(reservation)
+                raise
+            snapshot = validate_checkout_request_snapshot(
+                await self.freeze_request_snapshot(reservation, snapshot),
+                expected_kind="subscription",
+                expected_account_id=reservation.account_id,
+                expected_request_identity=reservation.claim_token,
+                expected_interval=cast(Any, reservation.interval),
+                expected_offering_key=reservation.plan_key,
+                expected_expires_at=int(reservation.expires_at.timestamp()),
+                expected_customer_id=reservation.request_customer_id,
             )
-        return session_id, url
+        return await self._execute_frozen(creator, reservation, snapshot)

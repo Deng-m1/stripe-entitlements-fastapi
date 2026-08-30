@@ -388,7 +388,13 @@ class StripeGateway:
         details = parent.get("subscription_details") if isinstance(parent, Mapping) else None
         return cls._object_id(details.get("subscription")) if isinstance(details, Mapping) else None
 
-    async def _resolve_lookups(self, lines: list[Any]) -> None:
+    async def _resolve_lookups(
+        self,
+        lines: list[Any],
+        *,
+        request_options: Mapping[str, Any] | None = None,
+    ) -> None:
+        options = dict(self._request_options if request_options is None else request_options)
         unresolved: dict[str, list[dict[str, Any]]] = {}
         for line in lines:
             if not isinstance(line, dict):
@@ -412,7 +418,7 @@ class StripeGateway:
                     stripe.Price.retrieve,
                     price_id,
                     expand=["product", "currency_options"],
-                    **self._request_options,
+                    **options,
                 )
             return price_id, _stripe_object_dict(price)
 
@@ -485,9 +491,14 @@ class StripeGateway:
         )
 
     async def subscription_object(
-        self, subscription_id: str, *, expand: list[str] | None = None
+        self,
+        subscription_id: str,
+        *,
+        expand: list[str] | None = None,
+        request_options: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        options: dict[str, Any] = dict(self._request_options)
+        request_auth = dict(self._request_options if request_options is None else request_options)
+        options = dict(request_auth)
         if expand:
             options["expand"] = expand
         subscription = _stripe_object_dict(
@@ -505,7 +516,7 @@ class StripeGateway:
         container = subscription.get("items")
         raw_items = container.get("data") if isinstance(container, Mapping) else None
         if isinstance(raw_items, list):
-            await self._resolve_lookups(raw_items)
+            await self._resolve_lookups(raw_items, request_options=request_auth)
         return subscription
 
     async def checkout_session_object(self, session_id: str) -> dict[str, Any]:
@@ -611,7 +622,7 @@ class StripeGateway:
         }
         return await self.prepare_event(event)
 
-    async def create_checkout_session(
+    async def prepare_checkout_session(
         self,
         *,
         account_id: str,
@@ -625,7 +636,8 @@ class StripeGateway:
         customer_email: str | None,
         plan_key: str,
         interval: str,
-    ) -> tuple[str, str]:
+    ) -> dict[str, Any]:
+        del customer_email
         prices = await asyncio.to_thread(
             stripe.Price.list,
             lookup_keys=[lookup_key],
@@ -649,55 +661,28 @@ class StripeGateway:
             expected_lookup_key=lookup_key,
         ):
             raise CheckoutCreationRejected(f"Stripe price {lookup_key!r} drifted from the catalog")
-        # Invariant: never add allow_promotion_codes (or any other discount surface) to
-        # these params. has_unsupported_invoice_adjustments fails closed on every
-        # discounted Invoice, so a redeemed promotion code would mean Stripe collected
-        # a discounted payment while this service grants nothing and opens an incident.
-        # Promotion-code support is reserved and must not be enabled standalone; it
-        # requires an explicit coupon funding policy with its own invoice acceptance.
-        params: dict[str, Any] = {
-            "mode": "subscription",
-            "client_reference_id": account_id,
-            "line_items": [{"price": prices.data[0].id, "quantity": 1}],
-            "subscription_data": {
-                "metadata": {
-                    "account_id": account_id,
-                    "product_line": self.product_line,
-                    "claim_token": claim_token,
-                }
-            },
-            "success_url": self._checkout_success_url(plan_key, interval),
-            "cancel_url": self.checkout_cancel_url,
-            "expires_at": int(expires_at.timestamp()),
-            "metadata": {
-                "claim_token": claim_token,
-                "account_id": account_id,
-                "product_line": self.product_line,
-            },
-        }
-        if customer_id:
-            params["customer"] = customer_id
-        elif customer_email:
-            params["customer_email"] = customer_email
+        from .stripe_request_snapshots import build_subscription_checkout_request_snapshot
 
-        def _create() -> Any:
-            return stripe.checkout.Session.create(
-                **params,
-                idempotency_key=f"checkout:{account_id}:{claim_token}",
-                **self._request_options,
-            )
-
-        session = await asyncio.to_thread(
-            _create,
-        )
-        return (
-            _required_text(
-                getattr(session, "id", None), field="Checkout Session id", max_bytes=255
+        return build_subscription_checkout_request_snapshot(
+            account_id=account_id,
+            claim_token=claim_token,
+            customer_id=customer_id,
+            price_id=_required_text(
+                self._object_id(price_raw.get("id")), field="Checkout Price id", max_bytes=255
             ),
-            _required_https_url(getattr(session, "url", None), field="Checkout Session URL"),
+            lookup_key=lookup_key,
+            currency=expected_currency,
+            unit_amount=expected_unit_amount,
+            interval=cast(BillingInterval, expected_interval),
+            plan_key=plan_key,
+            product_line=self.product_line,
+            success_url=self._checkout_success_url(plan_key, interval),
+            cancel_url=self.checkout_cancel_url,
+            expires_at=int(expires_at.timestamp()),
+            request_api_version=self.api_version,
         )
 
-    async def create_credit_pack_checkout_session(
+    async def prepare_credit_pack_checkout_session(
         self,
         *,
         order_id: str,
@@ -711,7 +696,8 @@ class StripeGateway:
         pack_credits: str,
         expires_days: int,
         expires_at: datetime,
-    ) -> tuple[str, str]:
+    ) -> dict[str, Any]:
+        del customer_email
         prices = await asyncio.to_thread(
             stripe.Price.list,
             lookup_keys=[lookup_key],
@@ -734,46 +720,46 @@ class StripeGateway:
             expected_lookup_key=lookup_key,
         ):
             raise CheckoutCreationRejected(f"Stripe price {lookup_key!r} drifted from the catalog")
-        metadata = {
-            "billing_kind": "credit_pack",
-            "pack_schema_version": "1",
-            "product_line": self.product_line,
-            "credit_pack_order_id": order_id,
-            "account_id": account_id,
-            "pack_key": pack_key,
-            "pack_credits": pack_credits,
-            "price_amount": str(expected_unit_amount),
-            "currency": expected_currency,
-            "expires_days": str(expires_days),
-            "lookup_key": lookup_key,
+        from .stripe_request_snapshots import build_credit_pack_checkout_request_snapshot
+
+        return build_credit_pack_checkout_request_snapshot(
+            order_id=order_id,
+            account_id=account_id,
+            customer_id=customer_id,
+            price_id=_required_text(
+                self._object_id(price.get("id")), field="Checkout Price id", max_bytes=255
+            ),
+            lookup_key=lookup_key,
+            currency=expected_currency,
+            unit_amount=expected_unit_amount,
+            pack_key=pack_key,
+            pack_credits=pack_credits,
+            expires_days=expires_days,
+            product_line=self.product_line,
+            success_url=self._credit_pack_success_url(pack_key),
+            cancel_url=self.checkout_cancel_url,
+            expires_at=int(expires_at.timestamp()),
+            request_api_version=self.api_version,
+        )
+
+    async def create_checkout_session_from_snapshot(
+        self, snapshot: Mapping[str, Any]
+    ) -> tuple[str, str]:
+        from .stripe_request_snapshots import validate_checkout_request_snapshot
+
+        prepared = validate_checkout_request_snapshot(snapshot)
+        params = prepared["params"]
+        assert isinstance(params, Mapping)
+        request_options = {
+            "api_key": self.secret_key,
+            "stripe_version": str(prepared["request_api_version"]),
         }
-        success_url = self._credit_pack_success_url(pack_key)
-        params: dict[str, Any] = {
-            "mode": "payment",
-            # The reference pack contract is intentionally card-only. Letting
-            # Dashboard automatic payment methods add asynchronous rails would
-            # advertise settlement/refund shapes this bounded template does not test.
-            "payment_method_types": ["card"],
-            "client_reference_id": account_id,
-            "line_items": [{"price": prices.data[0].id, "quantity": 1}],
-            "payment_intent_data": {"metadata": metadata},
-            "success_url": success_url,
-            "cancel_url": self.checkout_cancel_url,
-            "expires_at": int(expires_at.timestamp()),
-            "metadata": metadata,
-        }
-        if customer_id:
-            params["customer"] = customer_id
-        else:
-            params["customer_creation"] = "always"
-            if customer_email:
-                params["customer_email"] = customer_email
 
         def _create() -> Any:
             return stripe.checkout.Session.create(
-                **params,
-                idempotency_key=f"credit-pack:{order_id}",
-                **self._request_options,
+                **cast(Any, dict(params)),
+                idempotency_key=str(prepared["idempotency_key"]),
+                **cast(Any, request_options),
             )
 
         session = await asyncio.to_thread(_create)
@@ -783,6 +769,20 @@ class StripeGateway:
             ),
             _required_https_url(getattr(session, "url", None), field="Checkout Session URL"),
         )
+
+    async def create_checkout_session(
+        self,
+        **kwargs: Any,
+    ) -> tuple[str, str]:
+        snapshot = await self.prepare_checkout_session(**kwargs)
+        return await self.create_checkout_session_from_snapshot(snapshot)
+
+    async def create_credit_pack_checkout_session(
+        self,
+        **kwargs: Any,
+    ) -> tuple[str, str]:
+        snapshot = await self.prepare_credit_pack_checkout_session(**kwargs)
+        return await self.create_checkout_session_from_snapshot(snapshot)
 
     def _checkout_success_url(self, plan_key: str, interval: str) -> str:
         split = urlsplit(self.checkout_success_url)
@@ -1298,6 +1298,88 @@ class StripeGateway:
             period_end,
         )
 
+    async def verify_plan_change_request_snapshot(
+        self, snapshot: Mapping[str, Any]
+    ) -> PlanChangeContext:
+        """Read current Subscription state without re-resolving the target lookup key."""
+        from .stripe_request_snapshots import (
+            plan_change_context_from_snapshot,
+            validate_plan_change_request_snapshot,
+        )
+
+        prepared = validate_plan_change_request_snapshot(snapshot)
+        frozen = plan_change_context_from_snapshot(prepared)
+        request_options = {
+            "api_key": self.secret_key,
+            "stripe_version": str(prepared["request_api_version"]),
+        }
+        subscription = await self.subscription_object(
+            frozen.subscription_id,
+            expand=["latest_invoice.confirmation_secret"],
+            request_options=request_options,
+        )
+        container = subscription.get("items")
+        raw_items = container.get("data") if isinstance(container, Mapping) else None
+        if (
+            not isinstance(container, Mapping)
+            or container.get("has_more") not in {None, False}
+            or not isinstance(raw_items, list)
+            or len(raw_items) != 1
+            or not isinstance(raw_items[0], Mapping)
+        ):
+            raise RuntimeError("subscription must contain exactly one item object")
+        item = raw_items[0]
+        if _stripe_integer(item.get("quantity")) != 1:
+            raise RuntimeError("subscription item quantity must be exactly one")
+        item_id = _required_text(
+            self._object_id(item.get("id")), field="Subscription item id", max_bytes=255
+        )
+        current_price_id = self._price_id(item)
+        current_lookup = self._inline_lookup(item) or item.get("_resolved_lookup_key")
+        start_value = _stripe_integer(
+            item.get("current_period_start", subscription.get("current_period_start"))
+        )
+        end_value = _stripe_integer(
+            item.get("current_period_end", subscription.get("current_period_end"))
+        )
+        if (
+            current_price_id is None
+            or not isinstance(current_lookup, str)
+            or start_value is None
+            or end_value is None
+        ):
+            raise RuntimeError("Stripe Subscription snapshot is incomplete")
+        period_start = datetime.fromtimestamp(start_value, tz=UTC)
+        period_end = datetime.fromtimestamp(end_value, tz=UTC)
+        schedule_raw = subscription.get("schedule")
+        schedule_id = None if schedule_raw is None else self._object_id(schedule_raw)
+        if schedule_raw is not None and schedule_id is None:
+            raise RuntimeError("Stripe returned an invalid Subscription Schedule identity")
+        status = subscription.get("status")
+        cancel_at_period_end = subscription.get("cancel_at_period_end")
+        pending_raw = subscription.get("pending_update")
+        if (
+            not isinstance(status, str)
+            or status not in _SUBSCRIPTION_STATUSES
+            or not isinstance(cancel_at_period_end, bool)
+            or (pending_raw is not None and not isinstance(pending_raw, Mapping))
+        ):
+            raise RuntimeError("Stripe Subscription snapshot has an invalid state")
+        return PlanChangeContext(
+            frozen.subscription_id,
+            item_id,
+            current_price_id,
+            current_lookup,
+            frozen.target_price_id,
+            frozen.target_interval,
+            period_start,
+            period_end,
+            schedule_id,
+            status,
+            cancel_at_period_end,
+            bool(pending_raw),
+        )
+
     async def apply_immediate_plan_change(
         self,
         context: PlanChangeContext,
@@ -1337,6 +1419,49 @@ class StripeGateway:
             )
 
         subscription = _stripe_object_dict(await asyncio.to_thread(_modify))
+        return self._remote_plan_change_from_subscription(context, subscription)
+
+    async def execute_plan_change_request_snapshot(
+        self, snapshot: Mapping[str, Any]
+    ) -> RemotePlanChange:
+        """Replay one frozen mutation with its original API version and parameters."""
+        from .stripe_request_snapshots import (
+            plan_change_context_from_snapshot,
+            validate_plan_change_request_snapshot,
+        )
+
+        prepared = validate_plan_change_request_snapshot(snapshot)
+        context = plan_change_context_from_snapshot(prepared)
+        request_options = {
+            "api_key": self.secret_key,
+            "stripe_version": str(prepared["request_api_version"]),
+        }
+        idempotency_key = str(prepared["idempotency_key"])
+        if prepared["kind"] == "plan_change_schedule":
+            return await self._schedule_plan_change_prepared(
+                context,
+                idempotency_key=idempotency_key,
+                request_options=request_options,
+                product_line=str(prepared["product_line"]),
+            )
+        params = prepared["params"]
+        if not isinstance(params, Mapping):
+            raise RuntimeError("frozen plan-change parameters are invalid")
+
+        def _modify() -> Any:
+            return stripe.Subscription.modify(
+                context.subscription_id,
+                **cast(Any, dict(params)),
+                idempotency_key=idempotency_key,
+                **cast(Any, dict(request_options)),
+            )
+
+        subscription = _stripe_object_dict(await asyncio.to_thread(_modify))
+        return self._remote_plan_change_from_subscription(context, subscription)
+
+    def _remote_plan_change_from_subscription(
+        self, context: PlanChangeContext, subscription: Mapping[str, Any]
+    ) -> RemotePlanChange:
         returned_subscription_id = self._object_id(subscription.get("id"))
         if returned_subscription_id != context.subscription_id:
             raise RuntimeError("Stripe returned a different Subscription after plan mutation")
@@ -1407,13 +1532,28 @@ class StripeGateway:
         *,
         idempotency_key: str,
     ) -> RemotePlanChange:
+        return await self._schedule_plan_change_prepared(
+            context,
+            idempotency_key=idempotency_key,
+            request_options=self._request_options,
+            product_line=self.product_line,
+        )
+
+    async def _schedule_plan_change_prepared(
+        self,
+        context: PlanChangeContext,
+        *,
+        idempotency_key: str,
+        request_options: Mapping[str, Any],
+        product_line: str,
+    ) -> RemotePlanChange:
         # Stripe rejects all additional create fields with from_subscription. Metadata
         # and the complete phase policy are applied only in the second idempotent call.
         schedule = await asyncio.to_thread(
             stripe.SubscriptionSchedule.create,
             from_subscription=context.subscription_id,
             idempotency_key=f"{idempotency_key}:create",
-            **self._request_options,
+            **request_options,
         )
         schedule_raw = _stripe_object_dict(schedule)
         schedule_id = _required_text(
@@ -1424,7 +1564,9 @@ class StripeGateway:
         raw_phases = schedule_raw.get("phases")
         phases = raw_phases if isinstance(raw_phases, list) else []
         if len(phases) == 2:
-            if not self._configured_schedule_matches(schedule_raw, context, idempotency_key):
+            if not self._configured_schedule_matches(
+                schedule_raw, context, idempotency_key, product_line=product_line
+            ):
                 raise RuntimeError("existing Stripe Schedule differs from this plan change")
             return RemotePlanChange(schedule_id)
         if len(phases) != 1:
@@ -1451,11 +1593,11 @@ class StripeGateway:
                 end_behavior="release",
                 proration_behavior="none",
                 metadata={
-                    "product_line": self.product_line,
+                    "product_line": product_line,
                     "plan_change_key": idempotency_key,
                 },
                 idempotency_key=f"{idempotency_key}:configure",
-                **self._request_options,
+                **request_options,
             )
 
         configured = await asyncio.to_thread(_configure)
@@ -1470,13 +1612,13 @@ class StripeGateway:
         verified = await asyncio.to_thread(
             stripe.SubscriptionSchedule.retrieve,
             configured_id,
-            **self._request_options,
+            **request_options,
         )
         verified_raw = _stripe_object_dict(verified)
         if self._object_id(
             verified_raw.get("id")
         ) != configured_id or not self._configured_schedule_matches(
-            verified_raw, context, idempotency_key
+            verified_raw, context, idempotency_key, product_line=product_line
         ):
             raise RuntimeError("configured Stripe Schedule failed policy verification")
         return RemotePlanChange(configured_id)
@@ -1512,6 +1654,8 @@ class StripeGateway:
         schedule: Mapping[str, Any],
         context: PlanChangeContext,
         plan_change_key: str,
+        *,
+        product_line: str | None = None,
     ) -> bool:
         raw_phases = schedule.get("phases")
         if (
@@ -1537,7 +1681,7 @@ class StripeGateway:
         return bool(
             subscription_id == context.subscription_id
             and schedule.get("end_behavior") == "release"
-            and metadata.get("product_line") == self.product_line
+            and metadata.get("product_line") == (product_line or self.product_line)
             and metadata.get("plan_change_key") == plan_change_key
             and phases[0].get("end_date") == boundary
             and phases[1].get("start_date") == boundary

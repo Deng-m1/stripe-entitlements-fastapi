@@ -129,6 +129,14 @@ class PlanChangeGateway(Protocol):
         idempotency_key: str,
     ) -> RemotePlanChange: ...
 
+    async def execute_plan_change_request_snapshot(
+        self, snapshot: Mapping[str, Any]
+    ) -> RemotePlanChange: ...
+
+    async def verify_plan_change_request_snapshot(
+        self, snapshot: Mapping[str, Any]
+    ) -> PlanChangeContext: ...
+
 
 @dataclass(frozen=True, slots=True)
 class PlanChangeResult:
@@ -214,6 +222,11 @@ class PlanChangeCoordinator:
                 "this plan-change intent is no longer reusable; start a new intent"
             )
         if status != "reserved":
+            if status != "completed" and row.get("request_snapshot_version") != 1:
+                raise PlanChangeUnavailableError(
+                    "this legacy preview has no durable Stripe request snapshot; "
+                    "request a new preview with a new Idempotency-Key"
+                )
             return self._result(row, decision, replayed=True)
         lease_token = uuid.uuid4()
         leased = await self._acquire_lease(str(row["id"]), lease_token, "reserved")
@@ -223,6 +236,17 @@ class PlanChangeCoordinator:
                 raise PlanChangeBusyError("this plan-change preview is still being calculated")
             return self._result(refreshed, decision, replayed=True)
         try:
+            # Rows created before migration 002 have no durable-request state.  Do
+            # not let a recovered lease silently upgrade one of those intents: a
+            # remote preview below is Stripe I/O, and there is no safe request
+            # lineage to attach to a legacy row.  Only an explicitly reserved v0
+            # intent may proceed to the prepare -> freeze transition.
+            if leased.get("request_snapshot_version") != 0:
+                await self._retire_unfrozen_intent(str(leased["id"]), lease_token)
+                raise PlanChangeUnavailableError(
+                    "this legacy preview has no durable Stripe request snapshot; "
+                    "request a new preview with a new Idempotency-Key"
+                )
             target_lookup = self.catalog.lookup_key(decision.target_plan, decision.target_interval)
             target_plan = self.catalog.require(decision.target_plan)
             source_plan = self.catalog.require(decision.from_plan)
@@ -315,6 +339,9 @@ class PlanChangeCoordinator:
                         decision.policy,
                     )
             await self._assert_account_snapshot(row)
+            request_snapshot = self._build_request_snapshot(
+                row, decision, context, proration_date=proration_date
+            )
             final = await self._store_preview(
                 str(row["id"]),
                 lease_token,
@@ -322,6 +349,7 @@ class PlanChangeCoordinator:
                 context,
                 estimate,
                 proration_date,
+                request_snapshot,
             )
             return self._result(final, decision, replayed=replayed)
         except Exception as exc:
@@ -373,60 +401,31 @@ class PlanChangeCoordinator:
         decision = self._decision_from_row(row)
 
         try:
-            target_lookup = self.catalog.lookup_key(decision.target_plan, decision.target_interval)
-            target_plan = self.catalog.require(decision.target_plan)
-            source_plan = self.catalog.require(decision.from_plan)
-            context = await self.gateway.prepare_plan_change(
-                str(row["stripe_subscription_id"]),
-                target_lookup,
-                expected_currency=target_plan.currency,
-                expected_unit_amount=(
-                    target_plan.month_usd
-                    if decision.target_interval == "month"
-                    else target_plan.year_usd
+            if row.get("request_snapshot_version") != 1:
+                await self._retire_unfrozen_intent(str(row["id"]), lease_token)
+                raise PlanChangeUnavailableError(
+                    "this preview has no durable Stripe request snapshot; request a new "
+                    "preview with a new Idempotency-Key"
                 )
-                * 100,
-                expected_plan_key=target_plan.key,
-                target_interval=decision.target_interval,
-                expected_source_lookup_key=self.catalog.lookup_key(
-                    source_plan.key, decision.from_interval
-                ),
-                expected_source_currency=source_plan.currency,
-                expected_source_unit_amount=(
-                    source_plan.month_usd
-                    if decision.from_interval == "month"
-                    else source_plan.year_usd
-                )
-                * 100,
-                expected_source_plan_key=source_plan.key,
-                source_interval=decision.from_interval,
-            )
-            await self._revalidate_before_remote(row, context, target_lookup)
-            request_key = str(row["stripe_request_key"])
+            request_snapshot = self._validated_request_snapshot(row)
+            from .stripe_request_snapshots import plan_change_context_from_snapshot
+
+            context = plan_change_context_from_snapshot(request_snapshot)
+            await self._assert_remote_retry_window(row)
+            if row.get("remote_started_at") is None:
+                await self._verify_snapshot_before_remote_start(row, request_snapshot)
+            await self._assert_account_snapshot(row)
+            row = await self._mark_remote_started(str(row["id"]), lease_token)
+            remote = await self._execute_request_snapshot(request_snapshot)
+            await self._assert_account_snapshot(row)
             if decision.timing == "immediate":
-                await self._assert_remote_retry_window(row)
-                row = await self._mark_remote_started(str(row["id"]), lease_token)
-                remote = await self.gateway.apply_immediate_plan_change(
-                    context,
-                    idempotency_key=f"{request_key}:apply",
-                    policy=decision.policy,
-                    proration_date=(
-                        int(row["proration_date"]) if row["proration_date"] is not None else None
-                    ),
-                )
                 final_status: PlanChangeStatus = (
                     "requires_action" if remote.pending_update else "applied"
                 )
                 effective_at = None
             else:
-                await self._assert_remote_retry_window(row)
-                row = await self._mark_remote_started(str(row["id"]), lease_token)
-                remote = await self.gateway.schedule_plan_change(
-                    context, idempotency_key=f"{request_key}:schedule"
-                )
                 final_status = "scheduled"
                 effective_at = context.current_period_end
-            await self._assert_account_snapshot(row)
             final = await self._finish(
                 str(row["id"]),
                 lease_token,
@@ -561,9 +560,10 @@ class PlanChangeCoordinator:
                        expected_grant_epoch,expected_entitlement_period_end,
                        expected_subscription_status,expected_cancel_at_period_end,
                        transition_policy,expected_source_invoice_id,
-                       expected_credit_delta,expected_entitlement_revoked)
+                       expected_credit_delta,expected_entitlement_revoked,
+                       request_snapshot_version)
                      values($1,$2::uuid,$3,$4,$5,$6,$7,$8,$9,$10,$11,
-                            $12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+                            $12,$13,$14,$15,$16,$17,$18,$19,$20,$21,0)
                      returning *""",
                 change_id,
                 account_id,
@@ -655,6 +655,190 @@ class PlanChangeCoordinator:
             )
         return expired is not None
 
+    def _build_request_snapshot(
+        self,
+        row: Mapping[str, Any],
+        decision: TransitionDecision,
+        context: PlanChangeContext,
+        *,
+        proration_date: int | None = None,
+    ) -> dict[str, Any]:
+        from .stripe_request_snapshots import build_plan_change_request_snapshot
+
+        source = self.catalog.require(decision.from_plan)
+        target = self.catalog.require(decision.target_plan)
+        request_key = str(row["stripe_request_key"])
+        timing = cast(Literal["immediate", "period_end"], decision.timing)
+        idempotency_key = f"{request_key}:{'apply' if timing == 'immediate' else 'schedule'}"
+        api_version = str(getattr(self.gateway, "api_version", "2026-06-24.dahlia"))
+        product_line = str(getattr(self.gateway, "product_line", "example-entitlements"))
+        return build_plan_change_request_snapshot(
+            context,
+            timing=timing,
+            policy=decision.policy,
+            proration_date=(
+                proration_date
+                if proration_date is not None
+                else (int(row["proration_date"]) if row.get("proration_date") is not None else None)
+            ),
+            idempotency_key=idempotency_key,
+            request_api_version=api_version,
+            product_line=product_line,
+            source_lookup_key=self.catalog.lookup_key(source.key, decision.from_interval),
+            target_lookup_key=self.catalog.lookup_key(target.key, decision.target_interval),
+            source_plan_key=source.key,
+            target_plan_key=target.key,
+            source_currency=source.currency,
+            target_currency=target.currency,
+            source_unit_amount=(
+                source.month_usd if decision.from_interval == "month" else source.year_usd
+            )
+            * 100,
+            target_unit_amount=(
+                target.month_usd if decision.target_interval == "month" else target.year_usd
+            )
+            * 100,
+        )
+
+    def _validated_request_snapshot(self, row: Mapping[str, Any]) -> dict[str, Any]:
+        from .stripe_request_snapshots import (
+            StripeRequestSnapshotError,
+            validate_plan_change_request_snapshot,
+        )
+
+        if row.get("request_snapshot_version") != 1:
+            if row.get("remote_started_at") is not None:
+                raise PlanChangeUnavailableError(
+                    "the Stripe mutation started without a durable request snapshot; "
+                    "operator reconciliation is required"
+                )
+            raise PlanChangeConflictError("the plan-change request snapshot is not frozen")
+        if not isinstance(row.get("stripe_request_snapshot"), Mapping):
+            raise PlanChangeUnavailableError(
+                "the persisted plan-change request snapshot is invalid; "
+                "operator reconciliation is required"
+            )
+        decision = self._decision_from_row(row)
+        timing = cast(Literal["immediate", "period_end"], decision.timing)
+        suffix = "apply" if timing == "immediate" else "schedule"
+        try:
+            snapshot = validate_plan_change_request_snapshot(
+                row["stripe_request_snapshot"],
+                expected_idempotency_key=f"{row['stripe_request_key']}:{suffix}",
+                expected_subscription_id=str(row["stripe_subscription_id"]),
+                expected_timing=timing,
+                expected_policy=decision.policy,
+            )
+        except StripeRequestSnapshotError as exc:
+            raise PlanChangeUnavailableError(
+                "the persisted plan-change request snapshot is invalid; "
+                "operator reconciliation is required"
+            ) from exc
+        evidence = cast(Mapping[str, Any], snapshot["price_evidence"])
+        if (
+            evidence.get("source_plan_key") != row["from_plan_key"]
+            or evidence.get("target_plan_key") != row["target_plan_key"]
+        ):
+            raise PlanChangeUnavailableError(
+                "the persisted plan-change request snapshot is invalid; "
+                "operator reconciliation is required"
+            )
+        return snapshot
+
+    async def _freeze_request_snapshot(
+        self,
+        row: Mapping[str, Any],
+        lease_token: uuid.UUID,
+        snapshot: Mapping[str, Any],
+    ) -> asyncpg.Record:
+        async with self.pool.acquire() as conn:
+            frozen = await conn.fetchrow(
+                """update billing_plan_changes set request_snapshot_version=1,
+                         stripe_request_snapshot=$3::jsonb,updated_at=now()
+                     where id=$1::uuid and lease_token=$2
+                       and remote_started_at is null
+                       and stripe_request_snapshot is null
+                       and request_snapshot_version=0
+                     returning *""",
+                row["id"],
+                lease_token,
+                dict(snapshot),
+            )
+        if frozen is None:
+            frozen = await self._get(str(row["id"]))
+        self._validated_request_snapshot(frozen)
+        return frozen
+
+    async def _retire_unfrozen_intent(self, change_id: str, lease_token: uuid.UUID) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """update billing_plan_changes set status='failed',
+                         last_error='missing_remote_request_snapshot',
+                         lease_token=null,lease_expires_at=null,updated_at=now()
+                     where id=$1::uuid and lease_token=$2
+                       and request_snapshot_version is distinct from 1""",
+                change_id,
+                lease_token,
+            )
+
+    async def _execute_request_snapshot(self, snapshot: Mapping[str, Any]) -> RemotePlanChange:
+        executor = getattr(self.gateway, "execute_plan_change_request_snapshot", None)
+        if callable(executor):
+            return cast(RemotePlanChange, await executor(snapshot))
+        # Backward-compatible deterministic fake seam. Production StripeGateway uses
+        # the version-pinned executor above.
+        from .stripe_request_snapshots import plan_change_context_from_snapshot
+
+        context = plan_change_context_from_snapshot(snapshot)
+        if snapshot["kind"] == "plan_change_schedule":
+            return await self.gateway.schedule_plan_change(
+                context, idempotency_key=str(snapshot["idempotency_key"])
+            )
+        params = cast(Mapping[str, Any], snapshot["params"])
+        proration_raw = params.get("proration_date")
+        return await self.gateway.apply_immediate_plan_change(
+            context,
+            idempotency_key=str(snapshot["idempotency_key"]),
+            policy=cast(TransitionPolicy, snapshot["policy"]),
+            proration_date=int(proration_raw) if type(proration_raw) is int else None,
+        )
+
+    async def _verify_snapshot_before_remote_start(
+        self, row: Mapping[str, Any], snapshot: Mapping[str, Any]
+    ) -> None:
+        from .stripe_request_snapshots import plan_change_context_from_snapshot
+
+        frozen = plan_change_context_from_snapshot(snapshot)
+        verifier = getattr(self.gateway, "verify_plan_change_request_snapshot", None)
+        if callable(verifier):
+            observed = cast(PlanChangeContext, await verifier(snapshot))
+        else:
+            evidence = cast(Mapping[str, Any], snapshot["price_evidence"])
+            observed = await self.gateway.prepare_plan_change(
+                frozen.subscription_id,
+                str(evidence["target_lookup_key"]),
+                expected_currency=str(evidence["target_currency"]),
+                expected_unit_amount=int(evidence["target_unit_amount"]),
+                expected_plan_key=str(evidence["target_plan_key"]),
+                target_interval=frozen.target_interval,
+                expected_source_lookup_key=str(evidence["source_lookup_key"]),
+                expected_source_currency=str(evidence["source_currency"]),
+                expected_source_unit_amount=int(evidence["source_unit_amount"]),
+                expected_source_plan_key=str(evidence["source_plan_key"]),
+                source_interval=cast(BillingInterval, row["from_interval"]),
+            )
+        if observed.subscription_item_id != frozen.subscription_item_id:
+            raise PlanChangeConflictError("Stripe subscription item identity changed")
+        if observed.current_price_id != frozen.current_price_id:
+            raise PlanChangeConflictError("Stripe source Price identity changed")
+        if observed.current_period_start != frozen.current_period_start:
+            raise PlanChangeConflictError("Stripe billing period drifted; reconcile first")
+        await self._revalidate_before_remote(
+            row,
+            observed,
+            str(cast(Mapping[str, Any], snapshot["price_evidence"])["target_lookup_key"]),
+        )
+
     async def _store_preview(
         self,
         change_id: str,
@@ -663,6 +847,7 @@ class PlanChangeCoordinator:
         context: PlanChangeContext,
         estimate: PlanChangeEstimate | None,
         proration_date: int | None,
+        request_snapshot: Mapping[str, Any],
     ) -> asyncpg.Record:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -676,8 +861,13 @@ class PlanChangeCoordinator:
                        estimated_target_proration=$11,
                        estimated_period_start=$12,estimated_period_end=$13,
                        preview_expires_at=now()+interval '10 minutes',
+                       request_snapshot_version=1,stripe_request_snapshot=$14::jsonb,
                        lease_token=null,lease_expires_at=null,last_error=null,updated_at=now()
-                     where id=$1::uuid and lease_token=$2 returning *""",
+                     where id=$1::uuid and lease_token=$2
+                       and remote_started_at is null
+                       and stripe_request_snapshot is null
+                       and request_snapshot_version=0
+                     returning *""",
                 change_id,
                 lease_token,
                 decision.timing,
@@ -691,9 +881,12 @@ class PlanChangeCoordinator:
                 estimate.target_proration_amount if estimate else None,
                 estimate.period_start if estimate else None,
                 estimate.period_end if estimate else None,
+                dict(request_snapshot),
             )
         if row is None:
-            return await self._get(change_id)
+            existing = await self._get(change_id)
+            self._validated_request_snapshot(existing)
+            return existing
         return row
 
     async def _revalidate_before_remote(

@@ -59,7 +59,7 @@ export function createSocialImage(): ImageResponse {
           }}
         >
           Subscriptions, exact fractional credits, one-time credit packs, and
-          race-safe webhooks for FastAPI + PostgreSQL
+          race-safe webhooks for FastAPI or TypeScript + PostgreSQL
         </div>
       </div>
       <div style={{ alignItems: "center", display: "flex", gap: 16 }}>

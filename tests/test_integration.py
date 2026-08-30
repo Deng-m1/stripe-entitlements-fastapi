@@ -36,6 +36,12 @@ class StaticAuth:
 
 class FakeGateway:
     secret_key = "sk_test_integration_gateway"
+    api_version = "2026-06-24.dahlia"
+    product_line = "example-entitlements"
+    checkout_success_url = "http://localhost:3000/billing/success"
+    checkout_cancel_url = "http://localhost:3000/pricing"
+    portal_return_url = "http://localhost:3000/account"
+    portal_configuration_id = "bpc_test"
 
     def construct_event(self, payload: bytes, signature: str):  # type: ignore[no-untyped-def]
         del payload, signature
@@ -92,6 +98,27 @@ def _kernel(database: Database | None = None) -> BillingKernel:
         gateway=FakeGateway(),  # type: ignore[arg-type]
         auth_adapter=StaticAuth(),
     )
+
+
+def test_kernel_applies_pool_settings_to_an_owned_database() -> None:
+    settings = _settings().model_copy(
+        update={
+            "database_pool_min": 0,
+            "database_pool_max": 4,
+            "database_pool_idle_timeout_ms": 30_000,
+            "database_connect_timeout_ms": 5_000,
+        }
+    )
+    kernel = BillingKernel(
+        settings,
+        gateway=FakeGateway(),  # type: ignore[arg-type]
+        auth_adapter=StaticAuth(),
+    )
+
+    assert kernel.database.min_size == 0
+    assert kernel.database.max_size == 4
+    assert kernel.database.idle_timeout_ms == 30_000
+    assert kernel.database.connect_timeout_ms == 5_000
 
 
 def test_public_facade_builds_a_native_prefixed_router() -> None:

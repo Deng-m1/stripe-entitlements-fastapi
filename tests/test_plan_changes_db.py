@@ -25,6 +25,7 @@ PERIOD_END = datetime(2030, 8, 1, tzinfo=UTC)
 class FakePlanGateway:
     def __init__(self, current_lookup: str = "ent_starter_month") -> None:
         self.current_lookup = current_lookup
+        self.prepare_calls = 0
         self.preview_calls = 0
         self.apply_calls: list[str] = []
         self.remote_apply_mutations = 0
@@ -58,6 +59,7 @@ class FakePlanGateway:
         **kwargs,  # type: ignore[no-untyped-def]
     ) -> PlanChangeContext:
         del kwargs
+        self.prepare_calls += 1
         return PlanChangeContext(
             subscription_id,
             "si_test",
@@ -406,6 +408,42 @@ async def test_discounted_or_underfunded_preview_forces_period_end(
 
     preview = await service.preview_remote(account_id, "pro", "month", "underfunded")
     assert preview.decision.timing == "period_end"
+
+
+async def test_legacy_reserved_preview_is_retired_before_any_gateway_io(
+    pool: asyncpg.Pool, catalog: PlanCatalog, make_account
+) -> None:
+    account_id = await _seed_paid_account(pool, make_account)
+    gateway = FakePlanGateway()
+    service = PlanChangeCoordinator(pool, catalog, gateway)
+    row, _ = await service._reserve(account_id, "pro", "month", "legacy-preview")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """update billing_plan_changes set request_snapshot_version=null
+                 where id=$1""",
+            row["id"],
+        )
+
+    with pytest.raises(PlanChangeUnavailableError, match="new Idempotency-Key"):
+        await service.preview_remote(account_id, "pro", "month", "legacy-preview")
+
+    async with pool.acquire() as conn:
+        retired = await conn.fetchrow(
+            """select status,last_error,request_snapshot_version,
+                      stripe_request_snapshot,remote_started_at
+                 from billing_plan_changes where id=$1""",
+            row["id"],
+        )
+    assert gateway.prepare_calls == 0
+    assert gateway.preview_calls == 0
+    assert retired is not None
+    assert tuple(retired) == (
+        "failed",
+        "missing_remote_request_snapshot",
+        None,
+        None,
+        None,
+    )
 
 
 async def test_expired_preview_lease_can_be_reacquired_with_same_request(

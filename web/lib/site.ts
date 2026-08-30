@@ -1,6 +1,6 @@
-export const SITE_NAME = "Stripe Entitlements for FastAPI";
+export const SITE_NAME = "Stripe Entitlements for FastAPI & TypeScript";
 export const SITE_DESCRIPTION =
-  "Open-source Stripe billing and entitlements for FastAPI, PostgreSQL, and Next.js with subscriptions, exact fractional credits, one-time credit packs, and race-safe webhooks.";
+  "Open-source Stripe billing and entitlements with native FastAPI and TypeScript/Next.js backends over PostgreSQL, including subscriptions, exact fractional credits, one-time credit packs, and race-safe webhooks.";
 export const REPOSITORY_URL =
   "https://github.com/Deng-m1/stripe-entitlements-fastapi";
 

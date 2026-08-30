@@ -69,7 +69,7 @@ class BillingKernel:
         auth_adapter: AuthAccountAdapter | None = None,
     ) -> None:
         self.settings = settings or get_settings()
-        self.database = database or Database(self.settings.database_url)
+        self.database = database or Database.from_settings(self.settings)
         self.gateway = gateway or StripeGateway(
             self.settings.stripe_secret_key,
             self.settings.stripe_webhook_secret,
@@ -102,6 +102,34 @@ class BillingKernel:
         gateway_test_mode = gateway_secret_key.startswith("sk_test_")
         if settings_test_mode != gateway_test_mode:
             raise ValueError("settings and billing gateway Stripe modes do not match")
+        gateway_api_version = getattr(self.gateway, "api_version", None)
+        if gateway_api_version != self.settings.stripe_api_version:
+            raise ValueError("settings and billing gateway Stripe API versions do not match")
+        gateway_product_line = getattr(self.gateway, "product_line", None)
+        if gateway_product_line != self.settings.product_line:
+            raise ValueError("settings and billing gateway product lines do not match")
+        gateway_configuration = (
+            (
+                "Checkout success URLs",
+                "checkout_success_url",
+                self.settings.checkout_success_url,
+            ),
+            (
+                "Checkout cancel URLs",
+                "checkout_cancel_url",
+                self.settings.checkout_cancel_url,
+            ),
+            ("Portal return URLs", "portal_return_url", self.settings.portal_return_url),
+            (
+                "Portal configuration IDs",
+                "portal_configuration_id",
+                self.settings.stripe_portal_configuration_id,
+            ),
+        )
+        missing = object()
+        for label, attribute, expected in gateway_configuration:
+            if getattr(self.gateway, attribute, missing) != expected:
+                raise ValueError(f"settings and billing gateway {label} do not match")
         if not self.settings.stripe_webhook_secret.startswith("whsec_"):
             raise ValueError("Stripe webhook secret must start with whsec_")
         return gateway_test_mode

@@ -1,6 +1,6 @@
 import { defineConfig } from "@playwright/test";
-import { statSync } from "node:fs";
-import { resolve } from "node:path";
+import { lstatSync, statSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import { browserProcessEnvironment } from "./lib/browser-process-environment";
 import { optionalLoopbackCertificateSpki } from "./lib/e2e-tls";
 
@@ -25,7 +25,12 @@ function positiveDuration(name: string, fallback: number): number {
   return value;
 }
 
-function integerInRange(name: string, fallback: number, min: number, max: number): number {
+function integerInRange(
+  name: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
   const raw = process.env[name]?.trim();
   if (!raw) return fallback;
   const value = Number(raw);
@@ -35,9 +40,39 @@ function integerInRange(name: string, fallback: number, min: number, max: number
   return value;
 }
 
+function requiredPrivateDirectory(name: string): string {
+  const configured = requiredEnvironment(name);
+  if (!isAbsolute(configured)) {
+    throw new Error(`${name} must be an absolute path.`);
+  }
+  const path = resolve(configured);
+  const state = lstatSync(path);
+  if (state.isSymbolicLink() || !state.isDirectory()) {
+    throw new Error(
+      `${name} must identify a real directory, not a symbolic link.`,
+    );
+  }
+  if ((statSync(path).mode & 0o077) !== 0) {
+    throw new Error(`${name} must not be accessible by group or other users.`);
+  }
+  return path;
+}
+
 requiredEnvironment("E2E_RUN_REAL_STRIPE", "1");
 requiredEnvironment("E2E_STRIPE_MODE", "test");
 requiredEnvironment("E2E_FRONTEND_BUILD_MODE", "production");
+requiredEnvironment("E2E_FULL_STACK_EVIDENCE", "1");
+const backendImplementation = requiredEnvironment("E2E_BACKEND_IMPLEMENTATION");
+if (!["python", "typescript"].includes(backendImplementation)) {
+  throw new Error("E2E_BACKEND_IMPLEMENTATION must be python or typescript.");
+}
+requiredEnvironment("E2E_PERSONAL_BEARER_TOKEN");
+const successJobKey = requiredEnvironment("E2E_JOB_SUCCESS_KEY");
+const failureJobKey = requiredEnvironment("E2E_JOB_FAILURE_KEY");
+if (successJobKey === failureJobKey) {
+  throw new Error("E2E product Job operation keys must be distinct.");
+}
+requiredPrivateDirectory("E2E_WEBHOOK_GATE_STATE_DIR");
 const transitionPolicy = requiredEnvironment("E2E_TRANSITION_POLICY");
 if (!["full_period_reset", "prorated_delta"].includes(transitionPolicy)) {
   throw new Error(
@@ -45,7 +80,9 @@ if (!["full_period_reset", "prorated_delta"].includes(transitionPolicy)) {
   );
 }
 if (!requiredEnvironment("STRIPE_SECRET_KEY").startsWith("sk_test_")) {
-  throw new Error("Real Stripe browser E2E refuses a key that is not sk_test_.");
+  throw new Error(
+    "Real Stripe browser E2E refuses a key that is not sk_test_.",
+  );
 }
 requiredEnvironment("E2E_DATABASE_URL");
 requiredEnvironment("E2E_EXTERNAL_REF");
@@ -69,7 +106,9 @@ function validatedOrigin(name: string): { url: URL; loopback: boolean } {
     throw new Error(`${name} must be an origin without an application path.`);
   }
   if (url.protocol !== "https:" && !(loopback && url.protocol === "http:")) {
-    throw new Error(`${name} must use HTTPS; loopback HTTP is the only exception.`);
+    throw new Error(
+      `${name} must use HTTPS; loopback HTTP is the only exception.`,
+    );
   }
   return { url, loopback };
 }
@@ -92,9 +131,12 @@ function validatedStorageState(): string | undefined {
   }
   const path = resolve(configured);
   const state = statSync(path);
-  if (!state.isFile()) throw new Error("E2E_STORAGE_STATE must identify a file.");
+  if (!state.isFile())
+    throw new Error("E2E_STORAGE_STATE must identify a file.");
   if ((state.mode & 0o077) !== 0) {
-    throw new Error("E2E_STORAGE_STATE must not be readable by group or other users.");
+    throw new Error(
+      "E2E_STORAGE_STATE must not be readable by group or other users.",
+    );
   }
   return path;
 }
@@ -126,7 +168,10 @@ export default defineConfig({
   outputDir,
   reporter: [
     ["list"],
-    ["html", { outputFolder: resolve(artifactRoot, "html-report"), open: "never" }],
+    [
+      "html",
+      { outputFolder: resolve(artifactRoot, "html-report"), open: "never" },
+    ],
   ],
   use: {
     baseURL: frontend.url.origin,
@@ -154,5 +199,10 @@ export default defineConfig({
         : [],
     },
   },
-  metadata: { demoPauseMs, recordVideo },
+  metadata: {
+    backendImplementation,
+    demoPauseMs,
+    recordVideo,
+    transitionPolicy,
+  },
 });

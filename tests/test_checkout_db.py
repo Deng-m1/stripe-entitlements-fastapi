@@ -13,11 +13,56 @@ from stripe_entitlements.checkout import (
     CheckoutReservation,
 )
 from stripe_entitlements.processor import EventProcessor
+from stripe_entitlements.stripe_request_snapshots import (
+    build_subscription_checkout_request_snapshot,
+)
 from tests.builders import checkout_event
 from tests.db_lock_helpers import (
     wait_for_account_row_lock_waiter,
     wait_until_database_time_after,
 )
+
+
+def subscription_snapshot(**kwargs):  # type: ignore[no-untyped-def]
+    expires_at = kwargs["expires_at"]
+    return build_subscription_checkout_request_snapshot(
+        account_id=kwargs["account_id"],
+        claim_token=kwargs["claim_token"],
+        customer_id=kwargs["customer_id"],
+        price_id="price_test_checkout",
+        lookup_key=kwargs["lookup_key"],
+        currency=kwargs["expected_currency"],
+        unit_amount=kwargs["expected_unit_amount"],
+        interval=kwargs["expected_interval"],
+        plan_key=kwargs["plan_key"],
+        product_line="test-product",
+        success_url="https://app.example.test/success",
+        cancel_url="https://app.example.test/pricing",
+        expires_at=int(expires_at.timestamp()),
+        request_api_version="2026-06-24.dahlia",
+    )
+
+
+async def freeze_reservation(
+    coordinator: CheckoutCoordinator, reservation: CheckoutReservation
+) -> None:
+    snapshot = build_subscription_checkout_request_snapshot(
+        account_id=reservation.account_id,
+        claim_token=reservation.claim_token,
+        customer_id=reservation.request_customer_id,
+        price_id="price_test_checkout",
+        lookup_key=f"ent_{reservation.plan_key}_{reservation.interval}",
+        currency="usd",
+        unit_amount=1900,
+        interval=reservation.interval,  # type: ignore[arg-type]
+        plan_key=reservation.plan_key,
+        product_line="test-product",
+        success_url="https://app.example.test/success",
+        cancel_url="https://app.example.test/pricing",
+        expires_at=int(reservation.expires_at.timestamp()),
+        request_api_version="2026-06-24.dahlia",
+    )
+    await coordinator.freeze_request_snapshot(reservation, snapshot)
 
 
 async def test_checkout_reservation_uses_database_clock(pool: asyncpg.Pool, make_account) -> None:
@@ -161,6 +206,7 @@ async def test_checkout_session_fragment_is_preserved_and_attached(
     account_id = await make_account(customer=None, subscription=None)
     coordinator = CheckoutCoordinator(pool)
     reservation = await coordinator.reserve(account_id, "starter", "month")
+    await freeze_reservation(coordinator, reservation)
     session_url = "https://checkout.stripe.com/c/pay/test#stripe-hosted-state"
 
     assert await coordinator.attach_session(reservation, "cs_fragment", session_url)
@@ -179,8 +225,11 @@ async def test_invalid_creator_session_identity_retains_claim_for_safe_retry(
     coordinator = CheckoutCoordinator(pool)
 
     class InvalidCreator:
-        async def create_checkout_session(self, **kwargs):  # type: ignore[no-untyped-def]
-            del kwargs
+        async def prepare_checkout_session(self, **kwargs):  # type: ignore[no-untyped-def]
+            return subscription_snapshot(**kwargs)
+
+        async def create_checkout_session_from_snapshot(self, snapshot):  # type: ignore[no-untyped-def]
+            del snapshot
             return "cs_invalid", "http://checkout.invalid/session"
 
     with pytest.raises(RuntimeError, match="invalid Session identity"):
@@ -235,6 +284,11 @@ async def test_only_claim_owner_can_attach_or_release(pool: asyncpg.Pool, make_a
     )
     assert not await coordinator.attach_session(impostor, "cs_impostor", "https://invalid")
     assert not await coordinator.release(impostor)
+    assert not await coordinator.attach_session(
+        reservation, "cs_unfrozen", "https://checkout/unfrozen"
+    )
+    await freeze_reservation(coordinator, reservation)
+    assert not await coordinator.release(reservation)
     assert await coordinator.attach_session(reservation, "cs_owner", "https://checkout/owner")
 
 
@@ -249,6 +303,7 @@ async def test_expired_claim_can_be_replaced_and_old_expiration_cannot_delete_ne
         "month",
         ttl=timedelta(minutes=1),
     )
+    await freeze_reservation(coordinator, old)
     assert await coordinator.attach_session(old, "cs_old", "https://checkout/old")
     async with pool.acquire() as conn:
         await conn.execute(
@@ -262,6 +317,7 @@ async def test_expired_claim_can_be_replaced_and_old_expiration_cannot_delete_ne
         "pro",
         "year",
     )
+    await freeze_reservation(coordinator, new)
     assert await coordinator.attach_session(new, "cs_new", "https://checkout/new")
     result = await processor.process(
         checkout_event("checkout.session.expired", account_id, "cs_old")
@@ -280,6 +336,7 @@ async def test_stale_checkout_completion_does_not_bind_subscription(
     account_id = await make_account(customer=None, subscription=None)
     coordinator = CheckoutCoordinator(pool)
     claim = await coordinator.reserve(account_id, "starter", "month")
+    await freeze_reservation(coordinator, claim)
     assert await coordinator.attach_session(claim, "cs_current", "https://checkout/current")
     result = await processor.process(
         checkout_event(
@@ -313,6 +370,7 @@ async def test_checkout_completion_uses_exact_claim_not_advisory_product_line(
     claim = await coordinator.reserve(
         account_id, "starter", "month", request_key=f"advisory-product-line-{observed}"
     )
+    await freeze_reservation(coordinator, claim)
     session_id = f"cs_advisory_product_line_{observed}"
     assert await coordinator.attach_session(
         claim, session_id, f"https://checkout.test/{session_id}"
@@ -356,6 +414,7 @@ async def test_checkout_completion_requires_customer_identity(
     claim = await coordinator.reserve(
         account_id, "starter", "month", request_key="missing-customer"
     )
+    await freeze_reservation(coordinator, claim)
     assert await coordinator.attach_session(
         claim, "cs_missing_customer", "https://checkout/missing-customer"
     )
@@ -395,8 +454,12 @@ async def test_deterministic_checkout_rejection_releases_own_claim(
     coordinator = CheckoutCoordinator(pool)
 
     class FailingCreator:
-        async def create_checkout_session(self, **kwargs):  # type: ignore[no-untyped-def]
+        async def prepare_checkout_session(self, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
             raise CheckoutCreationRejected("request was rejected before creation")
+
+        async def create_checkout_session_from_snapshot(self, snapshot):  # type: ignore[no-untyped-def]
+            raise AssertionError(f"unexpected remote create: {snapshot!r}")
 
     with pytest.raises(CheckoutCreationRejected):
         await coordinator.create(
@@ -425,9 +488,13 @@ async def test_unknown_checkout_failure_retains_claim_for_same_key_retry(
             self.calls = 0
             self.parameters: list[tuple[object, object]] = []
 
-        async def create_checkout_session(self, **kwargs):  # type: ignore[no-untyped-def]
-            self.calls += 1
+        async def prepare_checkout_session(self, **kwargs):  # type: ignore[no-untyped-def]
             self.parameters.append((kwargs["customer_id"], kwargs["customer_email"]))
+            return subscription_snapshot(**kwargs)
+
+        async def create_checkout_session_from_snapshot(self, snapshot):  # type: ignore[no-untyped-def]
+            del snapshot
+            self.calls += 1
             if self.calls == 1:
                 raise TimeoutError("outcome unknown")
             return "cs_recovered", "https://checkout/recovered"
@@ -461,7 +528,7 @@ async def test_unknown_checkout_failure_retains_claim_for_same_key_retry(
         request_key="same-request",
     )
     assert session == ("cs_recovered", "https://checkout/recovered")
-    assert creator.parameters == [(None, None), (None, None)]
+    assert creator.parameters == [(None, None)]
     async with pool.acquire() as conn:
         row = await conn.fetchrow("select * from checkout_claims")
     assert row is not None and row["client_request_key"] == "same-request"
@@ -478,9 +545,14 @@ async def test_checkout_retry_freezes_existing_customer_and_omits_email(
         def __init__(self) -> None:
             self.parameters: list[tuple[object, object]] = []
 
-        async def create_checkout_session(self, **kwargs):  # type: ignore[no-untyped-def]
+        async def prepare_checkout_session(self, **kwargs):  # type: ignore[no-untyped-def]
             self.parameters.append((kwargs["customer_id"], kwargs["customer_email"]))
-            if len(self.parameters) == 1:
+            return subscription_snapshot(**kwargs)
+
+        async def create_checkout_session_from_snapshot(self, snapshot):  # type: ignore[no-untyped-def]
+            del snapshot
+            self.calls = getattr(self, "calls", 0) + 1
+            if self.calls == 1:
                 raise TimeoutError("outcome unknown")
             return "cs_existing_recovered", "https://checkout/existing-recovered"
 
@@ -513,10 +585,7 @@ async def test_checkout_retry_freezes_existing_customer_and_omits_email(
         "cs_existing_recovered",
         "https://checkout/existing-recovered",
     )
-    assert creator.parameters == [
-        ("cus_original", None),
-        ("cus_original", None),
-    ]
+    assert creator.parameters == [("cus_original", None)]
 
 
 async def test_checkout_completed_before_api_attach_converges_by_claim_token(
@@ -526,14 +595,19 @@ async def test_checkout_completed_before_api_attach_converges_by_claim_token(
     coordinator = CheckoutCoordinator(pool)
 
     class WebhookBeforeReturnCreator:
-        async def create_checkout_session(self, **kwargs):  # type: ignore[no-untyped-def]
+        async def prepare_checkout_session(self, **kwargs):  # type: ignore[no-untyped-def]
+            self.claim_token = kwargs["claim_token"]
+            return subscription_snapshot(**kwargs)
+
+        async def create_checkout_session_from_snapshot(self, snapshot):  # type: ignore[no-untyped-def]
+            del snapshot
             result = await processor.process(
                 checkout_event(
                     "checkout.session.completed",
                     account_id,
                     "cs_early",
                     subscription="sub_early",
-                    claim_token=kwargs["claim_token"],
+                    claim_token=self.claim_token,
                 )
             )
             assert result.outcome == "handled"
@@ -563,3 +637,103 @@ async def test_checkout_completed_before_api_attach_converges_by_claim_token(
         )
     assert account is not None and account["stripe_subscription_id"] == "sub_early"
     assert claims == 0
+
+
+async def test_interval_mismatch_has_no_database_or_creator_side_effects(
+    pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account(customer=None, subscription=None)
+
+    class NeverCreator:
+        async def prepare_checkout_session(self, **kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError(f"unexpected prepare: {kwargs!r}")
+
+        async def create_checkout_session_from_snapshot(self, snapshot):  # type: ignore[no-untyped-def]
+            raise AssertionError(f"unexpected create: {snapshot!r}")
+
+    with pytest.raises(CheckoutCreationRejected, match="interval"):
+        await CheckoutCoordinator(pool).create(
+            NeverCreator(),
+            account_id=account_id,
+            customer_id=None,
+            plan_key="starter",
+            interval="month",
+            lookup_key="ent_starter_month",
+            expected_currency="usd",
+            expected_unit_amount=1900,
+            expected_interval="year",
+            request_key="interval-mismatch",
+        )
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("select count(*) from checkout_claims") == 0
+
+
+async def test_rejected_loser_cannot_release_concurrent_frozen_winner(
+    pool: asyncpg.Pool, make_account
+) -> None:
+    account_id = await make_account(customer=None, subscription=None)
+    coordinator = CheckoutCoordinator(pool)
+
+    class RaceCreator:
+        def __init__(self) -> None:
+            self.prepare_calls = 0
+            self.remote_calls = 0
+            self.loser_ready = asyncio.Event()
+            self.winner_frozen = asyncio.Event()
+
+        async def prepare_checkout_session(self, **kwargs):  # type: ignore[no-untyped-def]
+            self.prepare_calls += 1
+            if self.prepare_calls == 1:
+                await self.loser_ready.wait()
+                return subscription_snapshot(**kwargs)
+            self.loser_ready.set()
+            await self.winner_frozen.wait()
+            raise CheckoutCreationRejected("loser catalog rejection")
+
+        async def create_checkout_session_from_snapshot(self, snapshot):  # type: ignore[no-untyped-def]
+            del snapshot
+            self.remote_calls += 1
+            self.winner_frozen.set()
+            return "cs_frozen_winner", "https://checkout.test/frozen-winner"
+
+    creator = RaceCreator()
+    kwargs = {
+        "account_id": account_id,
+        "customer_id": None,
+        "plan_key": "starter",
+        "interval": "month",
+        "lookup_key": "ent_starter_month",
+        "expected_currency": "usd",
+        "expected_unit_amount": 1900,
+        "expected_interval": "month",
+        "request_key": "freeze-release-race",
+    }
+    outcomes = await asyncio.gather(
+        coordinator.create(creator, **kwargs),
+        coordinator.create(creator, **kwargs),
+        return_exceptions=True,
+    )
+    assert sum(not isinstance(item, BaseException) for item in outcomes) == 1
+    assert sum(isinstance(item, CheckoutCreationRejected) for item in outcomes) == 1
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """select request_snapshot_version,stripe_request_snapshot,session_id
+                 from checkout_claims where account_id=$1::uuid""",
+            account_id,
+        )
+    assert row is not None
+    assert row["request_snapshot_version"] == 1
+    assert row["stripe_request_snapshot"] is not None
+    assert row["session_id"] == "cs_frozen_winner"
+    assert await coordinator.create(creator, **kwargs) == (
+        "cs_frozen_winner",
+        "https://checkout.test/frozen-winner",
+    )
+    with pytest.raises(CheckoutBusyError):
+        await coordinator.reserve(
+            account_id,
+            "starter",
+            "month",
+            request_key="different-key",
+        )
+    assert creator.remote_calls == 1

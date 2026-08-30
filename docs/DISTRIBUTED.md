@@ -7,13 +7,20 @@ one PostgreSQL primary. Any number of annual workers or reconcilers may scan the
 accounts. Correctness comes from primary keys, partial unique indexes, conditional
 updates, leases and row locks; process-local memory is not part of the proof.
 
-That statement also covers stateless Vercel Python Functions. Overlapping Cron requests
-process bounded pages and can be interrupted or repeated; no invocation owns durable
-progress in memory. The same PostgreSQL primary, migration level, catalog, Stripe mode,
-and transition policy remain mandatory across every warm instance. Function cold starts
-and provider retries do not weaken the database guards. Configure managed PostgreSQL
-connection limits/pooling for serverless concurrency; exhausting connections is an
-availability failure even when correctness remains intact.
+That model is implemented independently by Python/FastAPI and TypeScript/Node/Next.js.
+A normal fleet selects one runtime and keeps its package version, migration level,
+catalog, Stripe mode/version contracts, product line, and transition policy identical.
+The shared schema and cross-runtime credit contention tests support controlled
+interoperability; they are not permission to mix arbitrary releases as replicas.
+
+That statement also covers stateless Vercel Python Functions and native Next.js Node
+Route Handlers. Overlapping Cron requests process bounded pages and can be interrupted
+or repeated; no invocation owns durable progress in memory. The same PostgreSQL primary,
+migration level, catalog, Stripe mode, and transition policy remain mandatory across
+every warm instance. Function cold starts and provider retries do not weaken the
+database guards. Configure managed PostgreSQL connection limits/pooling for serverless
+concurrency; exhausting connections is an availability failure even when correctness
+remains intact.
 
 Checkout Session creation uses a durable single-flight claim. The browser supplies a
 stable `Idempotency-Key` for one user intent; the database binds it to an unguessable
@@ -40,12 +47,12 @@ atomically consume later usage refunds or delta grants.
 `stripe_invoice_state.closure_applied` independently prevents distinct refund/dispute
 Event IDs from reapplying one terminal funding closure.
 
-The same guarantees apply when routes are installed into a host FastAPI application or
-called through the optional internal workload router. `BillingKernel` and its service
-graph are process-local wiring; all committed entitlement and credit coordination still
-uses the shared PostgreSQL primary. Install one kernel once per FastAPI application.
-Duplicate installation and concurrent activation of the same kernel fail rather than
-opening a second service graph.
+The same guarantees apply when routes are installed into a host FastAPI application,
+adapted through the TypeScript Fetch/Node/Next facade, or called through the optional
+internal workload boundary. `BillingKernel` and its service graph are process-local
+wiring; all committed entitlement and credit coordination still uses the shared
+PostgreSQL primary. Install/start one kernel once per host application. Duplicate or
+concurrent activation fails rather than opening an ambiguous second service graph.
 
 One `Database` object may bind to only one `BillingKernel`. A second binding fails at
 construction so an earlier lifecycle owner cannot close a pool still used by another
@@ -107,8 +114,10 @@ does not upgrade a database initialized by a v0.2.x tag. Before the first 0.3 de
 recreate every development, demo, or staging database that used the old lineage; never
 point a v0.2.x process at a 0.3 database or a 0.3 process at a v0.2.x database.
 
-Apply the bundled baseline before sending traffic to code that uses authenticated billing
-APIs. For the first deployment and every later schema change:
+Version 0.4.0 appends `002_stripe_request_snapshots.sql`; a fresh database applies both
+files and an existing 0.3 database applies only 002. Apply every bundled migration before
+sending traffic to code that uses authenticated billing APIs. For the first deployment
+and every later schema change:
 
 1. back up all fourteen correctness tables;
 2. apply every migration bundled with the target version once;
@@ -122,6 +131,13 @@ already present in `schema_migrations`. The 0.3 lineage-reset guard is deliberat
 rolling-upgrade bridge from v0.2.x. After the 0.3 baseline is established, never remove,
 rename, or reinterpret an applied migration; append a new migration and keep runtime
 changes backward-compatible until old replicas are gone.
+
+Migration 002 is schema-additive but changes the remote-mutation recovery protocol. Do
+not mix v0.3 and v0.4 subscription Checkout, credit-pack Checkout, or plan-change writers:
+quiesce those routes, apply 002, replace the writer fleet, and reopen traffic. Once v0.4
+has frozen or started a request, an older coordinator can no longer replay it safely from
+mutable configuration. Roll forward, or stop writes and reconcile/retire every in-flight
+request before any v0.3 rollback.
 
 ## Horizontal scaling checklist
 

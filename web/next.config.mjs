@@ -1,3 +1,11 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const repositoryRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
+
 export function validatePublicBillingBuildEnvironment(
   environment,
   mode,
@@ -94,6 +102,9 @@ const nextConfig = {
   // duplicating and potentially shadowing this repository's reviewed root guide.
   agentRules: false,
   reactStrictMode: true,
+  outputFileTracingRoot: repositoryRoot,
+  transpilePackages: ["@tosea/stripe-entitlements"],
+  turbopack: { root: repositoryRoot },
   env: productionRouteAuthSentinel
     ? { NEXT_PUBLIC_E2E_ROUTE_AUTH_SENTINEL: productionRouteAuthSentinel }
     : {},

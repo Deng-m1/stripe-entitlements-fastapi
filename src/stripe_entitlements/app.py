@@ -17,6 +17,7 @@ from .checkout import (
     CheckoutActiveSubscriptionError,
     CheckoutBusyError,
     CheckoutCreationRejected,
+    CheckoutReplayUnsafeError,
 )
 from .config import Settings
 from .credit_amount import CREDIT_SCALE, credit_decimal
@@ -272,6 +273,15 @@ def create_billing_router(
             )
         return value
 
+    def require_stripe_mode(requirement: str | None) -> None:
+        if requirement not in {None, "test"}:
+            raise HTTPException(
+                400,
+                "X-Stripe-Mode-Requirement must be test when supplied",
+            )
+        if requirement == "test" and not gateway_test_mode:
+            raise HTTPException(409, "billing backend is not in the required Stripe test mode")
+
     def require_configured_url(value: str, expected: str, field: str) -> None:
         if value.rstrip("/") != expected.rstrip("/"):
             raise HTTPException(400, f"{field} must match the server allowlisted URL")
@@ -398,13 +408,32 @@ def create_billing_router(
         body: CheckoutRequest,
         identity: Identity,
         idempotency_key: str = Header(alias="Idempotency-Key"),
-        stripe_mode_requirement: Literal["test"] | None = Header(
+        stripe_mode_requirement: str | None = Header(
             default=None, alias="X-Stripe-Mode-Requirement"
         ),
     ) -> dict[str, str]:
-        if stripe_mode_requirement == "test" and not gateway_test_mode:
-            raise HTTPException(409, "billing backend is not in the required Stripe test mode")
+        require_stripe_mode(stripe_mode_requirement)
         request_key = require_idempotency(idempotency_key)
+        account = await database.existing_account_for_external_ref(identity.external_ref)
+        if account is not None:
+            try:
+                recovered = await kernel.require_services().checkout.recover_frozen(
+                    gateway,
+                    account_id=str(account["id"]),
+                    plan_key=body.plan_key,
+                    interval=body.interval,
+                    request_key=request_key,
+                )
+            except CheckoutReplayUnsafeError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            except Exception as exc:
+                raise HTTPException(
+                    502, "Stripe Checkout is temporarily unavailable; retry the same request"
+                ) from exc
+            if recovered is not None:
+                return {"url": recovered[1]}
         require_checkout_success_url(
             body.success_url, plan_key=body.plan_key, interval=body.interval
         )
@@ -413,7 +442,8 @@ def create_billing_router(
             plan = catalog.require(body.plan_key)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        account = await database.account_for_external_ref(identity.external_ref)
+        if account is None:
+            account = await database.account_for_external_ref(identity.external_ref)
         try:
             session_id, url = await kernel.require_services().checkout.create(
                 gateway,
@@ -433,6 +463,7 @@ def create_billing_router(
             CheckoutBusyError,
             CheckoutActiveSubscriptionError,
             CheckoutCreationRejected,
+            CheckoutReplayUnsafeError,
         ) as exc:
             raise HTTPException(409, str(exc)) from exc
         except Exception as exc:
@@ -447,20 +478,41 @@ def create_billing_router(
         body: CreditPackCheckoutRequest,
         identity: Identity,
         idempotency_key: str = Header(alias="Idempotency-Key"),
-        stripe_mode_requirement: Literal["test"] | None = Header(
+        stripe_mode_requirement: str | None = Header(
             default=None, alias="X-Stripe-Mode-Requirement"
         ),
     ) -> dict[str, str]:
-        if stripe_mode_requirement == "test" and not gateway_test_mode:
-            raise HTTPException(409, "billing backend is not in the required Stripe test mode")
+        require_stripe_mode(stripe_mode_requirement)
         request_key = require_idempotency(idempotency_key)
+        account = await database.existing_account_for_external_ref(identity.external_ref)
+        if account is not None:
+            try:
+                recovered = await kernel.require_services().credit_packs.recover_frozen(
+                    gateway,
+                    account_id=str(account["id"]),
+                    pack_key=body.pack_key,
+                    request_key=request_key,
+                )
+            except CreditPackConflictError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            except Exception as exc:
+                raise HTTPException(
+                    502,
+                    "Stripe credit-pack Checkout is temporarily unavailable; "
+                    "retry the same request",
+                ) from exc
+            if recovered is not None:
+                return {"session_id": recovered[0], "url": recovered[1]}
         try:
             catalog.require_credit_pack(body.pack_key)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         require_credit_pack_success_url(body.success_url, pack_key=body.pack_key)
         require_configured_url(body.cancel_url, settings.checkout_cancel_url, "cancel_url")
-        account = await database.account_for_external_ref(identity.external_ref)
+        if account is None:
+            account = await database.account_for_external_ref(identity.external_ref)
         try:
             session_id, url = await kernel.require_services().credit_packs.create(
                 gateway,
@@ -489,7 +541,11 @@ def create_billing_router(
         body: PortalRequest,
         identity: Identity,
         idempotency_key: str = Header(alias="Idempotency-Key"),
+        stripe_mode_requirement: str | None = Header(
+            default=None, alias="X-Stripe-Mode-Requirement"
+        ),
     ) -> dict[str, str]:
+        require_stripe_mode(stripe_mode_requirement)
         require_configured_url(body.return_url, settings.portal_return_url, "return_url")
         request_key = require_idempotency(idempotency_key)
         account = await database.existing_account_for_external_ref(identity.external_ref)
@@ -510,7 +566,11 @@ def create_billing_router(
         body: PlanChangePreviewRequest,
         identity: Identity,
         idempotency_key: str = Header(alias="Idempotency-Key"),
+        stripe_mode_requirement: str | None = Header(
+            default=None, alias="X-Stripe-Mode-Requirement"
+        ),
     ) -> dict[str, Any]:
+        require_stripe_mode(stripe_mode_requirement)
         request_key = require_idempotency(idempotency_key)
         try:
             catalog.require(body.plan_key)
@@ -584,7 +644,11 @@ def create_billing_router(
     async def confirm_plan_change(
         body: PlanChangeConfirmRequest,
         identity: Identity,
+        stripe_mode_requirement: str | None = Header(
+            default=None, alias="X-Stripe-Mode-Requirement"
+        ),
     ) -> dict[str, Any]:
+        require_stripe_mode(stripe_mode_requirement)
         account = await database.existing_account_for_external_ref(identity.external_ref)
         if account is None:
             raise HTTPException(409, "plan-change preview not found")
@@ -683,6 +747,6 @@ def create_app(
         gateway=gateway,
         auth_adapter=auth_adapter,
     )
-    app = FastAPI(title="Stripe Entitlements Reference", version="0.3.0")
+    app = FastAPI(title="Stripe Entitlements Reference", version="0.4.0")
     _install_standalone_billing(app, kernel)
     return app

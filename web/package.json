@@ -1,19 +1,26 @@
 {
   "name": "stripe-entitlements-web",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "scripts": {
+    "preinstall": "npm --prefix ../typescript ci",
+    "predev": "npm --prefix ../typescript run build",
     "dev": "next dev",
+    "prebuild": "npm --prefix ../typescript run build",
     "build": "next build",
     "start": "next start",
+    "prelint": "npm --prefix ../typescript run build",
     "lint": "eslint .",
+    "pretypecheck": "npm --prefix ../typescript run build",
     "typecheck": "tsc --noEmit",
+    "pretest": "npm --prefix ../typescript run build",
     "test": "vitest run",
     "test:e2e:stripe": "playwright test --config=playwright.stripe.config.ts",
     "test:promo": "playwright test --config=playwright.promo.config.ts"
   },
   "dependencies": {
+    "@tosea/stripe-entitlements": "file:../typescript",
     "@stripe/stripe-js": "9.14.0",
     "next": "16.3.2",
     "react": "19.2.8",
