@@ -72,9 +72,13 @@ Use the same environment matrix below. Migrate with the TypeScript CLI before tr
 ```bash
 cd typescript
 npm ci
+npm run build
 npx stripe-entitlements migrate
 npx stripe-entitlements doctor --stripe-network
 ```
+
+The explicit build is required only for a source checkout; a release `.tgz` already
+contains the generated CLI.
 
 Set the Vercel project to use `vercel.typescript.json` (or copy that reviewed file to
 `vercel.json` in a downstream repository). The Cron paths and `CRON_SECRET` contract are
@@ -188,7 +192,6 @@ STRIPE_WEBHOOK_API_VERSION=2026-06-24.dahlia          # actual endpoint payload 
 STRIPE_PORTAL_CONFIGURATION_ID=bpc_...
 PRODUCT_LINE=your-product
 LOOKUP_PREFIX=your-prefix
-PLAN_CATALOG_PATH=plans.toml
 BILLING_TRANSITION_POLICY=full_period_reset
 CHECKOUT_SUCCESS_URL=https://your-domain.example/billing/success
 CHECKOUT_CANCEL_URL=https://your-domain.example/pricing
@@ -197,6 +200,15 @@ FRONTEND_ORIGINS=https://your-domain.example
 APP_ENV=production
 CRON_SECRET=<at-least-16-random-visible-ASCII-characters>
 ```
+
+Leave `PLAN_CATALOG_PATH` unset for the checked-in deployments. Both packaged runtimes
+then locate their bundled canonical catalog independently of the process working
+directory. In particular, the native TypeScript service runs with `web/` as its root, so
+setting the repository-relative value `plans.toml` would override the package default
+with a nonexistent `web/plans.toml` and make initialization return 503. A split Python
+Services deployment may set an absolute custom catalog path only when that file is
+deliberately included in the billing service artifact; a native TypeScript deployment
+must likewise use an absolute deployed path for a custom catalog.
 
 Set these build-time public variables for the Next.js service:
 

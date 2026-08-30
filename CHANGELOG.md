@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Prevent TypeScript subscription reconciliation from reusing a mutable Stripe
+  Subscription snapshot after losing its local projection compare-and-set. The bounded
+  retry now rereads and validates Stripe state; a second race stops fail-closed with a
+  durable incident instead of overwriting newer webhook status, cancellation, or period
+  facts.
+- Normalize every PostgreSQL `timestamptz` exposed by the TypeScript public and internal
+  HTTP contracts to RFC 3339 without truncating microseconds.
+- Make source-checkout CLI setup, packaged-catalog Vercel configuration, and the FastAPI
+  product-identity example reproducible, with documentation contract regressions.
+
 ## 0.4.0 - 2026-08-29
 
 - Bump the coordinated Python, TypeScript, reference web, and citation metadata to

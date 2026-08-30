@@ -315,7 +315,9 @@ Server-to-server product enforcement is separate from browser billing. The optio
 internal router exposes entitlement check and owner-bound credit charge/refund routes.
 It defaults to reject-all workload authentication and reject-all owner authorization;
 an operation scope alone never permits a service to select every tenant. Exact JSON
-shapes and frontend configuration are documented in [web/README.md](web/README.md).
+shapes for the public frontend are documented in [web/README.md](web/README.md); the
+private service boundary is documented in the
+[adoption guide](docs/ADOPTION.md#standalone-service-private-apis).
 
 ## Stripe API versions are two separate contracts
 
@@ -326,11 +328,10 @@ shapes and frontend configuration are documented in [web/README.md](web/README.m
   equal that actual Event value and is a required startup setting; it deliberately
   has no fallback to `STRIPE_API_VERSION`.
 
-The request version does not rewrite webhook payloads. The 2026-08-28 0.3 candidate
-browser reruns used Stripe CLI signed forwarding and observed `2025-12-15.clover`; those runs
-prove raw-signature processing but not endpoint metadata. In the separate 2026-08-02
-endpoint gates, Event API retrievals reported Clover while isolated endpoints pinned to
-Dahlia delivered signed `2026-06-24.dahlia` payloads for the same lifecycle. A mismatch
+The request version does not rewrite webhook payloads. In the four exact-`e22d5a7`
+browser gates, isolated test endpoints pinned to Dahlia delivered signed
+`2026-06-24.dahlia` payloads while independent Event API retrievals reported
+`2025-12-15.clover`. A mismatch
 is recorded as `webhook_contract_mismatch` and ignored fail-closed. This repository does
 not infer request, Event API view, or endpoint payload versions from one another. See
 [Testing](docs/TESTING.md),
@@ -450,6 +451,7 @@ Native TypeScript/Node alternative:
 ```bash
 cd typescript
 npm ci
+npm run build
 cp .env.example .env
 chmod 600 .env
 # Set BILLING_TRANSITION_POLICY to full_period_reset or prorated_delta.
@@ -461,7 +463,9 @@ npx stripe-entitlements doctor
 npx stripe-entitlements serve
 ```
 
-The Node server exposes the same public paths on port 8000. A pure Next.js backend can
+The explicit build is required in a source checkout because generated `dist/` CLI files
+are not committed. An installed release `.tgz` already contains them. The Node server
+exposes the same public paths on port 8000. A pure Next.js backend can
 instead use the checked-in Route Handlers and `vercel.typescript.json`; it never starts
 FastAPI. Full package, auth, worker, and deployment instructions are in
 [`typescript/README.md`](typescript/README.md).
@@ -582,61 +586,32 @@ privacy rules, and reproducible workflow.
 Evidence is split by execution layer; collecting a test or retaining an older run does
 not prove the current tree against Stripe's network.
 
-The current uncommitted 0.4.0 working tree passed 1,254 network-free Python tests against
-disposable PostgreSQL 17 (with 10 `real_stripe` tests deselected), 804 native TypeScript
-tests across 50 files under its full coverage/build gate, and 208 reference-Web tests
-across 19 files. Python lint/type checking/audit, both TypeScript npm audits, and Web
-lint/type checking/npm audits also passed. These working-tree results are not yet bound
-to a final commit. The clean Web production build, final Python/npm distributions, container,
-current Python and TypeScript Stripe-network suites, four browser/backend-policy runs,
-and production payload verification must be recorded separately; none is implied by the
-network-free counts.
+The complete 0.4.0 parity gate is bound to clean commit
+`e22d5a7eb327e7ef175c23fa76fc1021c9b1184e`. GitHub Actions run
+[`33280721250`](https://github.com/Deng-m1/stripe-entitlements-fastapi/actions/runs/33280721250)
+passed Backend, TypeScript billing core, Container, and Web:
 
-The artifact and network evidence below belongs to the earlier 2026-08-28 0.3
-baseline candidate based on `main@4df7f73`; it has not been rebound to the current
-0.4.0 candidate and must be rerun before release:
+- Python passed Ruff, Mypy, the version check, dependency audit, and 1,254 network-free
+  tests with 10 `real_stripe` cases deselected;
+- native TypeScript passed format/lint/typecheck/build, both npm audits, and 807 tests
+  across 50 files with 82.88% statements, 76.21% branches, 91.65% functions, and 82.93%
+  lines;
+- a clean Web archive/install passed lint, typecheck, production build, both npm audits,
+  and 208 tests across 19 files;
+- Python and TypeScript each passed all 10 real Stripe **test-mode** cases, including
+  run-owned cleanup and zero residual inventory;
+- Python and TypeScript each passed both transition policies through four production-
+  build browser journeys using temporary signed Stripe test-mode endpoints. Every run
+  ended at Pro/1,020, observed 11 account-related and zero unrelated Events, bound the
+  five essential Events, and completed database/endpoint/object cleanup; and
+- clean Wheel/sdist/npm artifacts, fresh and v0.3 → v0.4 migration paths, and the hardened
+  UID/GID 10001 read-only-root Docker readiness/secret-scan gate passed.
 
-- an independently installed candidate Wheel loaded its packaged catalog and complete
-  schema baseline from an arbitrary working directory and migrated a fresh PostgreSQL 17
-  database; the candidate Docker image applied the same baseline over an internal-only
-  network, then ran as UID/GID 10001 with a read-only root while a host-side `/health`
-  request returned `ok=true` and `database=true`;
-- that candidate passed all 9 real Stripe cases against test mode, including strict
-  run-owned cleanup, paid/refund projection, both upgrade policies, the four-case failed-
-  payment matrix, annual Schedule construction, and the complete Test Clock renewal
-  lifecycle;
-- before the credit-pack browser lane was added, `full_period_reset` and
-  `prorated_delta` each passed the subscription/upgrade production-build lifecycle
-  through explicit Stripe CLI signed forwarding: decline, Checkout 3DS, Starter/300
-  projection, upgrade SCA, Pro/1,000 projection, seven related Events, zero unrelated
-  Events, exact three-essential-Event binding, and strict cleanup;
-- the final 48.800-second public demo remains the separately reviewed `0.2.0` visual
-  artifact: 1,464 decoded frames, no long black segment, zero forbidden-term OCR matches,
-  15/15 semantic scene checks, and 1080p/30 fps H.264 with 48 kHz stereo AAC at -20.0
-  LUFS. It is not relabeled as proof of the changed `0.2.2` code;
-- no live-production webhook payload verification is claimed.
-
-Two later 2026-08-28 temporary-endpoint working-tree runs completed the expanded
-subscription + credit-pack + Portal + product-Job browser lifecycle for both policies.
-Each bound the current five essential Events, found zero unrelated Events, observed 11
-account-related Events, and ended at Pro/1,020 after strict run-owned cleanup. Those
-artifacts predate the final hardening changes and do not embed a final Git commit, so they
-are regression evidence—not release-commit proof—and must be rerun after the final commit.
-
-CLI signed forwarding proves the raw-signature/application/database path but does not
-prove temporary Webhook Endpoint metadata or endpoint-specific version pinning. The
-2026-08-02 subscription-only dual-policy endpoint runs remain historical Dahlia/Clover
-version evidence. An earlier 2026-08-28 retry stopped before account creation because its
-Quick Tunnel hostname remained DNS `NXDOMAIN`; a later pair of expanded endpoint runs did
-complete as described above. None is substituted for a final-commit rerun.
-
-Historical pre-hardening evidence from earlier on 2026-08-01 was 239 local/backend
-tests, 7 real Stripe test-mode tests, 60 frontend tests, and 2 browser policy runs. It is
-useful regression history only, not current-tree network evidence. The current expanded
-gate requires exactly five identity-bound essential Events: subscription Checkout,
-initial and settlement paid Invoices, credit-pack Checkout, and the pack's authoritative
-`payment_intent.succeeded`. It validates every additional account-matched Event without
-fixing the incidental total Event count.
+The temporary endpoints delivered signed `2026-06-24.dahlia` payloads, while the
+independently retrieved Event API view was `2025-12-15.clover`. These are test-mode
+endpoint and API observations. No live-production webhook payload verification is
+claimed. Earlier 0.2/0.3, CLI-forwarding, working-tree, and failed Quick Tunnel runs remain
+historical regression evidence and are not substituted for the exact-head results above.
 
 Default CI:
 
@@ -697,9 +672,10 @@ designed to verify:
   run-marked inventory error;
 - direct Event polling and PostgreSQL projection for those networked API cases.
 
-The nine pre-pack assertions passed on the earlier 0.3 baseline candidate on 2026-08-28.
-The added credit-pack case and every changed assertion still require a run on the final
-release commit with an isolated test account; the older result is not permanent proof.
+All ten cases passed against isolated Stripe test-mode inventory in both runtimes on
+`e22d5a7`: Python in 380.28 seconds and TypeScript in 244.11 seconds. Direct Event polling
+in those suites is not signed endpoint delivery, and later runtime changes must rerun the
+gate rather than inherit this result.
 
 The Test Clock and plan-change cases do not prove signed endpoint delivery. The
 separate opt-in browser runner creates a temporary test endpoint and exercises a
@@ -715,9 +691,9 @@ exactly five essential signed Events. It also requires no unresolved incident fo
 identities, verifies one 700-credit delta allocation or no allocation according to
 policy, completes the hosted Portal round trip, and proves the Job charge/replay/refund
 equations. The earlier pre-pack Stripe CLI runs bound three essential Events and remain
-subscription/upgrade history only. The later expanded endpoint artifacts bound five,
-but still predate the final commit. Incidental totals such as seven or 11 are not an
-invariant, and no live-production payload is claimed.
+subscription/upgrade history only. The exact-`e22d5a7` four-quadrant endpoint runs bound
+five essential Events and happened to observe 11 account-related Events per run.
+Incidental totals are not an invariant, and no live-production payload is claimed.
 
 Manual test-mode observations from 2026-07-31 additionally covered:
 

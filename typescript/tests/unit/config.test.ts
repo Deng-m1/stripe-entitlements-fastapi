@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DEFAULT_PLAN_CATALOG_PATH,
   checkoutSuccessBaseUrlIsSafe,
   loadSettings,
   publicHttpUrlIsStructurallySafe,
@@ -21,6 +22,7 @@ describe("TypeScript runtime configuration", () => {
     const settings = loadSettings(environment());
     expect(settings.billingTransitionPolicy).toBe("full_period_reset");
     expect(settings.lookupPrefix).toBe("ent");
+    expect(settings.planCatalogPath).toBe(DEFAULT_PLAN_CATALOG_PATH);
     expect(settings.stripeSecretKey.startsWith("sk_test_")).toBe(true);
     expect(settings).toMatchObject({
       databasePoolMin: 1,

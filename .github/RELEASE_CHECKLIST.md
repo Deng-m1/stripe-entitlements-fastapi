@@ -7,11 +7,12 @@
 - [ ] Link every billing behavior change to an invariant and migration.
 - [ ] Separate automated PostgreSQL, automated real Stripe, manual test-mode and
       production evidence.
-- [ ] Bind every pass claim to the exact commit. The uncommitted 0.4.0 candidate passed
-      1,254 Python tests with 10 `real_stripe` tests deselected, 804 TypeScript tests across
-      50 files, and 208 Web tests across 19 files. Those counts are working-tree evidence,
-      not a release identity; rerun all applicable artifact, container, Stripe-network,
-      and four browser/backend-policy gates on the final commit. Keep older
+- [ ] Bind every pass claim to the exact commit. Clean `e22d5a7` passed 1,254 Python tests
+      with 10 `real_stripe` tests deselected, 807 TypeScript tests across 50 files, and 208
+      Web tests across 19 files, plus both 10/10 Stripe test-mode suites, four
+      browser/backend-policy endpoint runs, final artifacts, and the hardened container.
+      Do not relabel those results for a later runtime-changing commit; rerun the affected
+      gates. Keep older
       239/7/60/2 and 270/9/62/2 results historical, and do not relabel the failed
       pre-state Quick Tunnel attempt as endpoint evidence.
 - [ ] Cite Test Clock renewal/annual-slot evidence only when the full annual lifecycle

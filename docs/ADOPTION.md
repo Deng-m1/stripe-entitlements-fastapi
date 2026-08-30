@@ -370,6 +370,7 @@ then run the standalone Node server:
 ```bash
 cd typescript
 npm ci
+npm run build
 cp .env.example .env
 chmod 600 .env
 set -a
@@ -379,6 +380,9 @@ npx stripe-entitlements migrate
 npx stripe-entitlements doctor
 npx stripe-entitlements serve
 ```
+
+The build must precede the first CLI invocation in a source checkout because generated
+`dist/` files are not committed. An installed release tarball already includes them.
 
 Production defaults to reject-all authentication. `BILLING_AUTH_MODE=personal_jwt` plus
 the complete issuer/audience/JWKS configuration enables the strict personal-user
@@ -626,16 +630,43 @@ In-process product routes can use the initialized `EntitlementService` facade wi
 reading billing tables or accepting an internal billing UUID:
 
 ```python
-from fastapi import APIRouter, HTTPException, Request
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from stripe_entitlements.auth import AuthenticatedIdentity, AuthenticationError
+from stripe_entitlements.owner_reference import (
+    InvalidOwnerReferenceError,
+    validate_owner_external_ref,
+)
+
+from host.auth import personal_auth
 
 router = APIRouter()
 
 
+async def current_billing_identity(request: Request) -> AuthenticatedIdentity:
+    # Reuse the same verified adapter injected into BillingKernel. For a team
+    # adapter, this call also performs its live membership/role authorization.
+    try:
+        identity = await personal_auth.authenticate(request)
+        validate_owner_external_ref(identity.external_ref)
+    except (AuthenticationError, InvalidOwnerReferenceError) as exc:
+        raise HTTPException(401, "authentication failed") from exc
+    return identity
+
+
+BillingIdentity = Annotated[
+    AuthenticatedIdentity,
+    Depends(current_billing_identity),
+]
+
+
 @router.post("/convert")
-async def convert(request: Request):
+async def convert(request: Request, identity: BillingIdentity):
     kernel = request.app.state.stripe_entitlements
     decision = await kernel.services.entitlements.check(
-        request.state.billing_owner_external_ref,
+        identity.external_ref,
         required_features=("pdf_to_ppt",),
         required_limits={"max_pages_per_job": 80},
     )
@@ -644,8 +675,10 @@ async def convert(request: Request):
     return {"accepted": True}
 ```
 
-The owner reference in this example must already come from verified personal/team
-identity and membership, not the request body. `EntitlementService.check` returns a
+The owner reference in this example comes directly from the same verified adapter used by
+the billing router; the library does not invent a `request.state` identity attribute.
+Factor this dependency into the host's normal authentication layer instead of accepting
+an owner from the request body. `EntitlementService.check` returns a
 fail-closed `owner_not_found` decision for an unknown owner; its owner-bound `charge`
 and `refund` methods preserve exact decimal amounts, idempotency, and credit-epoch
 semantics. `credits_spendable` and `credit_balance` describe only currently usable
@@ -676,7 +709,7 @@ refund(idempotency_key)
 
 The lower-level module remains importable for existing integrations. New in-process
 code should normally enter through `kernel.services.entitlements`, which resolves stable
-owners before delegating to the same credit primitive. Until a matching 0.3 artifact is
+owners before delegating to the same credit primitive. Until a matching 0.4 artifact is
 published, pin the reviewed source commit and retain host contract tests.
 
 The debit key is global across `credit_debits`. It must identify one immutable business

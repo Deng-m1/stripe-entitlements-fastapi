@@ -54,9 +54,14 @@ From this source checkout:
 ```bash
 cd typescript
 npm ci
+npm run build
 cp .env.example .env
 chmod 600 .env
 ```
+
+`npm run build` is required before the first source-checkout CLI invocation because
+`dist/` is generated and intentionally absent from Git. A clean-installed release
+tarball already contains `dist/`, so downstream applications do not rebuild the package.
 
 Set `BILLING_TRANSITION_POLICY` in that private environment file to exactly one of
 `full_period_reset` or `prorated_delta` before migration and startup. This package is a

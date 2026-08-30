@@ -52,21 +52,16 @@ See [BROWSER_E2E.md](BROWSER_E2E.md) for prerequisites, failure artifacts and th
 browser assertions. A collected, skipped or partially completed Playwright test is not
 evidence.
 
-Historical pre-credit-pack evidence: both subscription/upgrade policy runs passed on
-2026-08-28 through explicit Stripe CLI signed forwarding. Each bound the then-current
-three essential Events, cross-checked seven account-related Events, observed no unrelated
-Event, and completed strict cleanup. They prove the raw-signature/application/database
-path for that older gate, not Webhook Endpoint metadata or the expanded pack/Portal/Job
-lifecycle.
+On exact commit `e22d5a7`, all four Python/TypeScript × transition-policy browser runs
+used temporary test-mode endpoints pinned to Dahlia. Each bound five essential Events,
+observed 11 account-related and zero unrelated Events, ended at Pro/1,020 after the Job
+refund path, passed its database verifier, and cleaned its endpoint and run-owned Stripe
+state. Signed payloads were `2026-06-24.dahlia`; independent Event API retrievals reported
+`2025-12-15.clover`.
 
-Two later 2026-08-28 temporary-endpoint working-tree runs completed the expanded browser
-gate for both policies. Each bound five essential Events, observed 11 account-related and
-zero unrelated Events, ended at Pro/1,020 after the Job refund path, and cleaned its
-endpoint and run-owned Stripe state. The artifacts predate final hardening and do not
-embed the final commit SHA, so a final-commit rerun is still required. The 2026-08-02
-dual-policy endpoint runs remain historical Dahlia signed-payload versus Clover Event-API
-version evidence; an earlier 2026-08-28 Quick Tunnel `NXDOMAIN` attempt created no
-account/Checkout state and was safely recovered. No live-production Event is included.
+Earlier pre-credit-pack CLI forwarding, working-tree endpoints, the 2026-08-02 version
+runs, and a safely recovered Quick Tunnel `NXDOMAIN` attempt remain historical regression
+evidence only. No live-production Event is included.
 
 ## Existing staging endpoint
 

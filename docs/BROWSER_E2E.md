@@ -82,9 +82,8 @@ every bank's 3DS UI, Stripe Tax, coupons, trials, or arbitrary Checkout settings
 runner's local IdP signs real asymmetric JWTs and serves real HTTPS JWKS; it is evidence
 for the starter adapter contract, not a claim that a host application's login page was tested.
 
-The historical runs below predate the credit-pack browser gate and therefore remain
-subscription/upgrade evidence only. They must not be cited as evidence for the final
-Boost 100 path. The final commit still requires a fresh dual-policy real-browser run.
+The exact-`e22d5a7` results below cover the final subscription, Boost 100, Portal, and Job
+path in all four backend/policy quadrants. Older runs remain regression history only.
 
 ## Real Stripe API credit-pack convergence gate
 
@@ -115,28 +114,16 @@ metadata is not bound to the database-reserved order. The test retrieves the gen
 Event created by its own confirmed PaymentIntent. Never run it with a shared live key;
 the helper rejects every value that does not begin with `sk_test_` before networking.
 
-Historical local signed-forwarding evidence: before the credit-pack lane was added, both
-policies passed on the 0.3 baseline candidate on 2026-08-28 through explicit Stripe CLI
-forwarding. Each reached Pro/Monthly/1,000, observed seven account-related and zero
-unrelated Events, bound the then-current three subscription essential Events, used a
-Clover signed payload/Event API view, had no unresolved run-related incident, and
-completed strict cleanup. This proves that older raw-signature/browser/database path,
-not Webhook Endpoint metadata or the expanded pack/Portal/Job gate.
+On exact commit `e22d5a7`, Python and TypeScript each passed `full_period_reset` and
+`prorated_delta` through four temporary Stripe test-mode endpoints. Every run bound five
+essential signed Events, observed 11 account-related and zero unrelated Events, covered
+the pack/Portal/Job path, ended at Pro/1,020, passed the database verifier, and completed
+strict endpoint/account/Stripe-object/PostgreSQL cleanup. Signed endpoint payloads were
+`2026-06-24.dahlia`; the independently retrieved Event API view was
+`2025-12-15.clover`. This does not claim a live-production payload.
 
-The 2026-08-28 endpoint-mode retry created and verified a temporary Dahlia endpoint but
-stopped before account creation or Checkout because the account-less Quick Tunnel
-hostname remained DNS `NXDOMAIN`. Recovery verified the endpoint was closed; no current
-endpoint-mode pass is claimed from that attempt.
-
-Two later 2026-08-28 temporary-endpoint working-tree runs completed the expanded gate for
-both policies. Each bound the current five essential Events, observed 11 account-related
-and zero unrelated Events, covered the pack/Portal/Job path, ended at Pro/1,020, and
-completed strict cleanup including endpoint deletion. Their artifacts predate the final
-hardening changes and do not embed the final Git SHA, so they are not final-commit
-evidence. The 2026-08-02 dual-policy run remains historical Dahlia signed-payload versus
-Clover Event-API version evidence; it bound only the older three-event
-subscription/upgrade gate. Earlier pre-hardening 2026-08-01 runs are retained only as
-historical regression evidence.
+Earlier CLI-forwarding, `0.2.2`/`0.3`, Quick Tunnel `NXDOMAIN`, working-tree endpoint, and
+2026-08-02 version runs remain historical regression evidence only.
 
 ## Recommended isolated runner
 

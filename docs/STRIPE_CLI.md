@@ -26,12 +26,12 @@ Do not reuse one label for two Stripe contracts:
 - Webhook payloads contain Event `api_version` from the endpoint/account snapshot.
   `STRIPE_WEBHOOK_API_VERSION` must equal that actual value.
 
-The 2026-08-28 0.3 candidate Stripe CLI forwarding runs observed signed Clover payloads and
-a Clover Event API view. The separate 2026-08-02 endpoint runs used isolated endpoints
-pinned to Dahlia and observed signed Dahlia payloads while the Event API view remained
-Clover. Neither value changes the outbound request version, and CLI forwarding does not
-prove endpoint metadata. You may inspect the Event API view privately, but do **not** use
-it alone to configure an endpoint-backed webhook processor:
+The four exact-`e22d5a7` browser gates used isolated Stripe test-mode endpoints pinned to
+Dahlia and received signed Dahlia payloads while the independently retrieved Event API
+view remained Clover. Neither value changes the outbound request version. Stripe CLI
+forwarding can prove signed transport but not endpoint metadata. You may inspect the
+Event API view privately, but do **not** use it alone to configure an endpoint-backed
+webhook processor:
 
 ```bash
 stripe events list --limit 5
@@ -105,9 +105,14 @@ uv run python scripts/bootstrap_stripe.py --verify-only
 
 # Native TypeScript / Node operator (does not invoke Python or PostgreSQL)
 cd typescript
+npm ci
+npm run build
 npx stripe-entitlements bootstrap
 npx stripe-entitlements bootstrap --verify-only
 ```
+
+The build is required before the first CLI command in a source checkout because `dist/`
+is generated. An installed release `.tgz` already contains the CLI and needs no rebuild.
 
 Choose the operator that matches the deployed backend; both consume the same canonical
 `plans.toml`, lookup-key convention, product-line ownership metadata, price policy, and
@@ -123,6 +128,7 @@ and the confirmation must exactly equal the effective `PRODUCT_LINE`:
 
 ```bash
 cd typescript
+npm run build  # required if this source checkout has not been built above
 npx stripe-entitlements bootstrap \
   --allow-live \
   --confirm-live-product-line example-entitlements

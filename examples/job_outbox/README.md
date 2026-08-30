@@ -13,7 +13,7 @@ process-local `DemoBillingAdapter` so it needs no Stripe credential and makes ze
 calls. That adapter is not a production billing implementation; production code injects
 `kernel.services.entitlements` or an owner-authorized internal billing client.
 
-From a source checkout or 0.3 source distribution:
+From a source checkout or 0.4 source distribution:
 
 ```bash
 docker compose up -d postgres

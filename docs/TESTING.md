@@ -4,26 +4,26 @@ The project separates deterministic local/PostgreSQL tests, opt-in automated Str
 test-mode tests, real-browser signed-delivery tests, manual observations, and live
 production verification. Passing one layer must not be described as passing another.
 
-The 0.4.0 native-TypeScript parity candidate has current network-free working-tree evidence
-but has not yet received the required final-commit artifact, Stripe-network, browser, and
-container reruns. Results below must not be presented as release evidence or inherit an
-earlier artifact identity:
+The complete 0.4.0 parity gate below is bound to clean commit
+`e22d5a7eb327e7ef175c23fa76fc1021c9b1184e`. GitHub Actions run
+[`33280721250`](https://github.com/Deng-m1/stripe-entitlements-fastapi/actions/runs/33280721250)
+passed Backend, TypeScript billing core, Container, and Web:
 
-| Layer                   | Current evidence                                                                                                         | Boundary                                                                             |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
-| Python/FastAPI          | 1,254 passed, 10 `real_stripe` deselected; Ruff, Mypy, and dependency audit passed                                       | Real PostgreSQL and mocked Stripe responses; uncommitted working tree                |
-| Native TypeScript       | 50 files / 804 tests passed under `npm run check`; both npm audits reported zero vulnerabilities                         | Real PostgreSQL and mocked Stripe responses; uncommitted working tree                |
-| Reference Web           | 19 files / 208 tests, lint, typecheck, and both npm audits passed                                                        | No Stripe network; clean production build and final-commit rerun remain required     |
-| Real Stripe suites      | Earlier Python v0.3.0 10/10 result remains historical; current Python and TypeScript 0.4.0 suites have not been rebound  | Event polling is not signed delivery or live mode                                    |
-| Browser policy gates    | Two earlier Python working-tree endpoint runs completed the expanded five-essential-Event gate                           | Predates final hardening; does not prove either backend at 0.4.0 or the final commit |
-| Distribution/container  | Current npm artifact migration smoke passed earlier in the working tree; prior Python/container artifacts are historical | Rebuild and verify every final 0.4.0 artifact from the exact commit                  |
-| Live production payload | **not run**                                                                                                              | Test mode never substitutes for live mode                                            |
+| Layer                   | Exact-head evidence                                                                                                                                      | Boundary                                                                 |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Python/FastAPI          | 1,254 passed, 10 `real_stripe` deselected; Ruff format/lint, Mypy, release-version check, and dependency audit passed                                    | Real PostgreSQL and mocked Stripe responses; no Stripe network           |
+| Native TypeScript       | 50 files / 807 tests; format, lint, typecheck, build, coverage gate, and both npm audits passed                                                          | Real PostgreSQL and mocked Stripe responses; no Stripe network           |
+| Reference Web           | Clean archive/install; 19 files / 208 tests, lint, typecheck, production build, and both npm audits passed                                               | Browser components and build only; no Stripe network                     |
+| Real Stripe suites      | Python 10/10 in 380.28 seconds and TypeScript 10/10 in 244.11 seconds, including strict run-owned cleanup and zero residual inventory                    | Stripe **test mode** API/Event polling; not signed delivery or live mode |
+| Browser policy gates    | Python and TypeScript × both policies: four production-build journeys passed, each ending Pro/1,020 with 11 related, 0 unrelated, and 5 essential Events | Temporary signed **test-mode** endpoints; not live-production payloads   |
+| Distribution/container  | Wheel, sdist, npm `.tgz`, fresh/upgrade migrations, and hardened Docker readiness/secret-scan gates passed                                               | Built artifacts from the stated commit; not a registry publication       |
+| Live production payload | **not run**                                                                                                                                              | Test mode never substitutes for live mode                                |
 
+The 807-test count includes three regressions for a test-only PostgreSQL teardown race
+found after all 804 then-current assertions had passed on the first clean runner. Ten
+additional isolated-container repetitions completed without the earlier `57P01` noise.
 The earlier 2026-08-01 pre-hardening baseline—239 local/backend, 7 real Stripe,
-60 frontend, and 2 browser policy runs—is retained only as historical regression
-evidence. It must not be cited as proof of the current tree. Earlier dependency-audit
-results likewise do not prove the changed dependency tree; rerun both Python and npm
-audits on the final commit.
+60 frontend, and 2 browser policy runs—remains historical regression evidence only.
 
 ## Default backend suite
 
@@ -226,6 +226,13 @@ identity-free summaries, retryable worker failure, strict batch bounds, and over
 Cron invocations. Frontend tests exercise the explicit `same-origin` sentinel and prove
 that it still requires a production access token.
 
+The native TypeScript configuration receives the same route/Cron contract through
+`vercel.typescript.json`. Its runtime must leave `PLAN_CATALOG_PATH` unset to use the
+package-bundled catalog: the service root is `web/`, so a repository-relative
+`plans.toml` override would resolve to a nonexistent file. Documentation contract tests
+hold that environment boundary, while TypeScript resource/package tests verify the
+bundled catalog is readable from the installed artifact.
+
 The pinned local platform smoke is:
 
 ```bash
@@ -277,20 +284,27 @@ artifact handling, and evidence boundaries.
 Endpoint metadata, signed transport, database projection and live-production evidence
 requirements are separated in [the webhook verification runbook](WEBHOOK_VERIFICATION.md).
 
-Earlier pre-credit-pack 2026-08-28 CLI-transport evidence: both subscription/upgrade
-policies passed. Each projected Starter/Monthly/300 and Pro/Monthly/1,000, observed seven
-account-related and zero unrelated Events, bound the then-current three essential signed
-Events, used signed Clover payloads, had no unresolved identity-related incident, and
-completed strict cleanup. This does not prove Webhook Endpoint metadata or the current
-pack/Portal/Job gate.
+On exact commit `e22d5a7`, all four backend/policy quadrants passed through temporary
+Stripe test-mode Webhook Endpoints:
 
-The prior `0.2.2` CLI runs from 2026-08-18 remain regression history. An earlier
-2026-08-28 endpoint attempt stopped before account creation because Quick Tunnel DNS was
-`NXDOMAIN` and recovery closed its endpoint. Two later working-tree endpoint runs did
-complete the expanded five-essential-Event gate for both policies, with 11 account-
-related and zero unrelated Events and final Pro/1,020. Their artifacts are not
-commit-bound and therefore do not replace the final rerun. The 2026-08-02 runs remain
-historical endpoint-version evidence only.
+- Python × `full_period_reset`;
+- Python × `prorated_delta`;
+- TypeScript × `full_period_reset`; and
+- TypeScript × `prorated_delta`.
+
+Every run used a production Web build, submitted a decline and then 3DS on the same real
+hosted Checkout Session, projected Starter/300 and the selected Pro/1,000 upgrade,
+purchased Boost 100, completed the hosted Portal round trip, and verified the owner-bound
+Job charge/replay/refund equations ending at Pro/1,020. Each run observed 11 account-
+related and zero unrelated Events, bound the five essential signed Events, passed the
+database verifier, and completed endpoint/account/Stripe-object/PostgreSQL cleanup. The
+temporary endpoints delivered signed `2026-06-24.dahlia` payloads; the separately
+retrieved Event API view was `2025-12-15.clover`. This is endpoint-specific Stripe test-
+mode evidence, not a live-production payload claim.
+
+Earlier pre-credit-pack CLI-transport runs, the prior `0.2.2` runs, a Quick Tunnel
+`NXDOMAIN` attempt, and the 2026-08-02 endpoint-version runs remain historical regression
+evidence only. They are not substituted for the four exact-head endpoint runs above.
 
 Historical note: the pre-hardening 2026-08-01 policy runs each completed in about 1.2
 minutes and happened to store five account-related signed Events. Those older runs are
@@ -302,14 +316,18 @@ Tests marked `real_stripe` make network calls only when `STRIPE_SECRET_KEY` star
 `sk_test_`. Live keys fail before a network call. Objects are uniquely marked and cleanup
 targets only objects created by that run.
 
-The nine-case automated suite passed on the earlier 0.3 baseline candidate on
-2026-08-28 and asserts:
+The Python and native TypeScript ten-case suites both passed on exact commit `e22d5a7`
+(380.28 seconds and 244.11 seconds respectively). Their shared lifecycle inventory
+asserts:
 
 - creation of isolated real test-mode Products, monthly/yearly Prices, Customers and
   Subscriptions;
 - retrieval/preparation of the real `invoice.paid` Event;
 - projection of that paid $19 invoice to 300 credits in PostgreSQL;
 - a real $9.50 partial refund and `charge.refunded` Event converging to 150 credits;
+- a real one-time credit-pack PaymentIntent with exact immutable metadata,
+  Customer/Charge lineage, partial/full cash clawback, product-refund interaction, and
+  strict source-aware convergence;
 - outbound Dahlia preview/update calls for a real mid-cycle Starter Monthly →
   Pro Monthly full-price/no-proration change, followed by a separately versioned
   `invoice.paid` Event converging to Pro/1,000 credits in PostgreSQL;
@@ -336,15 +354,10 @@ The nine-case automated suite passed on the earlier 0.3 baseline candidate on
   active Prices/Products, Test Clocks, and unfinished Subscription Schedules;
 - a test failure if cleanup, inventory, or zero-inventory verification fails.
 
-All nine assertions passed against Stripe test mode on 2026-08-28 after the baseline and
-runner hardening. Earlier 0.2.2 and seven-case runs are historical evidence only; future
-releases must rerun the current suite rather than inheriting any result.
-
-The current ten-case working-tree suite passed on 2026-08-28. It adds a credit-pack
-PaymentIntent, exact immutable metadata and Customer/Charge lineage, partial/full cash
-clawback, product refund interaction, and strict run-owned cleanup to the earlier nine
-cases. This is current test-mode evidence, but it still must be rebound to the exact
-release commit before publication.
+Both runtimes completed strict cleanup, complete paginated inventory, and a zero residual
+run-inventory assertion. Earlier 0.2.2, seven-case, nine-case, and unbound working-tree
+runs are historical evidence only; future runtime changes must rerun the current suite
+rather than inherit this result.
 
 The plan-change and Test Clock tests use direct Stripe test-mode requests plus Event
 polling, followed by the real PostgreSQL processor. They do **not** prove signed webhook
@@ -397,11 +410,10 @@ rerun before a release that changes plan transitions or Stripe API version.
 There are three version records that must remain independent:
 
 - outbound SDK requests are configured with `STRIPE_API_VERSION=2026-06-24.dahlia`;
-- the 2026-08-28 Stripe CLI signed-forwarding runs observed
-  `api_version=2025-12-15.clover` for their signed payload/Event API view;
-- the separate 2026-08-02 temporary endpoints explicitly pinned to Dahlia delivered
-  signed payloads with `api_version=2026-06-24.dahlia`, while Event API retrieval still
-  reported Clover.
+- the four exact-`e22d5a7` temporary endpoints were pinned to Dahlia and delivered signed
+  payloads with `api_version=2026-06-24.dahlia`; and
+- the independently retrieved Event API view in those same runs reported
+  `2025-12-15.clover`.
 
 `STRIPE_WEBHOOK_API_VERSION` must match the actual signed transport's Event snapshot.
 Request pinning does not rewrite Events, and an Event API retrieval view or CLI forwarding
