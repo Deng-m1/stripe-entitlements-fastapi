@@ -72,10 +72,12 @@ PostgreSQL/Stripe correctness guarantees above.
 
 ## Scope boundary
 
-Each backend supports one recurring subscription item, USD, fixed plan keys,
-monthly/yearly intervals, exact fixed-point monthly credit grants, and two explicit transition
-policies. The prorated template is bounded to same-interval monthly tier upgrades. It is
-not an arbitrary Invoice reducer. Unknown/ambiguous Invoice shapes fail closed.
+Each backend supports one recurring subscription item, USD, a configured non-empty set
+of stable plan keys, monthly/yearly intervals, exact fixed-point monthly credit grants,
+optional credit packs, and two explicit transition policies. The bundled reference
+catalog has three plans and three packs; those counts are examples, not parser
+invariants. The prorated template is bounded to same-interval monthly tier upgrades. It
+is not an arbitrary Invoice reducer. Unknown/ambiguous Invoice shapes fail closed.
 
 Product credits use a fixed protocol of one million integer atoms per displayed credit.
 Binary floating point never enters the catalog, API, PostgreSQL ledger, refund math or
@@ -96,8 +98,9 @@ Accounts are looked up or created from the verified subject. No route accepts an
 ID from the browser.
 
 The optional authentication extra supplies a strict asymmetric JWT/JWKS verifier and
-two reference adapters. `PersonalJwtAuthAdapter` maps a verified UUID `sub` to one user
-owner. `TeamJwtAuthAdapter` treats the signed tenant UUID only as a selector, performs a
+two reference adapters. `PersonalJwtAuthAdapter` maps a verified, bounded stable `sub`
+string to one user owner; UUID and opaque identity-provider subjects are both supported.
+`TeamJwtAuthAdapter` treats the signed bounded tenant ID only as a selector, performs a
 live host membership lookup, permits viewers to read only catalog routes, and reserves
 account/recovery data and mutations for billing administrators. The configured billing
 prefix is explicit in `TeamBillingAuthorizationPolicy`; it is never inferred from an

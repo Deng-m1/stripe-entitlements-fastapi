@@ -21,6 +21,7 @@ import {
 import type {
   AccountResponse,
   BillingApi,
+  CatalogResponse,
   ChangeConfirmResponse,
   ChangePreview,
 } from "@/lib/types";
@@ -60,6 +61,7 @@ function preview(
 
 function testApi(options: {
   account?: AccountResponse;
+  catalog?: CatalogResponse;
   changePreview?: ChangePreview;
   confirm?: ChangeConfirmResponse;
 }) {
@@ -77,7 +79,7 @@ function testApi(options: {
     } satisfies ChangeConfirmResponse);
 
   const api: BillingApi = {
-    getCatalog: vi.fn(async () => demoCatalog()),
+    getCatalog: vi.fn(async () => options.catalog ?? demoCatalog()),
     getAccount: vi.fn(async () => account),
     createCheckout: vi.fn(async () => ({
       url: "https://checkout.stripe.com/c/pay/test-session",
@@ -184,6 +186,67 @@ describe("billing screens", () => {
       ),
     ).toBeInTheDocument();
   });
+
+  it.each(["feature removal", "limit reduction", "credit reduction"] as const)(
+    "does not claim inheritance after a %s",
+    async (tradeoff) => {
+      const catalog = demoCatalog();
+      const reducedCredits = creditAmountFromDecimal("100");
+      const plans = catalog.plans.map((plan) => {
+        if (plan.key !== "pro") return plan;
+        const entitlements = plan.entitlements
+          .filter(
+            (entitlement) =>
+              tradeoff !== "feature removal" || entitlement.key !== "pdf_to_ppt",
+          )
+          .map((entitlement) => {
+            if (tradeoff === "limit reduction" && entitlement.key === "max_file_mb") {
+              return { ...entitlement, value: 20 };
+            }
+            if (
+              tradeoff === "credit reduction" &&
+              entitlement.key === "monthly_credits"
+            ) {
+              return {
+                ...entitlement,
+                value: reducedCredits.decimal,
+                value_atoms: reducedCredits.atoms,
+                scale: reducedCredits.scale,
+              };
+            }
+            return entitlement;
+          });
+        return { ...plan, entitlements };
+      });
+
+      render(
+        <PricingScreen
+          api={testApi({ catalog: { ...catalog, plans } })}
+          billingRedirect={vi.fn()}
+          internalRedirect={vi.fn()}
+        />,
+      );
+
+      const proCard = (await screen.findByRole("heading", { name: "Pro" })).closest(
+        "article",
+      );
+      expect(proCard).not.toBeNull();
+      if (!proCard) return;
+      expect(within(proCard).getByText("Includes:")).toBeInTheDocument();
+      expect(
+        within(proCard).queryByText("Everything in Starter, plus:"),
+      ).not.toBeInTheDocument();
+      if (tradeoff === "feature removal") {
+        expect(proCard).not.toHaveTextContent("PDF to PowerPoint");
+      } else if (tradeoff === "limit reduction") {
+        expect(proCard).toHaveTextContent("Maximum file size: 20 MB");
+      } else {
+        expect(proCard).toHaveTextContent(
+          "Credits per monthly grant: 100 credits",
+        );
+      }
+    },
+  );
 
   it("renders immediate cross-plan/interval copy and polls after confirmation", async () => {
     const user = userEvent.setup();
@@ -407,6 +470,32 @@ describe("billing screens", () => {
     );
     expect(
       screen.getByText(/The return page does not grant credits/),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the entire credit-pack section when the catalog has no packs", async () => {
+    const catalog = { ...demoCatalog(), credit_packs: [] };
+
+    render(
+      <PricingScreen
+        api={testApi({ catalog })}
+        billingRedirect={vi.fn()}
+        internalRedirect={vi.fn()}
+      />,
+    );
+
+    await screen.findByRole("heading", { name: "Starter" });
+    expect(
+      screen.queryByRole("heading", {
+        name: "Add burst capacity without changing your plan",
+      }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("One-time credit packs")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/The return page does not grant credits/),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("table", { name: "Plan price and entitlement comparison" }),
     ).toBeInTheDocument();
   });
 

@@ -1,9 +1,26 @@
 # Changelog
 
-## Unreleased
+## [Unreleased 0.4.0]
 
-## 0.4.0 - 2026-08-30
-
+- Make unpublished-source adoption a first-class path: document pinned Python Git
+  dependencies, TypeScript submodule/`file:` dependencies, minimum vendored trees,
+  lockfile/build requirements, and local tarballs without claiming that an npm release
+  exists. Clarify that PostgreSQL 17 and 18 are supported application databases and that
+  applying 001/002 initializes this schema rather than upgrading the PostgreSQL server.
+- Let adopters define a non-empty product catalog instead of inheriting the reference
+  three-tier shape. Plans may omit features/limits or trade entitlements across ranks;
+  annual prices need not be discounted. Reject reserved `free`/`monthly_credits` keys,
+  cross-type entitlement names, generated Stripe lookup-key collisions, unknown TOML
+  fields, malformed direct-constructor values, and mutable caller-input drift in both
+  runtimes. Hide the reference credit-pack section when a catalog has no packs.
+- Treat Customer Portal as an optional capability in startup and the core doctor profile.
+  Missing, placeholder, malformed, unreachable, or policy-drifted Portal configuration
+  remains unavailable without blocking core billing; the explicit Portal profile fails
+  closed. A safe Portal may disable cancellation or limit enabled cancellation to period
+  end, while subscription price changes remain disabled.
+- Add a pinned PostgreSQL 18.6 compatibility gate over migrations and critical
+  Python/TypeScript transaction races. Harden tag/changelog validation, npm first-publish
+  unknown-result recovery, and GHCR/npm credential separation in the release workflow.
 - Prevent TypeScript subscription reconciliation from reusing a mutable Stripe
   Subscription snapshot after losing its local projection compare-and-set. The bounded
   retry now rereads and validates Stripe state; a second race stops fail-closed with a
@@ -21,8 +38,11 @@
   interaction, proves no Stripe/API/webhook network traffic, checks reload/context
   isolation, and fails closed when browser storage is unavailable.
 - Add a bounded Supabase browser-token transport adapter and AI-builder guide while
-  documenting the strict generic JWT `nbf`/UUID requirements, subject-change cleanup,
-  HttpOnly BFF option, unpublished npm boundary, and separate test/live evidence levels.
+  documenting strict generic JWT verification, optional `nbf`, bounded opaque user and
+  tenant subjects, subject-change cleanup, the HttpOnly BFF option, the unpublished npm
+  boundary, and separate test/live evidence levels. The runnable team schema and browser
+  fixture now exercise case-sensitive opaque provider IDs, and Python authorization maps
+  credit-pack Checkout explicitly instead of relying on the unknown-route admin fallback.
 
 - Bump the coordinated Python, TypeScript, reference web, and citation metadata to
   `0.4.0`; the immutable `v0.3.0` tag continues to identify the earlier Python-only

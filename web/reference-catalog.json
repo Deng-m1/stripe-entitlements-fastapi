@@ -9,7 +9,10 @@
       "monthly_credits": "300",
       "month_usd": 19,
       "year_usd": 137,
-      "features": ["pdf_to_ppt", "image_to_ppt"],
+      "features": [
+        "pdf_to_ppt",
+        "image_to_ppt"
+      ],
       "limits": {
         "max_file_mb": 30,
         "max_pages_per_job": 100,

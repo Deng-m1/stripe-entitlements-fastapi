@@ -16,6 +16,10 @@ from stripe_entitlements.invoice_policy import (
     has_unsupported_invoice_payment_shape,
 )
 from stripe_entitlements.ordering import event_wins, rank_for
+from stripe_entitlements.owner_reference import (
+    InvalidOwnerReferenceError,
+    validate_owner_external_ref,
+)
 from stripe_entitlements.portal_policy import portal_configuration_is_safe
 from stripe_entitlements.price_policy import (
     catalog_one_time_price_matches,
@@ -66,6 +70,15 @@ def test_python_matches_shared_credit_amount_vectors(vectors: Mapping[str, Any])
         atoms = credit_atoms(vector["input"])
         assert str(atoms) == vector["atoms"], vector["name"]
         assert credit_decimal(atoms) == vector["canonical"], vector["name"]
+
+
+def test_python_matches_shared_owner_reference_vectors(vectors: Mapping[str, Any]) -> None:
+    for vector in vectors["ownerReferences"]:
+        if not vector["valid"]:
+            with pytest.raises(InvalidOwnerReferenceError):
+                validate_owner_external_ref(vector["input"])
+            continue
+        assert validate_owner_external_ref(vector["input"]) == vector["input"], vector["name"]
 
 
 def test_python_matches_shared_transition_vectors(

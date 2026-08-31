@@ -68,6 +68,7 @@ docker run \
   --name "$postgres_container" \
   --env "POSTGRES_DB=$postgres_database" \
   --env "POSTGRES_PASSWORD=$postgres_password" \
+  --env "PGDATA=/var/lib/postgresql/data" \
   --publish 127.0.0.1::5432 \
   --tmpfs /var/lib/postgresql/data:rw,nosuid,nodev,size=256m \
   "$postgres_image" >/dev/null
@@ -84,7 +85,7 @@ for ((attempt = 0; attempt < 240; attempt += 1)); do
   sleep 0.25
 done
 if [ "$postgres_ready" -ne 1 ]; then
-  echo "disposable PostgreSQL 17 did not become ready" >&2
+  echo "disposable PostgreSQL did not become ready" >&2
   exit 1
 fi
 

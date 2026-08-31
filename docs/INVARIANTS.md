@@ -110,13 +110,17 @@ that belonged to a closed entitlement window.
 
 Plan direction comes from the catalog's stable key and unique positive rank, never from
 price amount. Price is billing data. Changing a price must not silently change whether a
-transition is considered an upgrade or downgrade.
+transition is considered an upgrade or downgrade. Credits, features, and limit keys are
+product data and do not have to increase with rank; rank defines direction, not an
+automatic entitlement superset.
 
 ## 10. Settlement policy is explicit and persisted
 
 `full_period_reset` starts a new full-price period with no proration.
-`prorated_delta` permits only a same-interval monthly higher-tier upgrade and preserves
-the period. Every one of the 36 plan/interval cells is defined for both policies. The
+`prorated_delta` permits only a same-interval monthly higher-tier upgrade with a positive
+credit difference and preserves the period. A ranked change without a positive credit
+difference moves to period end instead of entering an unsupported delta settlement.
+Every one of the 36 reference plan/interval cells is defined for both policies. The
 selected policy is copied to the intent and cannot be reinterpreted after configuration
 changes.
 
@@ -174,6 +178,12 @@ In that state the old, still-funded entitlement remains enforceable. The plan ch
 Production billing APIs reject all requests until the host supplies an
 `AuthAccountAdapter` that returns a verified stable subject. Browser account identifiers
 are not trusted.
+
+Customer Portal is an optional capability. A missing, placeholder, or malformed Portal
+configuration ID does not prevent the core API from starting, but a Portal request must
+reject that ID locally before any Stripe retrieval or mutation. A usable-looking ID is
+still retrieved and checked against the dedicated safety policy before a Session is
+created.
 
 The outbound Stripe request version and webhook Event snapshot version are independent.
 An Event whose `livemode` or `api_version` differs from the configured webhook contract

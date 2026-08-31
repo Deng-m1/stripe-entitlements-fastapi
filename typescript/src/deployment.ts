@@ -6,7 +6,11 @@ import {
 } from "./auth-starters.js";
 import { DefaultBillingHttpServices } from "./billing-http-services.js";
 import { createBillingFetchHandler } from "./http/handler.js";
-import type { BillingCsrfMode, BillingFetchHandler } from "./http/contracts.js";
+import type {
+  BillingCsrfMode,
+  BillingFetchHandler,
+  BillingHttpErrorReporter,
+} from "./http/contracts.js";
 import { BillingKernel, type BillingKernelOptions } from "./kernel.js";
 
 export interface BillingRuntime {
@@ -20,6 +24,7 @@ export interface BillingRuntimeOptions extends BillingKernelOptions {
   readonly cronSecret?: string;
   readonly csrfMode?: BillingCsrfMode;
   readonly applyMigrations?: boolean;
+  readonly onError?: BillingHttpErrorReporter;
 }
 
 function environmentValue(
@@ -135,6 +140,7 @@ export async function createBillingRuntime(
         ? {}
         : { cronSecret: options.cronSecret }),
       ...(options.csrfMode === undefined ? {} : { csrfMode: options.csrfMode }),
+      ...(options.onError === undefined ? {} : { onError: options.onError }),
     });
     let closed = false;
     return {

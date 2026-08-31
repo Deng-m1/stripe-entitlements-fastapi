@@ -11,33 +11,186 @@ native Next.js App Router Route Handlers. Both include production-oriented perso
 JWT authentication starters, an in-process `EntitlementService`, and an optional
 owner-bound internal workload boundary. Neither is a complete product/Job framework.
 
-This guide assumes an exact release-tag source checkout or a matching Python/npm
-artifact. TypeScript adopters can pin the public 0.4.0 registry release directly:
+This guide assumes a reviewed source commit or a locally built artifact. The current
+`main` branch declares the `0.4.0` release candidate, but `v0.4.0` and the npm package
+are not published. For a new product, fork or clone the complete repository so `web/`
+can keep its checked-in `file:../typescript` dependency:
 
 ```bash
-npm install --save-exact @tosea/stripe-entitlements@0.4.0
+git clone https://github.com/Deng-m1/stripe-entitlements-fastapi.git
+cd stripe-entitlements-fastapi
+git checkout main
 ```
 
-For Python or an unreleased change, pin the exact reviewed Git tag/commit rather than
-assuming an older package index contains the same code. The Wheel contains the Python
-backend runtime, migrations, and catalog; the npm tarball contains the TypeScript
-runtime, declarations, CLI, migrations, and catalog. The source distribution
-additionally contains `.env` templates, operator scripts, Docker/Compose files, auth and
-Job examples, tests, and the Next.js reference UI needed by the end-to-end commands in
-this guide.
+Pin an exact commit for repeatable deployments. A separate TypeScript application can
+install a local tarball built with `npm pack`; see the
+[TypeScript source and tarball paths](../typescript/README.md#requirements). Do not
+substitute the older v0.3 tag or an unrelated package-index artifact for the current
+source. Local Wheel and npm tarball builds contain their runtime, migrations, and
+catalog; the complete source additionally carries templates, operator scripts, auth and
+Job examples, tests, and the Next.js reference UI.
 
-For a published version tag, the repository release workflow attaches both Python
-distributions, the verified TypeScript npm tarball, and their checksums to the GitHub
-Release, publishes the byte-identical TypeScript tarball to npm, and records the
-immutable GHCR container digest. Python GitHub assets remain distinct from PyPI
-publication; do not install an unrelated or older package-index artifact merely because
-its name matches.
-The published GHCR image is currently native `linux/amd64`; it is not a verified
-multi-architecture manifest. ARM64 adopters should use the Wheel/source distribution or
-build and validate the pinned Dockerfile on their target platform.
+When a future version tag is published, the repository release workflow is designed to
+attach both Python distributions, the verified TypeScript npm tarball, and their
+checksums to the GitHub Release; publish the byte-identical TypeScript tarball to npm;
+and record the immutable GHCR container digest. Python GitHub assets remain distinct
+from PyPI publication. A workflow definition is not evidence that any of those artifacts
+already exist. Container architecture and release verification remain in the
+[release checklist](../.github/RELEASE_CHECKLIST.md).
+
+## Consume a pinned Git source or vendored copy
+
+Neither runtime requires a published package-index release. Pin one reviewed full commit
+SHA and keep the runtime, migrations, and catalog from that same commit. A branch name is
+convenient for exploration but is not a reproducible production dependency.
+
+### Python/FastAPI from Git or a local path
+
+A Python host can install the repository directly as a PEP 508 Git dependency without
+PyPI. Put this shape in `pyproject.toml` or `requirements.txt`, replacing the placeholder
+with a reviewed 40-character commit SHA:
+
+```text
+stripe-entitlements-fastapi[auth] @ git+https://github.com/Deng-m1/stripe-entitlements-fastapi.git@FULL_COMMIT_SHA
+```
+
+`uv lock` or `pip install -r requirements.txt` clones that commit and builds the Python
+wheel. The wheel force-includes the canonical SQL and catalog, so application code uses
+the normal `stripe_entitlements` imports and CLI; no PyPI release is involved.
+
+For an auditable local path dependency, preserve this minimum installable tree:
+
+```text
+vendor/stripe-entitlements-fastapi/
+├── pyproject.toml
+├── README.md
+├── LICENSE
+├── NOTICE
+├── plans.toml
+├── migrations/
+│   ├── 001_v3_baseline.sql
+│   └── 002_stripe_request_snapshots.sql
+└── src/stripe_entitlements/        # the complete package, including py.typed
+```
+
+Install it with `python -m pip install ./vendor/stripe-entitlements-fastapi`, or bind it
+as a non-editable uv path source:
+
+```toml
+[project]
+dependencies = ["stripe-entitlements-fastapi[auth]"]
+
+[tool.uv.sources]
+stripe-entitlements-fastapi = { path = "vendor/stripe-entitlements-fastapi", editable = false }
+```
+
+Do not copy only selected Python modules. Their internal graph and packaged-resource
+lookup are one versioned unit; `migrations/` and `plans.toml` at the vendored package root
+are required by the build.
+
+### TypeScript/Next.js from a Git checkout or vendored source
+
+The npm registry package is not published. Also, an npm Git URL for this repository root
+is not a valid substitute because `package.json` lives in the `typescript/` monorepo
+subdirectory. Use the complete repository as v0 does, or pin it as a Git submodule/local
+checkout and point the host at that local package:
+
+```bash
+git submodule add https://github.com/Deng-m1/stripe-entitlements-fastapi.git vendor/stripe-entitlements
+git -C vendor/stripe-entitlements checkout FULL_COMMIT_SHA
+npm --prefix vendor/stripe-entitlements/typescript ci
+npm --prefix vendor/stripe-entitlements/typescript run build
+npm install --save-exact ./vendor/stripe-entitlements/typescript
+git add .gitmodules vendor/stripe-entitlements package.json package-lock.json
+```
+
+```json
+{
+  "dependencies": {
+    "@tosea/stripe-entitlements": "file:vendor/stripe-entitlements/typescript"
+  }
+}
+```
+
+Run `git submodule update --init --recursive` before the host install. Make the vendored
+package build part of every downstream build rather than relying on a developer's local
+`dist/` directory.
+The host-root `npm install --save-exact` command records the local dependency in both
+`package.json` and `package-lock.json`; otherwise a later `npm ci` rejects the mismatch.
+Commit `.gitmodules` and the submodule gitlink after checking out the reviewed SHA so a
+remote build receives that exact revision.
+
+For a Next.js host, merge this into its `package.json` (if it already has `prebuild`,
+append the billing command to that script):
+
+```json
+{
+  "scripts": {
+    "billing:build": "npm --prefix vendor/stripe-entitlements/typescript ci && npm --prefix vendor/stripe-entitlements/typescript run build",
+    "prebuild": "npm run billing:build",
+    "build": "next build"
+  }
+}
+```
+
+Vercel's Build Command can remain `npm run build`; npm runs `prebuild` first. The
+checkout still has to contain the initialized public submodule or committed vendor tree
+before Vercel's install step. Here npm (or another compatible JavaScript package manager)
+installs this source tree's third-party dependencies and compiles it; it is not
+downloading `@tosea/stripe-entitlements` from the registry.
+
+If a full submodule is undesirable, preserve this minimum vendored layout:
+
+```text
+vendor/stripe-entitlements/
+├── plans.toml
+├── migrations/
+│   ├── 001_v3_baseline.sql
+│   └── 002_stripe_request_snapshots.sql
+└── typescript/
+    ├── src/                       # the complete directory
+    ├── package.json
+    ├── package-lock.json
+    ├── tsconfig.json
+    ├── tsconfig.build.json
+    ├── .env.example
+    ├── README.md
+    ├── LICENSE
+    └── NOTICE
+```
+
+Keep `plans.toml` and `migrations/` one directory above `typescript/`: its build copies
+those exact resources into `dist/`. A Next.js deployment must still include
+`dist/plans.toml` and `dist/migrations/**/*.sql` in output-file tracing. Copying only the
+Route Handler examples or a few coordinator files is not a complete backend.
+
+### Schema, catalog, and later upgrades
+
+Both vendoring paths require the exact append-only migration files and `plans.toml` from
+the pinned commit. Apply the packaged migrations before new code receives traffic; never
+edit an already-applied migration or copy only a newer runtime over older SQL/catalog
+resources.
+
+To upgrade a Git dependency, change the pinned SHA and regenerate the host lockfile. To
+upgrade a submodule, fetch and checkout the reviewed SHA, rebuild `typescript/`, and
+refresh the host lockfile. For a manual vendor, replace the entire minimum tree from one
+commit rather than cherry-picking individual runtime files. In every case:
+
+1. record the old/new commit SHAs and review `CHANGELOG.md`, `migrations/`, and
+   `plans.toml`;
+2. run the runtime's build, type/lint tests, migration smoke, and host contract tests;
+3. regenerate `web/reference-catalog.json` only when the reference UI is present, using
+   the matching Python or Node sync command; and
+4. follow the documented writer cutover before reopening traffic when a migration
+   changes a remote-mutation protocol.
+
+Direct source consumption changes distribution, not correctness boundaries. PostgreSQL,
+signed webhook verification, server-side authentication, schedulers, and browser E2E
+remain required.
 
 ## Contents
 
+- [Pinned Git source or vendored copy](#consume-a-pinned-git-source-or-vendored-copy)
 - [Responsibility and deployment choices](#responsibility-boundary)
 - [Runtime and host-system dependencies](#runtime-dependencies)
 - [Users, tenants and other host entities](#define-the-billable-owner-first)
@@ -137,8 +290,8 @@ The equivalent TypeScript integration surface is:
   exact credit operations; and
 - `createInternalBillingFetchHandler` for an owner-authorized service boundary.
 
-The npm artifact includes `.d.ts` declarations and packaged canonical resources. Product
-code should use those facades rather than importing projector/accounting internals.
+The locally packed npm tarball includes `.d.ts` declarations and canonical resources.
+Product code should use those facades rather than importing projector/accounting internals.
 
 ## Runtime dependencies
 
@@ -146,7 +299,7 @@ The repository does not require the host to use a particular user ORM, job queue
 identity provider. Its hard runtime assumptions are narrower but significant:
 
 - either Python 3.12+/FastAPI or Node.js 22+/TypeScript for the billing API;
-- PostgreSQL as both durable state and the distributed coordination layer;
+- PostgreSQL 17 or 18 as both durable state and the distributed coordination layer;
 - `asyncpg` (Python) or `pg` (TypeScript) and the same unqualified SQL schema;
 - one Stripe account/mode, one product line, one recurring Subscription item and USD;
 - a public signed Stripe webhook endpoint;
@@ -157,6 +310,12 @@ identity provider. Its hard runtime assumptions are narrower but significant:
 Redis, Celery and a particular JWT library are not required. If the host uses SQLAlchemy,
 Django ORM, another database, or another language, run billing as a separate service
 rather than letting application code write its tables.
+
+PostgreSQL 17 is the full Python and TypeScript regression baseline, not a maximum
+supported server version. PostgreSQL 18 has a separate compatibility gate covering fresh
+schema application, idempotent re-application, and focused transaction behavior. A new
+18 database therefore needs the same application migrations; it does not need a 17-to-18
+database upgrade first.
 
 Production should use a dedicated billing database. The migration creates
 `schema_migrations`, fourteen correctness tables, and their coordination functions and
@@ -169,6 +328,10 @@ Initialize that database before traffic:
 ```bash
 uv run --env-file .env stripe-entitlements migrate
 ```
+
+This is application-schema initialization/evolution, not a PostgreSQL major-version
+upgrade. A new PostgreSQL 18 database applies 001 and 002 directly; only a database that
+already contains an older version of this project's schema needs a cutover procedure.
 
 The 0.3 schema is a fresh-install baseline. A database initialized from the v0.2.x
 lineage cannot be upgraded in place: preserve required evidence and create a new
@@ -203,7 +366,6 @@ subscription belongs to an individual user or to an organization/workspace.
 # host/billing_owner.py
 from dataclasses import dataclass
 from typing import Literal
-from uuid import UUID
 
 OwnerKind = Literal["user", "tenant"]
 
@@ -211,7 +373,7 @@ OwnerKind = Literal["user", "tenant"]
 @dataclass(frozen=True, slots=True)
 class BillingOwner:
     kind: OwnerKind
-    id: UUID
+    id: str
 
     @property
     def external_ref(self) -> str:
@@ -222,8 +384,8 @@ Recommended mappings:
 
 | Product model                                        | Stable billing subject              |
 | ---------------------------------------------------- | ----------------------------------- |
-| One subscription per person                          | `v1:user:<immutable-user-uuid>`     |
-| One subscription shared by organization members      | `v1:tenant:<immutable-tenant-uuid>` |
+| One subscription per person                          | `v1:user:<immutable-user-id>`       |
+| One subscription shared by organization members      | `v1:tenant:<immutable-tenant-id>`   |
 | A user in several independently billed organizations | One tenant subject per organization |
 
 `external_ref` is globally unique in `billing_accounts`, contains 1–512 visible UTF-8
@@ -289,10 +451,11 @@ Install the optional asymmetric JWT/JWKS verifier:
 uv sync --extra auth
 ```
 
-The personal starter verifies signature, algorithm, `iss`, exact `aud`, `exp`, `nbf`,
-canonical UUID `sub`, and `kid`, then maps that immutable subject to
-`v1:user:<sub>`. Only an exactly true signed `email_verified` claim permits forwarding
-the email as a Checkout hint:
+The personal starter verifies signature, algorithm, `iss`, exact `aud`, required integer
+`exp`, required bounded stable `sub`, optional integer `nbf` when present, and `kid`, then
+maps that immutable subject to `v1:user:<sub>`. UUID and opaque provider subjects are both
+accepted. Only an exactly true signed `email_verified` claim permits forwarding the email
+as a Checkout hint:
 
 ```python
 from stripe_entitlements.auth_starters import (
@@ -312,9 +475,10 @@ verifier = JwtVerifier(
 personal_auth = PersonalJwtAuthAdapter(verifier)
 ```
 
-For a team-owned subscription, supply a live `TeamMembershipRepository`. The signed
-`tenant_id` UUID remains only a selector: `TeamJwtAuthAdapter` queries membership for
-the verified `(sub, tenant_id)` pair on every request. Its explicit policy permits a
+For a team-owned subscription, supply a live `TeamMembershipRepository`. The signed,
+bounded `tenant_id` string remains only a selector: UUID and opaque organization IDs are
+both preserved exactly, and `TeamJwtAuthAdapter` queries membership for the verified
+`(sub, tenant_id)` pair on every request. Its explicit policy permits a
 viewer to read only catalog routes; `/api/account`, recovery URLs, Checkout, Portal,
 plan changes, and unknown billing routes require `billing_admin`:
 
@@ -328,6 +492,7 @@ from stripe_entitlements.auth_starters import (
 team_auth = TeamJwtAuthAdapter(
     verifier,
     memberships,
+    # Use tenant_claim="org_id" when that is the provider's signed claim name.
     authorization=TeamBillingAuthorizationPolicy(billing_prefix="/stripe"),
 )
 ```
@@ -383,13 +548,19 @@ chmod 600 .env
 set -a
 . ./.env
 set +a
-npx stripe-entitlements migrate
-npx stripe-entitlements doctor
-npx stripe-entitlements serve
+npx --no-install stripe-entitlements migrate
+npx --no-install stripe-entitlements doctor
+npx --no-install stripe-entitlements serve
 ```
 
 The build must precede the first CLI invocation in a source checkout because generated
-`dist/` files are not committed. An installed release tarball already includes them.
+`dist/` files are not committed. A locally packed tarball already includes them.
+The default doctor profile verifies the core runtime and leaves Customer Portal optional.
+Use `doctor --profile portal` after configuring that capability, or
+`doctor --profile portal --stripe-network` to add the explicitly opted-in Stripe reads.
+Neither form proves host authentication, scheduler execution, webhook endpoint metadata,
+or signed delivery. A missing, placeholder, or malformed Portal ID does not block core
+startup; the Portal route rejects it locally with a sanitized 503 before any Stripe I/O.
 
 Production defaults to reject-all authentication. `BILLING_AUTH_MODE=personal_jwt` plus
 the complete issuer/audience/JWKS configuration enables the strict personal-user
@@ -443,8 +614,12 @@ shown in the package-only
 [`tests/npm-next-consumer/app/`](../tests/npm-next-consumer/app/) fixture. Do not copy the
 reference UI's `web/app/` routes into a blank project because those also depend on
 UI-local simulation modules. Stripe and `pg` require the Node runtime; Edge is
-unsupported. The source checkout uses `file:../typescript`, while a downstream project
-should install `@tosea/stripe-entitlements@0.4.0` with `--save-exact`.
+unsupported. The source checkout uses `file:../typescript`. Until npm publication, a
+separate downstream project may use the pinned submodule/local `file:` dependency or
+install the reviewed local `.tgz` described in the
+[TypeScript guide](../typescript/README.md#install-a-local-tarball-into-a-separate-application).
+The tarball is the closest check of the future registry package boundary, not the only
+registry-free source-consumption path.
 
 Same-process product code reaches
 `runtime.kernel.requireServices().entitlements`. A separately deployed product uses
@@ -948,7 +1123,11 @@ tables and add its own workload-identity audit, grants, queue client, and operat
 
 ## Connect or replace the Next.js frontend
 
-The reference UI exposes a small TypeScript boundary:
+The reference UI exposes a small TypeScript boundary. The next snippet applies only
+inside this repository's `web/` tree: `@/lib/*` is its private source alias, not an
+installable package API. A separate Vite/Lovable project should copy the dependency-free
+[`vite-billing-client.ts`](../examples/browser_adapters/vite-billing-client.ts) transport
+described in [AI Builders](AI_BUILDERS.md#lovable--supabase) instead.
 
 ```typescript
 import type { AuthAdapter } from "@/lib/auth";
@@ -1013,17 +1192,37 @@ monthly/yearly prices. The fully tested reference scope is deliberately bounded:
 - USD and integer major-unit catalog prices;
 - month and year intervals;
 - one recurring Subscription item;
-- explicit, monotonically increasing tier rank, credits, features and limits; and
+- a unique positive rank for transition direction, exact credits, and optional
+  product-defined feature/limit sets (they need not be cumulative); and
 - the two documented plan-change policies.
+
+For `prorated_delta`, only a higher-rank monthly target with a positive credit difference
+settles immediately. Other ranked tradeoffs remain valid catalog entries and change at
+period end. `full_period_reset` can start the selected higher-rank target immediately
+because it does not calculate an entitlement difference.
+
+`monthly_credits` is a reserved entitlement key synthesized from the plan's top-level
+`monthly_credits` value; do not repeat it under `features` or `limits`. Feature keys and
+numeric-limit keys otherwise share one catalog-wide namespace. Once any plan uses a key
+as a feature, no plan may use it as a limit, and vice versa, so product enforcement sees
+one stable value type for that key.
 
 Changing a catalog requires one coordinated release:
 
 1. update `plans.toml` and product enforcement;
-2. synchronize `web/reference-catalog.json` and UI copy if the reference UI is used;
+2. regenerate `web/reference-catalog.json` with the source runtime already in use, then
+   review any surrounding UI copy: Python/FastAPI runs
+   `uv run python scripts/sync_reference_catalog.py`; native TypeScript runs
+   `cd typescript && npm run sync:catalog`;
 3. bootstrap/verify the matching Stripe Products and Prices in test mode;
 4. run local, real test-mode and browser gates appropriate to the change;
 5. bootstrap/verify live mode only during an approved production cutover; and
 6. deploy every API and worker replica with identical catalog and policy settings.
+
+Do not hand-edit `web/reference-catalog.json`; both sync tools derive the same snapshot
+from the canonical catalog. Their respective `--check` modes make drift reviewable
+without requiring a TypeScript-only host to install Python or a FastAPI host to install
+Node solely for this step.
 
 `bootstrap_stripe.py` does not read `PLAN_CATALOG_PATH`; its independent `--catalog`
 argument defaults to the repository root `plans.toml`. For a custom path, pass the same

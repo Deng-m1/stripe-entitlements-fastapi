@@ -779,6 +779,7 @@ jobs:
           needs.build-and-verify.outputs.package_exists == 'false' &&
           needs.build-and-verify.outputs.version_exists == 'false'
         env:
+          EXPECTED_INTEGRITY: ${{ needs.build-and-verify.outputs.npm_integrity }}
           EXPECTED_PACKAGE_MANIFEST_SHA256: ${{ needs.build-and-verify.outputs.package_manifest_sha256 }}
           EXPECTED_PROVENANCE_MANIFEST_SHA256: ${{ needs.npm-identity.outputs.provenance_manifest_sha256 }}
           EXPECTED_TAG_OBJECT: ${{ needs.build-and-verify.outputs.tag_object }}
@@ -788,10 +789,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "brand-new npm package requires the environment NPM_TOKEN secret" >&2
-            exit 1
-          fi
           package_manifest="transfer/package/PACKAGE_MANIFEST.sha256"
           provenance_manifest="transfer/provenance/PROVENANCE_MANIFEST.sha256"
           test "$(sha256sum "$package_manifest" | awk '{print $1}')" = \
@@ -806,16 +803,31 @@ jobs:
           test "$remote_tag_object" = "$EXPECTED_TAG_OBJECT"
 
           package_name="@tosea/stripe-entitlements"
+          package_spec="${package_name}@${RELEASE_VERSION}"
           error_file="$RUNNER_TEMP/npm-bootstrap-recheck.txt"
           if npm --userconfig=/dev/null view "$package_name" name \
             --json >/dev/null 2>"$error_file"; then
-            echo "npm package appeared after bootstrap preflight; refusing token fallback" >&2
-            exit 1
+            existing_integrity="$(npm --userconfig=/dev/null view \
+              "$package_spec" dist.integrity --json | tr -d '"\r\n')"
+            if [ "$existing_integrity" != "$EXPECTED_INTEGRITY" ]; then
+              echo "npm package appeared without the exact bootstrap artifact" >&2
+              exit 1
+            fi
+            existing_candidate="$(npm --userconfig=/dev/null view "$package_name" \
+              "dist-tags.$PUBLISH_TAG" --json | tr -d '"\r\n')"
+            test "$existing_candidate" = "$RELEASE_VERSION"
+            echo "$package_spec already contains the exact bootstrap artifact"
+            exit 0
           fi
           if ! grep -Eq '(^|[[:space:]])E404([[:space:]]|$)|404 Not Found' \
             "$error_file"; then
             echo "could not re-confirm brand-new npm package vacancy" >&2
             sed -n '1,12p' "$error_file" >&2
+            exit 1
+          fi
+
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "brand-new npm package requires the environment NPM_TOKEN secret" >&2
             exit 1
           fi
 
@@ -1008,8 +1020,6 @@ jobs:
       packages: write
     outputs:
       digest: ${{ steps.push.outputs.digest }}
-      promote_latest: ${{ steps.channel_policy.outputs.latest }}
-      promote_minor: ${{ steps.channel_policy.outputs.minor }}
     steps:
       - name: Download the exact tested container archive
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
@@ -1075,88 +1085,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Revalidate immutable OCI vacancy
-        env:
-          CONTAINER_IMAGE: ${{ needs.build-and-verify.outputs.container_image }}
-          RELEASE_VERSION: ${{ needs.build-and-verify.outputs.release_version }}
-          TAG_COMMIT: ${{ needs.build-and-verify.outputs.tag_commit }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          release_tag="${CONTAINER_IMAGE}:${RELEASE_VERSION}"
-          sha_tag="${CONTAINER_IMAGE}:sha-${TAG_COMMIT}"
-          for immutable_tag in "$release_tag" "$sha_tag"; do
-            error_file="$RUNNER_TEMP/immutable-container-recheck.txt"
-            if docker manifest inspect "$immutable_tag" >/dev/null 2>"$error_file"; then
-              echo "refusing to overwrite existing OCI tag $immutable_tag" >&2
-              exit 1
-            fi
-            error_text="$(tr '[:upper:]' '[:lower:]' < "$error_file")"
-            case "$error_text" in
-              *"manifest unknown"*|*"no such manifest"*|*"name unknown"*|*"not found"*) ;;
-              *)
-                echo "could not re-confirm that immutable OCI tag $immutable_tag is vacant" >&2
-                sed -n '1,8p' "$error_file" >&2
-                exit 1
-                ;;
-            esac
-          done
-
-      - name: Revalidate moving-channel release policy
-        id: channel_policy
-        env:
-          RELEASE_VERSION: ${{ needs.build-and-verify.outputs.release_version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import os
-          import re
-          import subprocess
-
-          current_text = os.environ["RELEASE_VERSION"]
-          stable = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", current_text)
-          current = tuple(map(int, stable.groups())) if stable else None
-          remote = subprocess.check_output(
-              [
-                  "git",
-                  "ls-remote",
-                  "--refs",
-                  "--tags",
-                  "https://github.com/Deng-m1/stripe-entitlements-fastapi.git",
-                  "refs/tags/v*.*.*",
-              ],
-              text=True,
-          ).splitlines()
-          released = []
-          for line in remote:
-              fields = line.split()
-              match = re.fullmatch(
-                  r"refs/tags/v(\d+)\.(\d+)\.(\d+)",
-                  fields[1] if len(fields) == 2 else "",
-              )
-              if match:
-                  released.append(tuple(map(int, match.groups())))
-          newest = current is not None and current >= max(released, default=current)
-          newest_minor = current is not None and current[2] >= max(
-              (
-                  version[2]
-                  for version in released
-                  if version[:2] == current[:2]
-              ),
-              default=current[2],
-          )
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write(f"latest={'true' if newest else 'false'}\n")
-              output.write(f"minor={'true' if newest_minor else 'false'}\n")
-          PY
-
-      - name: Publish immutable and eligible moving OCI tags
+      - name: Publish or resume immutable OCI tags
         id: push
         env:
           CONTAINER_IMAGE: ${{ needs.build-and-verify.outputs.container_image }}
-          IS_LATEST: ${{ steps.channel_policy.outputs.latest }}
-          IS_MINOR: ${{ steps.channel_policy.outputs.minor }}
           RELEASE_VERSION: ${{ needs.build-and-verify.outputs.release_version }}
           TAG_COMMIT: ${{ needs.build-and-verify.outputs.tag_commit }}
         shell: bash
@@ -1170,74 +1102,164 @@ jobs:
           test "$(docker image inspect "$release_tag" \
             --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = \
             "$TAG_COMMIT"
-
+          test "$(docker image inspect "$release_tag" \
+            --format '{{.Os}}/{{.Architecture}}')" = "linux/amd64"
+          anonymous_config=""
+          cleanup_publish() {
+            if [ -n "$anonymous_config" ]; then
+              rm -rf -- "$anonymous_config"
+            fi
+          }
+          trap cleanup_publish EXIT
+          candidate_image_id="$(docker image inspect "$release_tag" --format '{{.Id}}')"
+          case "$candidate_image_id" in sha256:*) ;; *) exit 1 ;; esac
           immutable_tags_file="$RUNNER_TEMP/immutable-container-tags.txt"
-          moving_tags_file="$RUNNER_TEMP/moving-container-tags.txt"
-          tags_file="$RUNNER_TEMP/all-container-tags.txt"
           printf '%s\n' "$release_tag" \
             "${CONTAINER_IMAGE}:sha-${TAG_COMMIT}" > "$immutable_tags_file"
-          : > "$moving_tags_file"
-          if [ "$IS_MINOR" = "true" ]; then
-            printf '%s:%s\n' "$CONTAINER_IMAGE" "${RELEASE_VERSION%.*}" \
-              >> "$moving_tags_file"
-          fi
-          if [ "$IS_LATEST" = "true" ]; then
-            printf '%s:latest\n' "$CONTAINER_IMAGE" >> "$moving_tags_file"
-          fi
-          cat "$immutable_tags_file" "$moving_tags_file" | sort -u > "$tags_file"
 
-          # Establish and compare both immutable names before mutating a moving channel.
-          while IFS= read -r tag; do
-            test -n "$tag"
-            if [ "$tag" != "$release_tag" ]; then
-              docker tag "$release_tag" "$tag"
+          inspect_remote_digest() {
+            local tag="$1"
+            local error_file="$RUNNER_TEMP/immutable-container-inspect.txt"
+            local output observed error_text
+            if output="$(docker buildx imagetools inspect "$tag" 2>"$error_file")"; then
+              observed="$(awk '/^Digest:/ {print $2; exit}' <<< "$output")"
+              case "$observed" in
+                sha256:*) printf '%s\n' "$observed"; return 0 ;;
+                *) echo "remote OCI tag returned no canonical digest: $tag" >&2; return 2 ;;
+              esac
             fi
-            docker push "$tag"
-          done < "$immutable_tags_file"
+            error_text="$(tr '[:upper:]' '[:lower:]' < "$error_file")"
+            case "$error_text" in
+              *"manifest unknown"*|*"no such manifest"*|*"name unknown"*|*"not found"*)
+                return 1
+                ;;
+              *)
+                echo "could not inspect immutable OCI tag $tag" >&2
+                sed -n '1,8p' "$error_file" >&2
+                return 2
+                ;;
+            esac
+          }
 
-          expected_digest="$(docker buildx imagetools inspect "$release_tag" \
-            | awk '/^Digest:/ {print $2; exit}')"
-          case "$expected_digest" in sha256:*) ;; *) exit 1 ;; esac
-          while IFS= read -r tag; do
-            immutable_digest="$(docker buildx imagetools inspect "$tag" \
-              | awk '/^Digest:/ {print $2; exit}')"
-            test "$immutable_digest" = "$expected_digest"
-          done < "$immutable_tags_file"
-
+          # A registry digest does not exist until an image has been pushed. On a retry,
+          # accept only one already-published digest shared by every immutable name.
+          # Its config digest must equal the tested local image ID before a missing name
+          # is filled in. This proves the same runnable image without a second registry.
+          candidate_digest=""
           while IFS= read -r tag; do
             test -n "$tag"
-            docker tag "$release_tag" "$tag"
-            docker push "$tag"
-          done < "$moving_tags_file"
+            if existing_digest="$(inspect_remote_digest "$tag")"; then
+              if [ -n "$candidate_digest" ] \
+                && [ "$existing_digest" != "$candidate_digest" ]; then
+                echo "immutable OCI tags disagree: $tag" >&2
+                exit 1
+              fi
+              candidate_digest="$existing_digest"
+            else
+              inspect_status="$?"
+              if [ "$inspect_status" -ne 1 ]; then
+                exit "$inspect_status"
+              fi
+            fi
+          done < "$immutable_tags_file"
+
+          if [ -z "$candidate_digest" ]; then
+            docker push "$release_tag"
+            for _ in $(seq 1 10); do
+              if candidate_digest="$(inspect_remote_digest "$release_tag")"; then
+                break
+              else
+                inspect_status="$?"
+                if [ "$inspect_status" -ne 1 ]; then
+                  exit "$inspect_status"
+                fi
+                candidate_digest=""
+              fi
+              sleep 2
+            done
+          fi
+          case "$candidate_digest" in sha256:*) ;; *) exit 1 ;; esac
+
+          manifest_body="$RUNNER_TEMP/remote-candidate-manifest.json"
+          docker buildx imagetools inspect --raw \
+            "${CONTAINER_IMAGE}@${candidate_digest}" > "$manifest_body"
+          python - "$manifest_body" "$candidate_image_id" <<'PY'
+          import json
+          import sys
+
+          path, expected_config_digest = sys.argv[1:]
+          with open(path, encoding="utf-8") as source:
+              manifest = json.load(source)
+          if manifest.get("schemaVersion") != 2 or "manifests" in manifest:
+              raise SystemExit("release candidate must be one image manifest, not an index")
+          if manifest.get("mediaType") not in {
+              "application/vnd.docker.distribution.manifest.v2+json",
+              "application/vnd.oci.image.manifest.v1+json",
+          }:
+              raise SystemExit("release candidate has an unsupported manifest type")
+          config = manifest.get("config")
+          layers = manifest.get("layers")
+          if not isinstance(config, dict) or config.get("digest") != expected_config_digest:
+              raise SystemExit("published candidate differs from the tested image")
+          if not isinstance(layers, list) or not layers:
+              raise SystemExit("release candidate has no layers")
+          PY
+
+          # Registry-side copying keeps both immutable names on the exact published
+          # manifest digest and safely completes a partial prior run.
+          while IFS= read -r tag; do
+            test -n "$tag"
+            if observed_digest="$(inspect_remote_digest "$tag")"; then
+              if [ "$observed_digest" != "$candidate_digest" ]; then
+                echo "refusing immutable OCI tag with a different digest: $tag" >&2
+                exit 1
+              fi
+              echo "$tag already identifies the exact immutable candidate"
+            else
+              inspect_status="$?"
+              if [ "$inspect_status" -ne 1 ]; then
+                exit "$inspect_status"
+              fi
+              docker buildx imagetools create --prefer-index=false \
+                --tag "$tag" "${CONTAINER_IMAGE}@${candidate_digest}"
+            fi
+          done < "$immutable_tags_file"
 
           while IFS= read -r tag; do
             observed_digest=""
             for _ in $(seq 1 10); do
-              observed_digest="$(docker buildx imagetools inspect "$tag" \
-                | awk '/^Digest:/ {print $2; exit}')"
-              [ "$observed_digest" = "$expected_digest" ] && break
+              if output="$(docker buildx imagetools inspect "$tag")"; then
+                observed_digest="$(awk '/^Digest:/ {print $2; exit}' <<< "$output")"
+              else
+                observed_digest=""
+              fi
+              [ "$observed_digest" = "$candidate_digest" ] && break
               sleep 2
             done
-            test "$observed_digest" = "$expected_digest"
-          done < "$tags_file"
+            test "$observed_digest" = "$candidate_digest"
+          done < "$immutable_tags_file"
 
           anonymous_config="$(mktemp -d)"
-          cleanup_anonymous_config() {
-            rm -rf -- "$anonymous_config"
-          }
-          trap cleanup_anonymous_config EXIT
           chmod 700 "$anonymous_config"
           printf '{"auths":{}}\n' > "$anonymous_config/config.json"
           while IFS= read -r tag; do
-            observed_digest="$(DOCKER_CONFIG="$anonymous_config" \
-              docker buildx imagetools inspect "$tag" \
-              | awk '/^Digest:/ {print $2; exit}')"
-            test "$observed_digest" = "$expected_digest"
-          done < "$tags_file"
+            observed_digest=""
+            for _ in $(seq 1 10); do
+              if output="$(DOCKER_CONFIG="$anonymous_config" \
+                docker buildx imagetools inspect "$tag")"; then
+                observed_digest="$(awk '/^Digest:/ {print $2; exit}' <<< "$output")"
+              else
+                observed_digest=""
+              fi
+              [ "$observed_digest" = "$candidate_digest" ] && break
+              sleep 2
+            done
+            test "$observed_digest" = "$candidate_digest"
+          done < "$immutable_tags_file"
           docker --config "$anonymous_config" pull \
-            "${CONTAINER_IMAGE}@${expected_digest}"
-          docker image inspect "${CONTAINER_IMAGE}@${expected_digest}" >/dev/null
-          echo "digest=$expected_digest" >> "$GITHUB_OUTPUT"
+            "${CONTAINER_IMAGE}@${candidate_digest}"
+          docker image inspect "${CONTAINER_IMAGE}@${candidate_digest}" >/dev/null
+          echo "digest=$candidate_digest" >> "$GITHUB_OUTPUT"
 
   container-attest:
     name: Attest the published OCI digest
@@ -1270,6 +1292,7 @@ jobs:
     environment: npm-publish
     permissions:
       contents: write
+      packages: write
     steps:
       - name: Download the public Release candidates
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
@@ -1421,8 +1444,6 @@ jobs:
           CONTAINER_DIGEST: ${{ needs.container-publish.outputs.digest }}
           CONTAINER_IMAGE: ${{ needs.build-and-verify.outputs.container_image }}
           EXPECTED_NPM_INTEGRITY: ${{ needs.build-and-verify.outputs.npm_integrity }}
-          IS_LATEST: ${{ needs.container-publish.outputs.promote_latest }}
-          IS_MINOR: ${{ needs.container-publish.outputs.promote_minor }}
           NPM_CONFIG_USERCONFIG: /dev/null
           PUBLISH_TAG: ${{ needs.build-and-verify.outputs.publish_tag }}
           RELEASE_VERSION: ${{ needs.build-and-verify.outputs.release_version }}
@@ -1445,14 +1466,6 @@ jobs:
           tags_file="$RUNNER_TEMP/expected-container-tags.txt"
           printf '%s\n' "${CONTAINER_IMAGE}:${RELEASE_VERSION}" \
             "${CONTAINER_IMAGE}:sha-${TAG_COMMIT}" > "$tags_file"
-          if [ "$IS_MINOR" = "true" ]; then
-            printf '%s:%s\n' "$CONTAINER_IMAGE" "${RELEASE_VERSION%.*}" \
-              >> "$tags_file"
-          fi
-          if [ "$IS_LATEST" = "true" ]; then
-            printf '%s:latest\n' "$CONTAINER_IMAGE" >> "$tags_file"
-          fi
-          sort -u -o "$tags_file" "$tags_file"
           anonymous_config="$(mktemp -d)"
           trap 'rm -rf -- "$anonymous_config"' EXIT
           chmod 700 "$anonymous_config"
@@ -1464,8 +1477,156 @@ jobs:
             test "$observed_digest" = "$CONTAINER_DIGEST"
           done < "$tags_file"
 
+      - name: Determine moving-channel release policy
+        id: channel_policy
+        env:
+          NPM_CONFIG_USERCONFIG: /dev/null
+          RELEASE_VERSION: ${{ needs.build-and-verify.outputs.release_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The workflow-wide concurrency group serializes every channel writer. Public
+          # stable Git tags are the release history; npm latest is an additional
+          # cross-registry no-rollback check. GHCR channels are copied only below from
+          # the attested immutable digest and are verified after the copy.
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+
+          current_text = os.environ["RELEASE_VERSION"]
+          stable = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", current_text)
+          if stable is None:
+              raise SystemExit("moving channels require a stable release version")
+          current = tuple(map(int, stable.groups()))
+          remote = subprocess.check_output(
+              [
+                  "git",
+                  "ls-remote",
+                  "--refs",
+                  "--tags",
+                  "https://github.com/Deng-m1/stripe-entitlements-fastapi.git",
+                  "refs/tags/v*.*.*",
+              ],
+              text=True,
+          ).splitlines()
+          released = []
+          for line in remote:
+              fields = line.split()
+              match = re.fullmatch(
+                  r"refs/tags/v(\d+)\.(\d+)\.(\d+)",
+                  fields[1] if len(fields) == 2 else "",
+              )
+              if match:
+                  released.append(tuple(map(int, match.groups())))
+          newest = current >= max(released, default=current)
+          newest_minor = current[2] >= max(
+              (
+                  version[2]
+                  for version in released
+                  if version[:2] == current[:2]
+              ),
+              default=current[2],
+          )
+
+          npm_tags_text = subprocess.check_output(
+              ["npm", "view", "@tosea/stripe-entitlements", "dist-tags", "--json"],
+              text=True,
+          )
+          npm_tags = json.loads(npm_tags_text)
+          if not isinstance(npm_tags, dict):
+              raise SystemExit("npm dist-tags response is not an object")
+          npm_latest_text = npm_tags.get("latest")
+          if npm_latest_text is not None:
+              npm_latest_match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", npm_latest_text)
+              if npm_latest_match is None:
+                  raise SystemExit("existing npm latest is not a stable version")
+              npm_latest = tuple(map(int, npm_latest_match.groups()))
+              newest = newest and current >= npm_latest
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"latest={'true' if newest else 'false'}\n")
+              output.write(f"minor={'true' if newest_minor else 'false'}\n")
+          PY
+
+      - name: Log in to GHCR for verified channel promotion
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Promote and anonymously verify eligible OCI channels
+        env:
+          CONTAINER_DIGEST: ${{ needs.container-publish.outputs.digest }}
+          CONTAINER_IMAGE: ${{ needs.build-and-verify.outputs.container_image }}
+          IS_LATEST: ${{ steps.channel_policy.outputs.latest }}
+          IS_MINOR: ${{ steps.channel_policy.outputs.minor }}
+          RELEASE_VERSION: ${{ needs.build-and-verify.outputs.release_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          moving_tags_file="$RUNNER_TEMP/moving-container-tags.txt"
+          : > "$moving_tags_file"
+          if [ "$IS_MINOR" = "true" ]; then
+            printf '%s:%s\n' "$CONTAINER_IMAGE" "${RELEASE_VERSION%.*}" \
+              >> "$moving_tags_file"
+          fi
+          if [ "$IS_LATEST" = "true" ]; then
+            printf '%s:latest\n' "$CONTAINER_IMAGE" >> "$moving_tags_file"
+          fi
+          sort -u -o "$moving_tags_file" "$moving_tags_file"
+
+          while IFS= read -r tag; do
+            test -n "$tag"
+            docker buildx imagetools create --prefer-index=false \
+              --tag "$tag" "${CONTAINER_IMAGE}@${CONTAINER_DIGEST}"
+          done < "$moving_tags_file"
+
+          anonymous_config="$(mktemp -d)"
+          trap 'rm -rf -- "$anonymous_config"' EXIT
+          chmod 700 "$anonymous_config"
+          printf '{"auths":{}}\n' > "$anonymous_config/config.json"
+          while IFS= read -r tag; do
+            test -n "$tag"
+            observed_digest=""
+            for _ in $(seq 1 10); do
+              if output="$(DOCKER_CONFIG="$anonymous_config" \
+                docker buildx imagetools inspect "$tag")"; then
+                observed_digest="$(awk '/^Digest:/ {print $2; exit}' <<< "$output")"
+              else
+                observed_digest=""
+              fi
+              [ "$observed_digest" = "$CONTAINER_DIGEST" ] && break
+              sleep 2
+            done
+            test "$observed_digest" = "$CONTAINER_DIGEST"
+          done < "$moving_tags_file"
+
+      - name: Remove GHCR credentials before npm authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker logout ghcr.io
+          docker_config="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+          if [ -f "$docker_config" ]; then
+            python - "$docker_config" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as source:
+              config = json.load(source)
+          auths = config.get("auths", {})
+          if not isinstance(auths, dict) or any(
+              "ghcr.io" in host.casefold() for host in auths
+          ):
+              raise SystemExit("GHCR credential remains after logout")
+          PY
+          fi
+
       - name: Promote the verified npm candidate to latest
-        if: needs.container-publish.outputs.promote_latest == 'true'
+        if: steps.channel_policy.outputs.latest == 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CLI: ${{ steps.npm_cli.outputs.cli }}
@@ -1513,7 +1674,7 @@ jobs:
       - name: Publish the fully verified GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          IS_LATEST: ${{ needs.container-publish.outputs.promote_latest }}
+          IS_LATEST: ${{ steps.channel_policy.outputs.latest }}
           NPM_CONFIG_USERCONFIG: /dev/null
           RELEASE_VERSION: ${{ needs.build-and-verify.outputs.release_version }}
         shell: bash

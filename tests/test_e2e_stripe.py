@@ -152,7 +152,7 @@ def test_browser_auth_fixture_uses_signed_personal_and_workload_audiences(
     jwks_path = tmp_path / "jwks.json"
     token_path = tmp_path / "tokens.json"
     issuer = "https://127.0.0.1:8443/e2e/issuer"
-    personal_subject = "7e4a3d62-e503-4f07-8f23-980056172964"
+    personal_subject = "auth0|browser-e2e-user"
     workload_subject = "bcd6b1ab-0185-4b2f-8a58-85b28c12bbb3"
     e2e_stripe.create_auth_fixture(
         SimpleNamespace(
@@ -201,7 +201,8 @@ def test_browser_auth_fixture_uses_signed_personal_and_workload_audiences(
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("personal_subject", "not-a-uuid"),
+        ("personal_subject", ""),
+        ("personal_subject", "a" * 505),
         ("workload_subject", "00000000-0000-0000-0000-000000000000"),
         ("issuer", "http://identity.example.test"),
         ("email", "not-an-email"),
@@ -215,7 +216,7 @@ def test_browser_auth_fixture_rejects_invalid_identity_contract(
     values = {
         "issuer": "https://identity.example.test/e2e/issuer",
         "personal_audience": "browser-audience",
-        "personal_subject": "7e4a3d62-e503-4f07-8f23-980056172964",
+        "personal_subject": "auth0|browser-e2e-user",
         "email": "personal@example.test",
         "workload_audience": "workload-audience",
         "workload_subject": "bcd6b1ab-0185-4b2f-8a58-85b28c12bbb3",

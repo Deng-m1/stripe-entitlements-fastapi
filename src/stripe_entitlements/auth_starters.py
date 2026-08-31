@@ -37,6 +37,9 @@ _ASYMMETRIC_JWT_ALGORITHMS = frozenset(
 )
 _MAX_BEARER_BYTES = 16_384
 _MAX_CLAIM_BYTES = 512
+_MAX_OWNER_REFERENCE_BYTES = 512
+_USER_OWNER_PREFIX = "v1:user:"
+_TENANT_OWNER_PREFIX = "v1:tenant:"
 
 
 def _bounded_visible(value: object, *, field: str, maximum: int) -> str:
@@ -57,15 +60,37 @@ def _bounded_integer(value: object, *, field: str, lower: int, upper: int) -> in
     return value
 
 
-def _uuid_claim(value: object, *, field: str) -> UUID:
+def _stable_identity_claim(
+    value: object, *, field: str, maximum: int = _MAX_CLAIM_BYTES
+) -> UUID | str:
     try:
-        text = _bounded_visible(value, field=field, maximum=_MAX_CLAIM_BYTES)
-        parsed = UUID(text)
-    except (ValueError, AttributeError) as exc:
+        text = _bounded_visible(value, field=field, maximum=maximum)
+    except ValueError as exc:
         raise AuthenticationError("invalid bearer token") from exc
-    if parsed.int == 0 or str(parsed) != text:
-        raise AuthenticationError("invalid bearer token")
-    return parsed
+    try:
+        parsed = UUID(text)
+    except ValueError:
+        return text
+    # Preserve the historical UUID object for an already-canonical identifier,
+    # but otherwise keep the provider identifier opaque and byte-for-byte stable.
+    # UUID-looking non-canonical values therefore have the same semantics as every
+    # other opaque value instead of being rejected only because of their shape.
+    return parsed if parsed.int != 0 and str(parsed) == text else text
+
+
+def _subject_claim(value: object) -> UUID | str:
+    return _stable_identity_claim(value, field="sub")
+
+
+def _owner_reference(prefix: str, identifier: UUID | str) -> str:
+    try:
+        return _bounded_visible(
+            f"{prefix}{identifier}",
+            field="owner reference",
+            maximum=_MAX_OWNER_REFERENCE_BYTES,
+        )
+    except ValueError as exc:
+        raise AuthenticationError("invalid bearer token") from exc
 
 
 def _verified_email(claims: Mapping[str, Any]) -> str | None:
@@ -166,7 +191,7 @@ class JwtVerificationConfig:
 
 @dataclass(frozen=True, slots=True)
 class VerifiedJwt:
-    user_id: UUID
+    user_id: UUID | str
     email: str | None
     claims: Mapping[str, Any]
 
@@ -444,7 +469,7 @@ class JwtVerifier:
                 audience=self._config.audience,
                 leeway=self._config.leeway_seconds,
                 options={
-                    "require": ["exp", "nbf", "sub"],
+                    "require": ["exp", "sub"],
                     "verify_signature": True,
                     "verify_exp": True,
                     "verify_nbf": True,
@@ -457,9 +482,11 @@ class JwtVerifier:
         except PyJWTError as exc:
             raise AuthenticationError("invalid bearer token") from exc
 
-        if any(type(claims.get(claim)) is not int for claim in ("exp", "nbf")):
+        if type(claims.get("exp")) is not int or (
+            "nbf" in claims and type(claims.get("nbf")) is not int
+        ):
             raise AuthenticationError("invalid bearer token")
-        user_id = _uuid_claim(claims.get("sub"), field="sub")
+        user_id = _subject_claim(claims.get("sub"))
         email = _verified_email(claims)
         return VerifiedJwt(
             user_id=user_id,
@@ -469,7 +496,7 @@ class JwtVerifier:
 
 
 class PersonalJwtAuthAdapter:
-    """Map one verified host user UUID to one personal billing account."""
+    """Map one verified stable host subject to one personal billing account."""
 
     def __init__(self, verifier: JwtVerifier) -> None:
         self._verifier = verifier
@@ -477,7 +504,7 @@ class PersonalJwtAuthAdapter:
     async def authenticate(self, request: Request) -> AuthenticatedIdentity:
         principal = await self._verifier.verify_request(request)
         return AuthenticatedIdentity(
-            external_ref=f"v1:user:{principal.user_id}",
+            external_ref=_owner_reference(_USER_OWNER_PREFIX, principal.user_id),
             email=principal.email,
         )
 
@@ -491,6 +518,7 @@ class TeamBillingCapability(StrEnum):
     CATALOG_READ = "catalog:read"
     ACCOUNT_READ = "account:read"
     CHECKOUT_CREATE = "checkout:create"
+    CREDIT_PACK_CHECKOUT_CREATE = "credit_pack_checkout:create"
     PORTAL_OPEN = "portal:open"
     PLAN_CHANGE = "plan:change"
     UNKNOWN_BILLING_OPERATION = "billing:unknown"
@@ -498,13 +526,15 @@ class TeamBillingCapability(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class TeamMembership:
-    user_id: UUID
-    tenant_id: UUID
+    user_id: UUID | str
+    tenant_id: UUID | str
     role: TeamBillingRole
 
 
 class TeamMembershipRepository(Protocol):
-    async def membership_for(self, user_id: UUID, tenant_id: UUID) -> TeamMembership | None: ...
+    async def membership_for(
+        self, user_id: UUID | str, tenant_id: UUID | str
+    ) -> TeamMembership | None: ...
 
 
 class TeamBillingAuthorizationPolicy:
@@ -518,6 +548,10 @@ class TeamBillingAuthorizationPolicy:
             ("GET", "/billing/account"): TeamBillingCapability.ACCOUNT_READ,
             ("POST", "/api/checkout"): TeamBillingCapability.CHECKOUT_CREATE,
             ("POST", "/billing/checkout"): TeamBillingCapability.CHECKOUT_CREATE,
+            (
+                "POST",
+                "/api/credit-packs/checkout",
+            ): TeamBillingCapability.CREDIT_PACK_CHECKOUT_CREATE,
             ("POST", "/api/billing/portal"): TeamBillingCapability.PORTAL_OPEN,
             ("POST", "/billing/portal"): TeamBillingCapability.PORTAL_OPEN,
             ("POST", "/api/billing/change/preview"): TeamBillingCapability.PLAN_CHANGE,
@@ -571,7 +605,11 @@ class TeamJwtAuthAdapter:
 
     async def authenticate(self, request: Request) -> AuthenticatedIdentity:
         principal = await self._verifier.verify_request(request)
-        tenant_id = _uuid_claim(principal.claims.get(self._tenant_claim), field=self._tenant_claim)
+        tenant_id = _stable_identity_claim(
+            principal.claims.get(self._tenant_claim),
+            field=self._tenant_claim,
+            maximum=_MAX_OWNER_REFERENCE_BYTES - len(_TENANT_OWNER_PREFIX),
+        )
         membership = await self._memberships.membership_for(principal.user_id, tenant_id)
         if membership is None:
             raise HTTPException(403, "tenant membership required")
@@ -582,6 +620,6 @@ class TeamJwtAuthAdapter:
         capability = self._authorization.capability_for(request)
         self._authorization.require(membership, capability)
         return AuthenticatedIdentity(
-            external_ref=f"v1:tenant:{tenant_id}",
+            external_ref=_owner_reference(_TENANT_OWNER_PREFIX, tenant_id),
             email=principal.email,
         )

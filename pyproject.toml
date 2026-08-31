@@ -29,7 +29,7 @@ keywords = [
   "nextjs",
 ]
 classifiers = [
-  "Development Status :: 4 - Beta",
+  "Development Status :: 3 - Alpha",
   "Framework :: FastAPI",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: Apache Software License",

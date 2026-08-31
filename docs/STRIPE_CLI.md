@@ -107,8 +107,8 @@ uv run python scripts/bootstrap_stripe.py --verify-only
 cd typescript
 npm ci
 npm run build
-npx stripe-entitlements bootstrap
-npx stripe-entitlements bootstrap --verify-only
+npx --no-install stripe-entitlements bootstrap
+npx --no-install stripe-entitlements bootstrap --verify-only
 ```
 
 The build is required before the first CLI command in a source checkout because `dist/`
@@ -129,10 +129,10 @@ and the confirmation must exactly equal the effective `PRODUCT_LINE`:
 ```bash
 cd typescript
 npm run build  # required if this source checkout has not been built above
-npx stripe-entitlements bootstrap \
+npx --no-install stripe-entitlements bootstrap \
   --allow-live \
   --confirm-live-product-line example-entitlements
-npx stripe-entitlements bootstrap \
+npx --no-install stripe-entitlements bootstrap \
   --verify-only \
   --allow-live \
   --confirm-live-product-line example-entitlements

@@ -123,7 +123,7 @@ async def test_doctor_passes_local_and_database_checks_without_stripe_network(
         stripe_secret_key="sk_test_doctor_valid",
         stripe_webhook_secret="whsec_doctor_valid",
         stripe_webhook_api_version="2025-12-15.clover",
-        stripe_portal_configuration_id="bpc_doctor_valid",
+        stripe_portal_configuration_id=None,
         plan_catalog_path=default_plan_catalog_path(),
     )
     report = await run_doctor(settings)
@@ -134,8 +134,49 @@ async def test_doctor_passes_local_and_database_checks_without_stripe_network(
     assert by_name["database.schema"].status == "pass"
     assert by_name["database.migration_checksums"].status == "pass"
     assert by_name["stripe.network"].status == "skipped"
+    assert by_name["stripe.portal_configuration"].status == "skipped"
+    assert "core billing can run" in by_name["stripe.portal_configuration"].summary
     assert "no Stripe API request was made" in by_name["stripe.network"].summary
     assert "does not verify an endpoint payload" in by_name["stripe.version_contracts"].summary
+
+
+@pytest.mark.parametrize(
+    ("portal_id", "core_status"),
+    [
+        (None, "skipped"),
+        ("bpc_replace_me_private_value", "warning"),
+        ("pc_invalid_private_value", "warning"),
+        ("bpc_", "warning"),
+    ],
+)
+def test_doctor_profiles_require_only_selected_portal_capability(
+    portal_id: str | None,
+    core_status: str,
+) -> None:
+    settings = Settings(
+        database_url="postgresql://unused",
+        stripe_secret_key="sk_test_doctor_profile",
+        stripe_webhook_secret="whsec_doctor_profile",
+        stripe_webhook_api_version="2025-12-15.clover",
+        stripe_portal_configuration_id=portal_id,
+        plan_catalog_path=default_plan_catalog_path(),
+    )
+
+    core = {check.name: check for check in _configuration_checks(settings)}
+    strict = {check.name: check for check in _configuration_checks(settings, portal_required=True)}
+
+    assert core["stripe.portal_configuration"].status == core_status
+    assert strict["stripe.portal_configuration"].status == "fail"
+    assert "private_value" not in core["stripe.portal_configuration"].summary
+    assert "private_value" not in strict["stripe.portal_configuration"].summary
+
+
+@pytest.mark.parametrize("profile", ["full", "unknown"])
+async def test_doctor_rejects_unknown_profile_before_loading_configuration(
+    profile: str,
+) -> None:
+    with pytest.raises(ValueError, match="doctor profile"):
+        await run_doctor(profile=profile)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -153,7 +194,7 @@ def test_doctor_rejects_ambiguous_checkout_success_base_url(
         stripe_secret_key="sk_test_doctor_url",
         stripe_webhook_secret="whsec_doctor_url",
         stripe_webhook_api_version="2025-12-15.clover",
-        stripe_portal_configuration_id="bpc_doctor_url",
+        stripe_portal_configuration_id="bpc_DoctorUrl",
         plan_catalog_path=default_plan_catalog_path(),
     ).model_copy(update={"checkout_success_url": checkout_success_url})
 
@@ -279,7 +320,7 @@ async def test_doctor_stripe_network_opt_in_uses_read_only_retrievals(
         stripe_secret_key="sk_test_doctor_network",
         stripe_webhook_secret="whsec_doctor_network",
         stripe_webhook_api_version="2025-12-15.clover",
-        stripe_portal_configuration_id="bpc_doctor_network",
+        stripe_portal_configuration_id="bpc_DoctorNetwork",
         plan_catalog_path=default_plan_catalog_path(),
     )
     report = await run_doctor(settings, stripe_network=True)
@@ -297,13 +338,126 @@ async def test_doctor_stripe_network_opt_in_uses_read_only_retrievals(
 
 
 @pytest.mark.parametrize(
-    ("update_enabled", "cancel_mode"),
-    [(True, "at_period_end"), (False, "immediately")],
+    ("portal_id", "portal_required", "expected_status"),
+    [
+        ("bpc_replace_me_private_value", False, "skipped"),
+        ("bpc_replace_me_private_value", True, "fail"),
+        ("pc_invalid_private_value", False, "skipped"),
+        ("pc_invalid_private_value", True, "fail"),
+    ],
 )
-async def test_doctor_stripe_network_rejects_portal_mutation_policy_drift(
+async def test_doctor_never_sends_an_unusable_portal_id_to_stripe(
+    monkeypatch: pytest.MonkeyPatch,
+    portal_id: str,
+    portal_required: bool,
+    expected_status: str,
+) -> None:
+    from stripe_entitlements import doctor
+    from stripe_entitlements.doctor import _stripe_network_checks
+
+    portal_calls: list[str] = []
+
+    monkeypatch.setattr(
+        doctor.stripe.Account,
+        "retrieve",
+        lambda **kwargs: {"id": "acct_test"},
+    )
+
+    def retrieve_portal(configuration_id: str, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        portal_calls.append(configuration_id)
+        raise AssertionError("an unusable Portal ID must not be sent to Stripe")
+
+    monkeypatch.setattr(
+        doctor.stripe.billing_portal.Configuration,
+        "retrieve",
+        retrieve_portal,
+    )
+    settings = Settings(
+        database_url="postgresql://unused",
+        stripe_secret_key="sk_test_doctor_portal_id",
+        stripe_webhook_secret="whsec_doctor_portal_id",
+        stripe_webhook_api_version="2025-12-15.clover",
+        stripe_portal_configuration_id=portal_id,
+        plan_catalog_path=default_plan_catalog_path(),
+    )
+
+    checks = await _stripe_network_checks(
+        settings,
+        None,
+        enabled=True,
+        portal_required=portal_required,
+    )
+    by_name = {check.name: check for check in checks}
+
+    assert portal_calls == []
+    assert by_name["stripe.network.portal"].status == expected_status
+    assert "private_value" not in by_name["stripe.network.portal"].summary
+
+
+@pytest.mark.parametrize(
+    ("portal_required", "expected_status"),
+    [(False, "warning"), (True, "fail")],
+)
+async def test_doctor_scopes_portal_retrieval_failures_to_the_selected_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    portal_required: bool,
+    expected_status: str,
+) -> None:
+    from stripe_entitlements import doctor
+    from stripe_entitlements.doctor import _stripe_network_checks
+
+    monkeypatch.setattr(
+        doctor.stripe.Account,
+        "retrieve",
+        lambda **kwargs: {"id": "acct_test"},
+    )
+
+    def retrieve_portal(configuration_id: str, **kwargs):  # type: ignore[no-untyped-def]
+        del configuration_id, kwargs
+        raise RuntimeError("private Stripe response must be redacted")
+
+    monkeypatch.setattr(
+        doctor.stripe.billing_portal.Configuration,
+        "retrieve",
+        retrieve_portal,
+    )
+    settings = Settings(
+        database_url="postgresql://unused",
+        stripe_secret_key="sk_test_doctor_portal_failure",
+        stripe_webhook_secret="whsec_doctor_portal_failure",
+        stripe_webhook_api_version="2025-12-15.clover",
+        stripe_portal_configuration_id="bpc_DoctorPortalFailure",
+        plan_catalog_path=default_plan_catalog_path(),
+    )
+
+    checks = await _stripe_network_checks(
+        settings,
+        None,
+        enabled=True,
+        portal_required=portal_required,
+    )
+    portal = {check.name: check for check in checks}["stripe.network.portal"]
+
+    assert portal.status == expected_status
+    assert portal.summary == "read-only Portal retrieval failed (RuntimeError)"
+
+
+@pytest.mark.parametrize(
+    ("update_enabled", "cancel_mode", "portal_required", "expected_status"),
+    [
+        (True, "at_period_end", False, "warning"),
+        (True, "at_period_end", True, "fail"),
+        (False, "immediately", False, "warning"),
+        (False, "immediately", True, "fail"),
+    ],
+)
+async def test_doctor_scopes_portal_mutation_policy_drift_to_the_selected_profile(
     monkeypatch: pytest.MonkeyPatch,
     update_enabled: bool,
     cancel_mode: str,
+    portal_required: bool,
+    expected_status: str,
 ) -> None:
     from stripe_entitlements import doctor
     from stripe_entitlements.doctor import _stripe_network_checks
@@ -333,14 +487,19 @@ async def test_doctor_stripe_network_rejects_portal_mutation_policy_drift(
         stripe_secret_key="sk_test_doctor_portal_drift",
         stripe_webhook_secret="whsec_doctor_portal_drift",
         stripe_webhook_api_version="2025-12-15.clover",
-        stripe_portal_configuration_id="bpc_doctor_portal_drift",
+        stripe_portal_configuration_id="bpc_DoctorPortalDrift",
         plan_catalog_path=default_plan_catalog_path(),
     )
 
-    checks = await _stripe_network_checks(settings, None, enabled=True)
+    checks = await _stripe_network_checks(
+        settings,
+        None,
+        enabled=True,
+        portal_required=portal_required,
+    )
     by_name = {check.name: check for check in checks}
 
-    assert by_name["stripe.network.portal"].status == "fail"
+    assert by_name["stripe.network.portal"].status == expected_status
     assert "subscription updates must be disabled" in by_name["stripe.network.portal"].summary
     assert "period end" in by_name["stripe.network.portal"].summary
 
@@ -539,20 +698,32 @@ def test_cli_main_dispatches_each_command(command: str, monkeypatch: pytest.Monk
 def test_cli_main_dispatches_doctor_json_and_network_flags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    called: list[tuple[bool, bool]] = []
+    called: list[tuple[bool, bool, str]] = []
 
-    async def selected(*, json_output: bool, stripe_network: bool) -> int:
-        called.append((json_output, stripe_network))
+    async def selected(
+        *,
+        json_output: bool,
+        stripe_network: bool,
+        profile: str,
+    ) -> int:
+        called.append((json_output, stripe_network, profile))
         return 0
 
     monkeypatch.setattr(cli, "_doctor", selected)
     monkeypatch.setattr(
         sys,
         "argv",
-        ["stripe-entitlements", "doctor", "--json", "--stripe-network"],
+        [
+            "stripe-entitlements",
+            "doctor",
+            "--json",
+            "--stripe-network",
+            "--profile",
+            "portal",
+        ],
     )
     cli.main()
-    assert called == [(True, True)]
+    assert called == [(True, True, "portal")]
 
 
 async def test_cli_doctor_json_is_machine_readable_and_uses_failure_exit_contract(
@@ -564,8 +735,13 @@ async def test_cli_doctor_json_is_machine_readable_and_uses_failure_exit_contrac
         (DoctorCheck("example", "fail", "safe failure"),),
     )
 
-    async def fake_doctor(*, stripe_network: bool = False) -> DoctorReport:
+    async def fake_doctor(
+        *,
+        stripe_network: bool = False,
+        profile: str = "core",
+    ) -> DoctorReport:
         assert not stripe_network
+        assert profile == "core"
         return report
 
     monkeypatch.setattr(cli, "run_doctor", fake_doctor)

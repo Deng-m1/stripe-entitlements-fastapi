@@ -22,13 +22,38 @@ server-side code.
 Never describe `simulation` as a Stripe E2E test. Never describe test staging as proof of
 live settlement.
 
+## Before an AI agent edits the product
+
+The agent should first ask only for unanswered choices that change the implementation:
+
+- personal or team billing, and the verified immutable owner ID;
+- Python/FastAPI or native TypeScript/Next.js as the one billing runtime;
+- plan prices, monthly credit grants, features, limits, yearly billing, and credit packs;
+- `full_period_reset` or `prorated_delta` for immediate upgrades;
+- identity provider, PostgreSQL database, stable staging domain, Portal, and scheduler;
+  and
+- UI simulation, Stripe test staging, or explicitly approved live production.
+
+The agent should state its selected defaults before editing when the product brief does
+not answer them. It may automate source integration, migrations, test-mode catalog
+bootstrap, Route Handlers, environment templates, and verification with the credentials
+and platform access it has been given. It must not invent a production domain, identity
+contract, live-mode approval, or signing secret.
+
+Use the provider-neutral [first real deployment guide](DEPLOYMENT.md) as the handoff
+contract. It explains the subscription mechanisms, host/Stripe/repository responsibility
+boundary, two-phase domain and webhook setup, Next.js runtime-resource tracing, and a
+symptom-to-owner diagnosis table. That distinction matters with generated applications:
+a host registration failure is not a Stripe bug, while a successful Checkout with no
+projected access usually is a webhook/configuration problem.
+
 ## Publish a UI-only simulation
 
-The reference frontend has a production-safe simulation mode. It never sends a request
-to Stripe or the billing backend. Its state lives only in the visitor's browser runtime,
-and the page always displays a public-simulation warning.
+The reference frontend has a browser-local simulation mode for a public design/demo
+link. It displays a simulation warning and never contacts Stripe or the billing backend.
 
-Set the following public build variables in a frontend-only deployment:
+Deploy only [`vercel.simulation.json`](../vercel.simulation.json) with these public
+variables:
 
 ```dotenv
 NEXT_PUBLIC_BILLING_API_MODE=simulation
@@ -36,21 +61,8 @@ NEXT_PUBLIC_SIMULATION_ACKNOWLEDGEMENT=1
 NEXT_PUBLIC_ALLOW_INDEXING=false
 ```
 
-Production simulation builds fail when indexing is enabled, when the acknowledgement is
-missing, or when a browser-visible demo Bearer token, Stripe publishable key,
-`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `DATABASE_URL`, `DEMO_BEARER_TOKEN`, or
-`CRON_SECRET` is present. Browser `sessionStorage` is required so a cross-page simulated
-return cannot lose its pending state; denied storage fails closed with a visible error.
-
-Use [`vercel.simulation.json`](../vercel.simulation.json) in a dedicated Vercel project.
-It contains only the `web/` service and deliberately has no FastAPI service, API rewrite,
-webhook rewrite, health rewrite, or Cron. Do **not** use the split [`vercel.json`](../vercel.json)
-or the scheduled [`vercel.typescript.json`](../vercel.typescript.json) for this public
-link. Do not set Stripe, webhook, database, authentication, or scheduler credentials in
-the simulation project.
-
-Keep the Vercel project Root Directory at the repository root and deploy the reviewed
-alternative config explicitly:
+Keep the Vercel root at the repository root. Do not add Stripe, database, auth, or Cron
+credentials to this frontend-only project:
 
 ```bash
 npx vercel@59.10.0 -A vercel.simulation.json deploy
@@ -58,27 +70,11 @@ npx vercel@59.10.0 -A vercel.simulation.json deploy
 npx vercel@59.10.0 -A vercel.simulation.json deploy --prod
 ```
 
-The repository has clean-install production-build and Chromium coverage for this
-configuration, but no Vercel-hosted Preview deployment is recorded yet. Treat the two
-commands as a deployment runbook until the resulting Preview URL passes the remote
-simulation gate; do not cite the local tests as proof that Vercel accepted the project.
-
-If an AI builder only recognizes `vercel.json`, copy `vercel.simulation.json` to that
-name in a simulation-only downstream repository; do not overwrite the real-billing
-configuration on the main release branch.
-
-This is the appropriate mode for a public design link before a stable test backend and
-identity provider exist. It simulates plan selection, an immediate plan change, a credit
-pack, delayed projection, reload persistence, Portal return, and reset. It does not fake
-Stripe's hosted pages, decline behavior, SCA, signed delivery, or money movement.
-Run `cd web && npm run test:e2e:simulation` to build the exact production mode and prove
-in Chromium that it remains `noindex`, renders the warning and billing interactions,
-makes no `/api`, webhook, or Stripe request, and fails closed when browser storage is
-denied. To test an already deployed link, set `SIMULATION_BASE_URL` to its HTTPS origin
-and explicitly set `SIMULATION_ALLOW_REMOTE=1`.
-The runner checks `X-Frontend-Build-Mode: production` and
-`X-Billing-Api-Mode: simulation`, plus the disabled server routes, before clicking any
-billing action; a normal staging/production site is rejected before mutation.
+Run `cd web && npm run test:e2e:simulation` before sharing it. For a deployed URL, set
+`SIMULATION_BASE_URL` and `SIMULATION_ALLOW_REMOTE=1`. This proves the simulation stays
+`noindex` and makes no Stripe/API request; it does not prove hosted Checkout, SCA,
+webhooks, or money movement. Deployment/configuration details are in
+[Vercel](VERCEL.md#frontend-only-public-simulation).
 
 ## Publish a real Stripe test-mode staging site
 
@@ -96,7 +92,7 @@ Stripe test mode
 
 Provision separate staging resources:
 
-1. a managed PostgreSQL database containing migrations 001 and 002;
+1. a managed PostgreSQL 17 or 18 database initialized with migrations 001 and 002;
 2. one Stripe test-mode catalog and safe test Portal configuration;
 3. `sk_test_...` only on the server and `pk_test_...` only where Stripe.js needs it;
 4. one test-mode Webhook Endpoint and its server-only `whsec_...`;
@@ -105,147 +101,148 @@ Provision separate staging resources:
    delivery; and
 7. a scheduler for annual grants and reconciliation.
 
-Protect this site with an identity-provider allowlist, deployment access control, or
-equivalent test-user gate, and keep it `noindex`. Test mode does not move money, but an
-unrestricted site can still create Customers, Sessions, Subscriptions, Events, emails,
-and operational noise in your Stripe test inventory.
+Hosted Checkout and Portal redirects do not require a publishable key. This reference
+also confirms some plan-change/SCA flows with Stripe.js, so its complete UI needs the
+matching `pk_test_...` in browser configuration; secret and webhook keys remain
+server-only.
 
-Follow the complete [Vercel deployment runbook](VERCEL.md). Vercel is optional, but the
-Node runtime and PostgreSQL transaction boundary are not. The checked-in five-minute
-Cron schedule requires a Vercel plan that supports it; on Hobby, remove the Cron entries
-and call the same protected routes from an external scheduler.
-
-Do not share production resources with Preview deployments. If every preview cannot get
-an isolated database, Stripe prefix, endpoint, and auth subject, use `simulation` for PR
-previews and reserve the stable test staging site for payment tests.
+Keep staging access-controlled and `noindex`. Do not share its database, Stripe catalog,
+endpoint, or auth subjects with production or arbitrary previews. Follow the
+[Vercel runbook](VERCEL.md) for environment variables, migrations, schedules, and
+deployment checks.
 
 ## Lovable + Supabase
 
-Lovable commonly owns a Vite UI and Supabase session. Keep this billing service on a
-Node-capable or FastAPI host; do not move its `pg` transactions and raw-body webhook
-handler into a Deno/Edge function without a separate port and race-safety review.
+Lovable commonly owns a Vite UI and Supabase session. Its browser can call a separately
+deployed Node/FastAPI billing service; a Vite app cannot run the Next.js Route Handlers.
+The `@tosea/stripe-entitlements` package is server-only and currently unpublished, so do
+not install or import it into a Vite browser bundle. The repository's `web/lib/*` files
+are private to the reference Next.js UI; they are not package exports.
 
-The checked-in `createSupabaseBrowserAuth` is a narrow browser transport adapter, not a
-complete Supabase authentication starter. It obtains the current compact access token,
-applies the same 8,192-byte bound as the HTTP client, and sanitizes provider errors. It
-does not verify the token, authorize a tenant, handle account switching, or prove that
-the token matches the repository's generic JWT contract.
+The generic JWT starter verifies a fixed issuer and audience, asymmetric signature,
+required integer `exp`, required bounded stable `sub`, and optional integer `nbf` when
+present. That shape covers UUID and opaque provider subjects, but a provider token may
+still use a different audience, session-cookie flow, or organization claim. Use a
+provider-specific server adapter or a same-origin HttpOnly-cookie BFF unless an
+integration test proves the generic contract. Never use email as ownership authority.
 
-The generic Python and TypeScript personal JWT starters require an asymmetric signature,
-exact issuer/audience/algorithm, integer `exp` and `nbf`, and a canonical UUID `sub`.
-Supabase documents `nbf` as optional, and its normal authenticated-token example does not
-contain it. A default Supabase token can therefore receive 401 from this strict starter.
-Do not configure the following environment merely by copying placeholders:
-
-```dotenv
-BILLING_AUTH_MODE=personal_jwt
-BILLING_JWT_ISSUER=https://PROJECT_REF.supabase.co/auth/v1
-BILLING_JWT_AUDIENCE=authenticated
-BILLING_JWKS_URL=https://PROJECT_REF.supabase.co/auth/v1/.well-known/jwks.json
-BILLING_JWT_ALGORITHMS=ES256
-```
-
-Copy the actual issuer, audience, JWKS URL, and signing algorithm from the Supabase
-project. Then choose and test one server-side integration:
-
-1. Prefer a same-origin, HttpOnly-cookie BFF that verifies the Supabase session with the
-   provider's server SDK, applies CSRF protection, and returns a host-owned
-   `AuthAccountAdapter` identity.
-2. Implement a provider-specific server adapter that verifies the Supabase token and
-   maps its immutable user ID to `externalRef`.
-3. Use the generic JWKS starter only after an integration test proves that issued tokens
-   contain every required claim. A custom access-token hook may add `nbf`, but its exact
-   integer value, signature, issuer, audience, algorithm, and UUID subject must still be
-   verified; the hook itself is not evidence.
-
-Email is display metadata, never ownership authority. Supabase JavaScript clients also
-persist sessions in `localStorage` by default. Decide whether that XSS exposure is
-acceptable for the host threat model; the HttpOnly BFF avoids exposing the access token
-to this reference client but requires deliberate cookie/CSRF integration.
-
-The reference frontend includes a dependency-free adapter for a Supabase browser client:
+For a separate Lovable/Vite project, copy the dependency-free
+[`vite-billing-client.ts`](../examples/browser_adapters/vite-billing-client.ts) file into
+that project's `src/` directory. It has no repository alias or package dependency. Wire
+the host project's existing Supabase client into it with relative imports:
 
 ```typescript
-import { createHttpBillingApi } from "@/lib/http-api";
-import { createSupabaseBrowserAuth } from "@/lib/supabase-auth";
-import { supabase } from "@/lib/supabase";
+// src/billing.ts in the Lovable/Vite project
+import { createBillingFetch } from "./vite-billing-client";
+import { supabase } from "./supabase"; // This is the host project's existing client.
 
-export const billingApi = createHttpBillingApi({
-  baseUrl: "https://billing-staging.example.com",
-  auth: createSupabaseBrowserAuth(supabase),
+export const billingFetch = createBillingFetch({
+  baseUrl: import.meta.env.VITE_BILLING_API_URL,
+  async getAccessToken() {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) throw error;
+    return data.session?.access_token ?? null;
+  },
 });
 ```
 
-`@/lib/supabase` is intentionally host-provided; this repository does not create or
-configure a Supabase client. For a same-origin Next.js deployment, use
-`baseUrl: "same-origin"`.
+For Checkout, create one idempotency key when the user starts the action, retain it for
+retries of that same action, and pass it to the copied transport:
 
-When the verified auth subject changes or signs out, cancel outstanding UI work, unmount
-the billing screens, call `clearAllIdempotentIntents()` from `web/lib/idempotency.ts`,
-and mount a fresh API/UI instance. The browser keys are intentionally reusable for one
-user intent and are not namespaced by an untrusted browser subject. The server remains
-account-scoped, but stale UI state must not be shown after an account switch.
+```typescript
+const checkoutIntentKey = crypto.randomUUID();
+const { url } = await billingFetch<{ url: string }>("/api/checkout", {
+  method: "POST",
+  idempotencyKey: checkoutIntentKey,
+  body: {
+    plan_key: "starter",
+    interval: "month",
+    success_url: `${location.origin}/billing/success`,
+    cancel_url: `${location.origin}/pricing`,
+  },
+});
+location.assign(url);
+```
 
-No real Supabase login/JWKS browser E2E is currently recorded for this repository. Clerk
-also does not automatically fit the generic starter: its normal `sub` is not necessarily
-a canonical UUID. Use a provider-specific server adapter or a tested immutable mapping
-rather than weakening subject validation globally.
+Configure the billing service's CORS allowlist to the exact Lovable origin. The copied
+file transports a short-lived user token; it does not verify identity, decode
+entitlements, or make browser state authoritative. The Node/FastAPI service must verify
+the token and map its immutable subject to `externalRef`.
+
+`VITE_BILLING_API_URL` can be an HTTPS origin or an HTTPS mount prefix such as
+`https://api.example/billing`; the copied transport preserves that prefix when it
+appends a fixed `/api/...` route. Loopback HTTP remains available for local development.
+Token size remains an identity-provider/server/proxy concern rather than an extra
+browser-adapter policy; the final request still has to fit their documented header
+limits.
+
+If the host uses an HttpOnly session cookie, do not expose it to this adapter. Put a
+same-origin BFF in the host application that verifies the session, applies CSRF checks,
+strips caller-supplied identity headers, preserves the caller's idempotency key, and
+forwards user-scoped identity evidence to the billing service. A shared service token
+must not be allowed to choose an arbitrary billing owner.
+
+On sign-out or subject change, cancel pending UI work, clear idempotent browser intents,
+and remount billing state. No real Supabase/Clerk login E2E is currently recorded; see
+[Adoption](ADOPTION.md#connect-authentication-and-tenant-authorization) for the complete
+identity contract.
 
 ## v0 + Next.js
 
-v0 is the closest fit for the native TypeScript path. In a new App Router project, pin
-the reviewed backend package before asking the builder to connect billing UI:
+v0 is the closest fit for the native TypeScript path. The npm package is not published,
+so import the whole public repository instead of asking v0 to install it. Keep both
+`web/` and `typescript/`; `web/package.json` uses the checked-in
+`file:../typescript` dependency.
 
-```bash
-npm install --save-exact @tosea/stripe-entitlements@0.4.0
-```
+Importing the repository does **not** select that backend by itself:
+the default `vercel.json` intentionally routes billing to FastAPI. In a whole-repository
+fork that retains the `web/` + `typescript/` layout, either deploy with
+`-A vercel.typescript.json`, or deliberately copy `vercel.typescript.json` to that
+fork's root `vercel.json`. Keep only one webhook processor active. In a standalone
+root-level Next.js project, do **not** copy the monorepo Services file: use a pinned Git
+checkout through a local `file:` dependency or install the local tarball, add the three
+Route Handlers and output-file tracing, and use the small Cron-only configuration from
+[Vercel](VERCEL.md#native-typescript-topology). Neither path needs a published npm
+package; the [vendoring guide](ADOPTION.md#consume-a-pinned-git-source-or-vendored-copy)
+lists the exact source, migrations, and catalog files.
 
-The package installs the server runtime, types, CLI, catalog, and migrations; it is not a
-React component kit or a one-click SaaS template. Add the three Node Route Handlers,
-managed PostgreSQL 17, a host authentication adapter, Stripe test-mode configuration,
-and protected worker schedules. Copy the handler shape from the matching
-[v0.4.0 clean-consumer fixture](https://github.com/Deng-m1/stripe-entitlements-fastapi/tree/v0.4.0/tests/npm-next-consumer)
-rather than another branch.
+For the `file:` path, add the vendored package's install/build commands to the host's
+`prebuild` script as shown in that guide. This makes `npm run build` (including Vercel's
+Build Command) create `dist/` before Next.js resolves the package exports; a local
+developer build must not be the deployment's hidden prerequisite.
 
-When importing this monorepo instead, preserve these server-owned files while replacing
-the visual layer:
-
-- `web/app/api/[...billing]/route.ts`;
-- `web/app/webhooks/stripe/route.ts`;
-- `web/app/health/route.ts`;
-- `next.config.mjs` output-file tracing for the packaged catalog and migrations;
-- the Node runtime declaration and raw-body webhook behavior; and
-- the billing package, migrations, catalog, and environment contract.
-
-Give the builder this constraint block:
+This short prompt is enough to start:
 
 ```text
-Replace only the visual product pages and components. Keep every billing Route Handler,
-the Node runtime, raw Stripe webhook bytes, server environment variables, PostgreSQL
-transactions, AuthAdapter, idempotency headers, and webhook-backed success polling.
-Never create Checkout or trust plan/account/credit state in a Client Component. Never
-expose sk_test, sk_live, whsec, database URLs, client secrets, recovery URLs, or a shared
-Bearer token. A Checkout return is not entitlement proof.
+Use https://github.com/Deng-m1/stripe-entitlements-fastapi as the starting repository.
+Build my product UI in web/ and keep its local typescript/ billing dependency. Preserve
+the existing /api, /webhooks/stripe and /health Route Handlers. Use the native TypeScript
+deployment: select vercel.typescript.json explicitly, or copy it to vercel.json only
+while preserving this repository's web/ + typescript/ layout; do not leave the default
+FastAPI routing active. Keep Stripe and database secrets server-side, connect my
+authenticated user to the billing AuthAdapter, and show paid access only after GET
+/api/account reflects the signed webhook.
 ```
 
-The release gate installs the exact tarball into a clean Next.js 16.3.2 App Router
-consumer and runs a production build of all three Route Handlers. That proves package
-installation and Next compilation, not a hosted v0 platform import or a complete product
-journey. `web/package.json` intentionally keeps the local `../typescript` dependency so
-monorepo CI tests the current source. Downstream v0 projects must keep the pinned npm
-version and still run their own authenticated browser E2E against isolated Stripe test
-mode and PostgreSQL before deployment.
+Keep these five boundaries while changing the product:
 
-Lovable's default Vite runtime likewise cannot execute the Next.js Route Handlers, and
-this repository does not yet contain a runnable Lovable/Vite simulation starter. Use
-Lovable only to produce the visual layer, then deliberately port the browser-local
-simulation adapter for a non-payment demo or call a separately deployed Node/FastAPI
-service for real test billing. Do not describe either path as one-click until that exact
-generated project has its own build and browser E2E evidence.
+- edit the visual pages/components, not the billing state machine;
+- keep the three server Route Handlers on the Node runtime;
+- never expose Stripe secret/webhook keys or the database URL to browser code;
+- map the product's verified immutable user/team ID through `AuthAdapter`; and
+- treat Checkout return as pending until `/api/account` shows webhook-projected access.
 
-If the generated app uses an HttpOnly session rather than a browser JWT, add a same-origin
-BFF with CSRF protection and verified user context. One generic service token must never
-let a browser choose an arbitrary billing owner.
+To change plans or entitlements, edit `plans.toml`, then run
+`cd typescript && npm run sync:catalog`. Use `npm run sync:catalog -- --check` from that
+directory as the no-write drift gate; do not make a native TypeScript/v0 project install
+Python or maintain a second catalog by hand.
+
+The current whole-source `file:` dependency and local tarball pass Next.js consumer
+builds. That is not a hosted v0 journey, so test the generated deployment with isolated
+Stripe test mode, PostgreSQL, and a real login before promoting it. Use the
+[TypeScript guide](../typescript/README.md) when a separate repository needs the
+registry-free Git-vendor or local-tarball path. Identity mapping and deployment details
+are in [Adoption](ADOPTION.md) and [Vercel](VERCEL.md).
 
 ## Test the deployed staging site
 

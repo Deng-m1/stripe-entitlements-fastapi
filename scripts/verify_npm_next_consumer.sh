@@ -342,6 +342,7 @@ docker run \
   --name "$postgres_container" \
   --env "POSTGRES_DB=$postgres_database" \
   --env "POSTGRES_PASSWORD=$postgres_password" \
+  --env "PGDATA=/var/lib/postgresql/data" \
   --publish 127.0.0.1::5432 \
   --tmpfs /var/lib/postgresql/data:rw,nosuid,nodev,size=256m \
   "$postgres_image" >/dev/null
@@ -358,7 +359,7 @@ for ((attempt = 0; attempt < 240; attempt += 1)); do
   sleep 0.25
 done
 if [ "$postgres_ready" -ne 1 ]; then
-  echo "disposable PostgreSQL 17 did not become ready" >&2
+  echo "disposable PostgreSQL did not become ready" >&2
   exit 1
 fi
 
@@ -368,9 +369,10 @@ postgres_version_num="$(
     -c 'show server_version_num'
 )"
 case "$postgres_version_num" in
-  17????) ;;
+  17????) postgres_major=17 ;;
+  18????) postgres_major=18 ;;
   *)
-    echo "clean Next.js runtime verification requires PostgreSQL 17" >&2
+    echo "clean Next.js runtime verification requires PostgreSQL 17 or 18" >&2
     exit 1
     ;;
 esac
@@ -510,4 +512,4 @@ if (
 }
 JS
 
-echo "npm-next-consumer-runtime=production-next installed-cli=true postgres=17 health-ok=true database=true schema=true"
+echo "npm-next-consumer-runtime=production-next installed-cli=true postgres=$postgres_major health-ok=true database=true schema=true"

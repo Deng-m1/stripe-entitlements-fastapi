@@ -1,4 +1,4 @@
-import { copyFile, cp, mkdir, rm } from "node:fs/promises";
+import { chmod, copyFile, cp, mkdir, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,3 +18,4 @@ await copyFile(
   resolve(repositoryDirectory, "plans.toml"),
   resolve(distributionDirectory, "plans.toml"),
 );
+await chmod(resolve(distributionDirectory, "node", "bin.js"), 0o755);

@@ -4,7 +4,6 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12%2B-3776AB.svg)](pyproject.toml)
 [![Node](https://img.shields.io/badge/node-22%2B-339933.svg)](typescript/package.json)
-[![npm](https://img.shields.io/npm/v/%40tosea%2Fstripe-entitlements.svg?label=npm)](https://www.npmjs.com/package/@tosea/stripe-entitlements)
 
 An open-source Stripe billing, SaaS entitlements, and credit-ledger starter with two
 native backend choices: Python/FastAPI or TypeScript/Node/Next.js. Both use PostgreSQL
@@ -17,10 +16,38 @@ duplicate, delayed, concurrent, and out-of-order Events.
 > It is a reference implementation, not a universal SaaS billing framework and
 > not financial, tax, accounting, or legal advice.
 
+> **Current distribution status:** `main` contains the `0.4.0` release candidate,
+> but `v0.4.0` and `@tosea/stripe-entitlements@0.4.0` are not published yet. Use a
+> reviewed source commit, pinned Git/path dependency, vendored copy, or locally built
+> tarball until those release channels exist; do not rely on an older tag or package as
+> equivalent code. This is a new
+> pre-1.0 reference with no documented external production adopters; its automated and
+> Stripe test-mode evidence is not evidence of third-party production use.
+
+## Start here
+
+Choose the path that matches the host application; the linked guides contain the actual
+setup and verification steps:
+
+| Goal                                    | Start with                                                                                     |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Add billing to a Python/FastAPI service | [Quick start](#quick-start), then [adoption](docs/ADOPTION.md#compose-the-fastapi-application) |
+| Use native Next.js/TypeScript billing   | [TypeScript source, Git vendor, or tarball](typescript/README.md#requirements)                 |
+| Deploy real Stripe test-mode staging    | [First real deployment](docs/DEPLOYMENT.md)                                                    |
+| Share a UI-only link without Stripe/DB  | [Credential-free public simulation](docs/AI_BUILDERS.md#publish-a-ui-only-simulation)          |
+
+No registry release is required for either backend. The
+[pinned Git and minimum vendoring guide](docs/ADOPTION.md#consume-a-pinned-git-source-or-vendored-copy)
+lists the exact Python/TypeScript source, SQL, catalog, build, and upgrade boundaries.
+The TypeScript source path still uses npm or another compatible JavaScript package
+manager to install its third-party dependencies and produce `dist/`; it only avoids
+downloading this unpublished package from the public registry.
+
 ## Contents
 
 - [Implemented scope](#what-is-completeand-what-is-not)
 - [Choose Python or TypeScript](#choose-python-or-typescript)
+- [Choose the subscription flow](#choose-the-subscription-flow-before-coding)
 - [Plan catalog and annual savings](#plan-catalog)
 - [One-time credit packs](#one-time-credit-packs)
 - [Two plan-change templates](#safe-stripe-plan-transitions-full-price-or-prorated-difference)
@@ -70,6 +97,34 @@ versions as interchangeable replicas: every API/webhook/worker process must use 
 compatible migration level, identical catalog, Stripe mode/version contracts, product
 line, and transition policy. See the [TypeScript package guide](typescript/README.md).
 
+## Choose the subscription flow before coding
+
+Ask these questions once: is the billable owner a person or team, which runtime owns the
+backend, which plans and entitlements exist, which upgrade policy applies, and whether
+yearly billing, credit packs, Portal, and a scheduler are needed. Also identify the real
+identity provider, PostgreSQL 17 or 18 database, stable staging domain, and whether the
+target is a UI simulation, Stripe test staging, or approved live production.
+
+The implemented lifecycle uses several deliberate mechanisms rather than granting access
+from one generic “subscription changed” callback:
+
+| Action | Implemented mechanism |
+| --- | --- |
+| First subscription | Stripe Hosted Checkout; access begins after signed `invoice.paid` projection |
+| Upgrade | App preview/confirm using either `full_period_reset` or `prorated_delta` |
+| Downgrade, annual-origin, or unsupported interval change | Period-end Subscription Schedule |
+| Cancellation | Dedicated Portal configuration, cancellation at period end |
+| Renewal | Paid Invoice projection; annual plans release credits in monthly slots |
+| One-time credits | Hosted Checkout plus exact `payment_intent.succeeded` projection |
+
+Portal price changes are disabled so they cannot bypass the selected upgrade policy.
+Stripe owns payment objects and hosted pages; this repository owns the PostgreSQL
+entitlement projection; the host application still owns verified login/team membership,
+business entities, and server-side enforcement. The concise
+[first-deployment guide](docs/DEPLOYMENT.md) gives the complete responsibility table,
+Agent discovery questions, two-phase domain/webhook setup, environment boundary, and
+failure diagnosis.
+
 ## What is complete—and what is not
 
 The repository implements two complete, deliberately bounded transition templates:
@@ -78,13 +133,14 @@ The repository implements two complete, deliberately bounded transition template
 - `prorated_delta`: preserve the current monthly period, pay the prorated difference,
   and add the catalog entitlement difference.
 
-Their complete 6 × 6 matrices are selected with one environment setting and persisted
-per intent. Shared scope:
+For the bundled three-plan, two-interval catalog, their complete 6 × 6 matrices are
+selected with one environment setting and persisted per intent. Shared scope:
 
 - one subscription item and one currency (USD);
-- three fixed plans, each available monthly or yearly;
-- three card-funded one-time USD credit packs with independent expiry and source-aware
-  refunds;
+- any non-empty set of stable plan keys, each available monthly and yearly; the bundled
+  reference catalog ships Starter, Pro, and Ultra;
+- zero or more card-funded one-time USD credit packs with independent expiry and
+  source-aware refunds; the bundled reference catalog ships three;
 - exact product credits down to `0.000001`, stored as integer atoms rather than floats;
 - yearly invoices fund up to 12 monthly credit grants rather than granting all
   credits at purchase;
@@ -122,15 +178,34 @@ must supply verified authentication and product enforcement. See
 Prices come from [plans.toml](plans.toml). Tier identity and transition direction
 use stable plan keys and explicit rank—never a price comparison.
 
+After editing that canonical file, regenerate the public pricing snapshot with the
+source runtime already used by the host; neither path requires installing the other
+runtime:
+
+```bash
+# Python/FastAPI source workflow, from the repository root
+uv run python scripts/sync_reference_catalog.py
+uv run python scripts/sync_reference_catalog.py --check
+
+# Native TypeScript/v0 source workflow
+cd typescript
+npm run sync:catalog
+npm run sync:catalog -- --check
+```
+
+Both commands validate `plans.toml` and deterministically produce the same
+`web/reference-catalog.json`; `--check` verifies drift without writing.
+
 | Plan    | Monthly | Yearly total | Yearly equivalent | Annual saving | Monthly credits |
 | ------- | ------: | -----------: | ----------------: | ------------: | --------------: |
 | Starter |     $19 |         $137 |         $11.42/mo |           $91 |             300 |
 | Pro     |     $49 |         $353 |         $29.42/mo |          $235 |           1,000 |
 | Ultra   |    $149 |       $1,073 |         $89.42/mo |          $715 |           4,000 |
 
-Yearly savings compare 12 monthly payments with the explicit yearly total. The
-UI shows a saving only when both prices use the same currency and the yearly
-total is actually lower; an equal or higher yearly price gets no saving claim.
+Yearly savings compare 12 monthly payments with the explicit yearly total. The catalog
+accepts lower, equal, or higher yearly totals because pricing is a product decision. The
+UI shows a saving only when both prices use the same currency and the yearly total is
+actually lower; an equal or higher yearly price gets no saving claim.
 This display calculation never controls tier direction or transition timing.
 Credits on a yearly subscription still arrive in monthly slots.
 
@@ -155,6 +230,19 @@ support must clear first are documented in
 
 The API returns these as structured entitlements. Product code still has to
 enforce them; displaying an entitlement is not enforcement.
+
+These bundled tiers are cumulative, but the catalog parser does not impose that product
+choice on adopters. A plan may have no feature flags or numeric limits, and a higher-rank
+plan may trade one entitlement for another. Rank alone defines upgrade/downgrade
+direction. Under `prorated_delta`, a higher-rank monthly change without a positive credit
+difference is safely scheduled for period end instead of attempting delta settlement.
+
+Catalog entitlement names do have two invariants. `monthly_credits` is reserved for the
+entitlement synthesized from each plan's top-level `monthly_credits` value, so it cannot
+also be declared under `features` or `limits`. All other feature and numeric-limit keys
+share one catalog-wide namespace: a key used as a feature in any plan cannot be used as a
+limit in another plan, or vice versa. This keeps one key's value type stable for every
+plan and for downstream enforcement.
 
 ## One-time credit packs
 
@@ -193,11 +281,11 @@ annual-origin changes are period-end. Immediate apply uses
 `billing_cycle_anchor=now` and `proration_behavior=none`, and the paid target Invoice
 resets the monthly credit pool.
 
-`prorated_delta` permits immediate settlement only for a higher monthly tier while
-remaining monthly. For example, Starter Monthly → Pro Monthly pays Stripe's net
-remaining-period difference and adds exactly `1,000 - 300 = 700` credits while keeping
-the same period and unused balance. Month/year conversions, downgrades, and every
-annual-origin change are period-end.
+`prorated_delta` permits immediate settlement only for a higher monthly tier with a
+positive credit difference while remaining monthly. For example, Starter Monthly → Pro
+Monthly pays Stripe's net remaining-period difference and adds exactly
+`1,000 - 300 = 700` credits while keeping the same period and unused balance. Month/year
+conversions, downgrades, and every annual-origin change are period-end.
 
 The delta webhook path loads all Invoice line pages, requires one negative source and
 one positive target catalog proration at the same fraction, and stores their
@@ -206,8 +294,8 @@ unknown/missing lines, and inconsistent periods fail closed. Partial refunds cla
 the proportional delta; closing a leaf upgrade reverts to the still-funded source,
 while closing a source/intermediate lineage revokes enforcement for repair.
 
-Both full 6 × 6 matrices, Invoice acceptance rules, refund semantics, and failure
-behavior are in [Plan transition policies](docs/PLAN_TRANSITIONS.md).
+Both full bundled-catalog 6 × 6 matrices, Invoice acceptance rules, refund semantics,
+and failure behavior are in [Plan transition policies](docs/PLAN_TRANSITIONS.md).
 
 ## Correctness model
 
@@ -292,8 +380,10 @@ Stripe or a database.
 v0 can edit the visual Next.js layer in this source repository while retaining the
 native TypeScript Route Handlers. Lovable can own a Vite visual layer, but real billing
 must call a separately deployed Node/FastAPI service through a tested authentication
-integration. The included Supabase browser adapter is transport-only, not a complete
-auth starter. In every case, secret keys, webhook verification, PostgreSQL, and
+integration. The repository UI's Supabase transport is not an exported browser package;
+the guide provides one dependency-free
+[`vite-billing-client.ts`](examples/browser_adapters/vite-billing-client.ts) file to copy
+into a Vite project. In every case, secret keys, webhook verification, PostgreSQL, and
 entitlement projection remain server-side. See the complete
 [AI app-builder and test-staging guide](docs/AI_BUILDERS.md).
 
@@ -310,6 +400,11 @@ Authenticated billing routes:
 | POST   | `/api/billing/portal`         | safe Portal Session; requires `Idempotency-Key`                |
 | POST   | `/api/billing/change/preview` | durable preview; requires `Idempotency-Key`                    |
 | POST   | `/api/billing/change/confirm` | confirm the opaque `preview_id`                                |
+
+For a native TypeScript host, `BillingFetchHandlerOptions.onError` can send the original
+server exception to a structured logger or error tracker while the client response stays
+sanitized. Keep that callback server-only; never echo its exception or write it into
+browser-visible state.
 
 `AuthAccountAdapter` is the integration boundary in both implementations. Production defaults to
 `RejectAllAuthAdapter`; it does not trust a browser-supplied account ID.
@@ -370,33 +465,21 @@ run on a VM, container platform, Kubernetes, or another PaaS that can reach Post
 and receive signed Stripe webhooks. Docker and Stripe CLI are used by the repository's
 default local/test workflows; they are not required inside a deployed application.
 
-The commands below assume an exact release-tag source checkout or the matching source
-distribution. The Wheel is intentionally the backend runtime boundary: it contains the
-Python package, catalog, and migrations, while the source distribution also contains the
-environment templates, operator scripts, Docker/Compose files, examples, tests, and
-Next.js reference UI.
+The commands below run from a source checkout. For a repeatable deployment, replace
+`main` with the exact reviewed commit. The source tree contains both runtimes, the
+catalog, migrations, examples, tests, and reference UI:
 
-The version-tag workflow attaches the Wheel, source distribution, verified TypeScript npm
-tarball, checksums, and immutable container digest to the matching GitHub Release,
-publishes the byte-identical TypeScript tarball to npm, and then clean-installs that
-registry version. It also publishes
-`ghcr.io/deng-m1/stripe-entitlements-fastapi` with exact-version, minor-version, commit,
-and `latest` tags. Moving minor-version and `latest` tags only advance within their
-respective release channels; publishing an older patch does not roll them back. The
-Python GitHub assets are not a claim of PyPI publication. TypeScript consumers should
-pin `@tosea/stripe-entitlements@0.4.0`; do not substitute an older registry version.
+```bash
+git clone https://github.com/Deng-m1/stripe-entitlements-fastapi.git
+cd stripe-entitlements-fastapi
+git checkout main
+```
 
-The published container is currently native `linux/amd64`, not a multi-architecture
-manifest. ARM64 users should install the Wheel/source distribution or build and verify
-the pinned Dockerfile on their own platform.
-
-Release 0.4.0 applies `001_v3_baseline.sql` and
-`002_stripe_request_snapshots.sql` to a fresh database. An existing v0.3 database keeps
-its immutable 001 history and applies only 002. If the PostgreSQL volume was initialized
-by a v0.2.x checkout, preserve any evidence you need and recreate that development
-volume; there is intentionally no in-place upgrade across the pre-release 0.3 baseline
-reset. The `migrate` command is required for both a new installation and a v0.3 → v0.4
-upgrade.
+`stripe-entitlements migrate` initializes this application's schema in a fresh
+PostgreSQL database. It does **not** upgrade PostgreSQL 17 to PostgreSQL 18. A new Neon
+PostgreSQL 18 database has no major-version upgrade step; it only needs the application
+schema initialized. Existing v0.3 application databases have a separate 001 → 002
+cutover procedure in [Operations](docs/OPERATIONS.md).
 
 ```bash
 cp .env.example .env
@@ -407,6 +490,26 @@ uv sync --frozen
 uv run --env-file .env stripe-entitlements migrate
 ```
 
+### Environment requirements by process
+
+The full `.env.example` enables the complete reference, but its entries are not all
+baseline startup requirements:
+
+| Process or feature                        | Required configuration                                                                                                                               |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Schema migration only                     | `DATABASE_URL`; pool bounds are optional                                                                                                             |
+| API/webhook/worker runtime                | `DATABASE_URL`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and the actual `STRIPE_WEBHOOK_API_VERSION`                                            |
+| Protected browser billing                 | A host-supplied `AuthAccountAdapter`, or the complete compatible JWT/JWKS starter configuration; otherwise protected routes intentionally return 401 |
+| Customer Portal                           | `STRIPE_PORTAL_CONFIGURATION_ID`; the rest of the server can start without Portal                                                                    |
+| Reference UI plan-change/SCA confirmation | Matching `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`; initial Hosted Checkout and Portal redirects do not need it                                           |
+| Annual grants and reconciliation          | A scheduler; `CRON_SECRET` is required only by the bundled Vercel Cron routes                                                                        |
+| Production redirects/CORS                 | Deployment-specific Checkout, Portal, and `FRONTEND_ORIGINS` HTTPS values; localhost defaults are development-only                                   |
+| Public SEO indexing                       | Canonical `NEXT_PUBLIC_SITE_URL` plus explicit `NEXT_PUBLIC_ALLOW_INDEXING=true`; previews should omit/disable them                                  |
+
+`STRIPE_API_VERSION`, catalog/product identifiers, transition policy, pool settings, and
+local URLs have defaults. Review or override them for a real product, but they are not
+additional parser-level secrets required merely to start the reference runtime.
+
 `stripe-entitlements migrate` reads only database connection/pool settings; a schema-init Job does not need
 the Stripe API key, webhook secret, or browser configuration. The full `.env` command
 above is convenient for local setup, but production should inject a database-only secret
@@ -415,9 +518,10 @@ into the migration Job and keep Stripe credentials on the API/workers that use t
 Before bootstrap, replace `STRIPE_SECRET_KEY`, the local demo values, product line,
 lookup prefix, catalog path and transition policy in `.env`. The Portal ID and webhook
 secret remain placeholders only until the next steps produce their real test-mode values.
-Keep that file ignored and private; never commit credentials. The backend secret, later
-Stripe CLI login and browser publishable key must all belong to the same Stripe test
-account.
+Keep that file ignored and private; never commit credentials. Hosted Checkout and Portal
+do not need a publishable key; the reference UI's Stripe.js plan-change/SCA confirmation
+does. When that flow is enabled, the backend secret, Stripe CLI login, and browser
+publishable key must all belong to the same Stripe test account.
 
 Bootstrap or verify the dedicated test catalog and safe Portal configuration:
 
@@ -446,8 +550,8 @@ payload; it must not be copied from `STRIPE_API_VERSION`. Follow
 when that contract is not yet known: start once with a candidate only for the diagnostic
 delivery, then update `.env` and restart before beginning Checkout.
 
-After the real Portal ID, signing secret, and signed-payload version are configured, run
-the read-only preflight:
+Run the read-only core preflight after the signing secret and signed-payload version are
+configured. Customer Portal is an optional capability in this profile:
 
 ```bash
 uv run --env-file .env stripe-entitlements doctor
@@ -455,9 +559,20 @@ uv run --env-file .env stripe-entitlements doctor
 
 `doctor` does not call Stripe by default. It checks the local package, catalog,
 configuration, PostgreSQL schema, and migration checksums without printing secrets or
-DSNs. Use `doctor --json` for automation. The explicit `doctor --stripe-network` mode
-adds read-only Stripe Account, catalog, and Portal retrieval, but it still does not claim
-webhook endpoint or signed-payload evidence.
+DSNs. A missing Portal ID is `SKIP` in the default `core` profile; a placeholder is a
+warning, and a malformed optional ID also does not block the core API. The Portal route
+rejects any missing, placeholder, or malformed ID locally before Stripe I/O. After
+bootstrap produces the real ID, require it explicitly:
+
+```bash
+uv run --env-file .env stripe-entitlements doctor --profile portal
+uv run --env-file .env stripe-entitlements doctor --profile portal --stripe-network
+```
+
+Use `--json` for automation. `--stripe-network` remains an explicit opt-in and adds read-only Stripe
+Account/catalog verification plus Portal retrieval when configured. This preflight does
+not prove production authentication, scheduler execution, webhook endpoint metadata, or
+signed-payload delivery.
 
 Start or restart the API after the final webhook contract is known:
 
@@ -466,13 +581,7 @@ uv run --env-file .env \
   uvicorn stripe_entitlements.app:create_app --factory --port 8000
 ```
 
-Native TypeScript/Node alternative:
-
-```bash
-npm install --save-exact @tosea/stripe-entitlements@0.4.0
-```
-
-For contributors running this source checkout instead:
+Native TypeScript/Node alternative. For contributors running this source checkout instead:
 
 ```bash
 cd typescript
@@ -484,17 +593,22 @@ chmod 600 .env
 set -a
 . ./.env
 set +a
-npx stripe-entitlements migrate
-npx stripe-entitlements doctor
-npx stripe-entitlements serve
+npx --no-install stripe-entitlements migrate
+npx --no-install stripe-entitlements doctor
+npx --no-install stripe-entitlements serve
 ```
 
 The explicit build is required in a source checkout because generated `dist/` CLI files
-are not committed. An installed release `.tgz` already contains them. The Node server
+are not committed. A locally packed `.tgz` already contains them. The Node server
 exposes the same public paths on port 8000. A pure Next.js backend can
 instead use the checked-in Route Handlers and `vercel.typescript.json`; it never starts
 FastAPI. Full package, auth, worker, and deployment instructions are in
 [`typescript/README.md`](typescript/README.md).
+
+If an existing Next.js application lives in another repository, use either a pinned
+submodule/local `file:` dependency or a locally built `.tgz` instead of the nonexistent
+npm registry version. The exact source and tarball commands are in the
+[TypeScript guide](typescript/README.md#requirements).
 
 For the reference frontend:
 
@@ -675,7 +789,10 @@ npm run build
 The backend default suite uses a disposable PostgreSQL 17 container and exercises
 transactions, locks, constraints, duplicate/out-of-order events, refunds,
 annual-worker concurrency, Checkout, plan-change leases, API responses, and
-fail-closed paths.
+fail-closed paths. PostgreSQL 18 compatibility is checked separately with fresh schema
+application, idempotent re-application, readiness, and focused transaction gates; see
+[Testing](docs/TESTING.md). Both majors are supported, but the evidence levels are
+reported separately rather than implying that every matrix runs twice.
 
 The opt-in `real_stripe` suite rejects live keys. Its current ten-case inventory is
 designed to verify:
@@ -750,6 +867,11 @@ incident timestamps. Migration 002 adds versioned JSON request snapshots to subs
 Checkout claims, credit-pack orders, and plan-change intents without inventing facts for
 existing rows.
 
+Here, **migration means application-schema initialization/evolution**. It is unrelated
+to a PostgreSQL 17 → 18 server upgrade. New PostgreSQL 17 and 18 databases both start by
+applying 001 and 002. Only an existing database that already contains this project's
+older schema needs the version-to-version cutover below.
+
 The migration process loads only `DATABASE_URL` and optional `DATABASE_POOL_*` bounds. This permits a least-privilege schema
 init Job with no Stripe key or webhook secret; normal API and worker processes still
 require their complete runtime settings.
@@ -801,8 +923,9 @@ Use the [release checklist](.github/RELEASE_CHECKLIST.md) and
 
 - `src/stripe_entitlements/`: standalone/composable FastAPI integration, billing and
   entitlement services, processor, gateway, workers, auth and plan-change coordinator;
-- `typescript/`: independent Node/Next implementation, npm package, Fetch/Route Handler
-  adapters, CLI, unit/PostgreSQL/cross-runtime/real-Stripe tests, and adoption guide;
+- `typescript/`: independent Node/Next implementation and unpublished npm-package
+  source, Fetch/Route Handler adapters, CLI, unit/PostgreSQL/cross-runtime/real-Stripe
+  tests, and adoption guide;
 - `examples/auth_starters/`: runnable personal/team JWT entrypoints and team membership
   schema;
 - `examples/job_outbox/`: runnable Job, billing outbox, queue outbox, retry, and fencing
@@ -828,9 +951,11 @@ credit projection.
 
 ### Does it support monthly and annual subscriptions?
 
-Yes. Starter, Pro, and Ultra each have monthly and annual prices. Annual invoices fund
-up to 12 monthly credit slots, and the opt-in real Stripe suite contains a Test Clock
-gate for cross-year renewal. That network gate must actually run for release evidence.
+Yes. In the bundled reference catalog, Starter, Pro, and Ultra each have monthly and
+annual prices. Annual invoices fund up to 12 monthly credit slots, and the opt-in real
+Stripe suite contains a Test Clock gate for cross-year renewal. That network gate must
+actually run for release evidence. A host catalog may use another non-empty set of
+stable plan keys.
 
 ### Are upgrades, downgrades, and failed payments covered?
 
@@ -882,7 +1007,7 @@ PostgreSQL is still a stateful dependency that needs HA, backups, and tested res
 
 Yes for real Stripe billing. A Next.js App Router deployment does not need a separate
 FastAPI, Railway, or long-running Node service—the server-side Route Handlers are the
-backend—but it still needs one writable PostgreSQL 17 primary. Stripe processes money;
+backend—but it still needs one writable PostgreSQL 17 or 18 primary. Stripe processes money;
 PostgreSQL owns webhook idempotency, subscription and entitlement projection, credit
 lots, plan-change intent, annual grants, reconciliation, and incidents. Use managed
 PostgreSQL such as Neon, Supabase, or another serverless-compatible provider. Only the

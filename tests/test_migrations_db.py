@@ -33,7 +33,10 @@ CORRECTNESS_TABLES = (
     "billing_clawback_debts",
     "billing_incidents",
 )
-V4_SCHEMA_CATALOG_SHA256 = "fdd08d8cf430ceb34e9564ccedc14bd7809201bf92f5f6e259451417b4565bb5"
+V4_SCHEMA_CATALOG_SHA256_BY_POSTGRES_MAJOR = {
+    17: "fdd08d8cf430ceb34e9564ccedc14bd7809201bf92f5f6e259451417b4565bb5",
+    18: "6a8a9fd6e95dee012104a89bc6398ed9c82232b3ad474349e72460b643c4c58a",
+}
 
 
 async def _create_database(prefix: str) -> tuple[str, str]:
@@ -867,6 +870,7 @@ async def test_baseline_declares_exact_runtime_columns(pool: asyncpg.Pool) -> No
 
 async def test_v4_schema_catalog_fingerprint_is_exact(pool: asyncpg.Pool) -> None:
     async with pool.acquire() as conn:
+        postgres_major = int(await conn.fetchval("show server_version_num")) // 10_000
         table_rows = await conn.fetch(
             """select tablename
                  from pg_tables
@@ -952,7 +956,9 @@ async def test_v4_schema_catalog_fingerprint_is_exact(pool: asyncpg.Pool) -> Non
     }
     serialized = json.dumps(manifest, ensure_ascii=True, separators=(",", ":"))
     fingerprint = hashlib.sha256(serialized.encode()).hexdigest()
-    assert fingerprint == V4_SCHEMA_CATALOG_SHA256, fingerprint
+    expected_fingerprint = V4_SCHEMA_CATALOG_SHA256_BY_POSTGRES_MAJOR.get(postgres_major)
+    assert expected_fingerprint is not None, f"unsupported PostgreSQL major: {postgres_major}"
+    assert fingerprint == expected_fingerprint, fingerprint
 
 
 async def test_baseline_preserves_ownership_causality_and_audit_contracts(
@@ -996,7 +1002,9 @@ async def test_baseline_preserves_ownership_causality_and_audit_contracts(
                  values('in_retained_owner',$1,1900)""",
             owner_id,
         )
-        with pytest.raises(asyncpg.ForeignKeyViolationError):
+        # PostgreSQL 18 reports ON DELETE RESTRICT with the SQL-standard 23001
+        # class; PostgreSQL 17 reported the equivalent violation as 23503.
+        with pytest.raises((asyncpg.ForeignKeyViolationError, asyncpg.RestrictViolationError)):
             async with conn.transaction():
                 await conn.execute("delete from billing_accounts where id=$1", owner_id)
         with pytest.raises(asyncpg.RaiseError, match="immutable once assigned"):

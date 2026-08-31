@@ -252,14 +252,6 @@ export function loadSettings(
     "STRIPE_PORTAL_CONFIGURATION_ID",
     255,
   );
-  if (
-    portalConfigurationId !== null &&
-    !portalConfigurationId.startsWith("bpc_")
-  ) {
-    throw new ConfigurationError(
-      "STRIPE_PORTAL_CONFIGURATION_ID must start with bpc_",
-    );
-  }
   const productLine = boundedConfiguration(
     environment,
     "PRODUCT_LINE",

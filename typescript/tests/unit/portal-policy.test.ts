@@ -42,6 +42,15 @@ describe("dedicated Stripe Portal configuration", () => {
     expect(portalConfigurationIsSafe(config, EXPECTED)).toBe(true);
   });
 
+  it("accepts disabled cancellation without requiring a cancellation mode", () => {
+    const config = safePortal();
+    nestedRecord(config, "features")["subscription_cancel"] = {
+      enabled: false,
+    };
+
+    expect(portalConfigurationIsSafe(config, EXPECTED)).toBe(true);
+  });
+
   it.each([
     [
       "inactive",
@@ -70,14 +79,6 @@ describe("dedicated Stripe Portal configuration", () => {
       },
     ],
     [
-      "disabled cancellation",
-      (config: Record<string, unknown>): void => {
-        nestedRecord(nestedRecord(config, "features"), "subscription_cancel")[
-          "enabled"
-        ] = false;
-      },
-    ],
-    [
       "immediate cancellation",
       (config: Record<string, unknown>): void => {
         nestedRecord(nestedRecord(config, "features"), "subscription_cancel")[
@@ -88,6 +89,17 @@ describe("dedicated Stripe Portal configuration", () => {
   ] as const)("rejects %s", (_name, mutate) => {
     const config = safePortal();
     mutate(config);
+    expect(portalConfigurationIsSafe(config, EXPECTED)).toBe(false);
+  });
+
+  it.each([
+    { enabled: true },
+    { enabled: true, mode: "immediately" },
+    { enabled: "false", mode: "at_period_end" },
+  ])("rejects an unsafe or malformed cancellation policy %#", (cancel) => {
+    const config = safePortal();
+    nestedRecord(config, "features")["subscription_cancel"] = cancel;
+
     expect(portalConfigurationIsSafe(config, EXPECTED)).toBe(false);
   });
 

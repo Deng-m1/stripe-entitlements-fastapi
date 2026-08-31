@@ -185,6 +185,8 @@ export default async function postgresGlobalSetup(): Promise<
       `POSTGRES_PASSWORD=${TEST_PASSWORD}`,
       "-e",
       `POSTGRES_DB=${TEST_DATABASE}`,
+      "-e",
+      "PGDATA=/var/lib/postgresql/data",
       "-p",
       "127.0.0.1::5432",
       image,
@@ -213,7 +215,7 @@ export default async function postgresGlobalSetup(): Promise<
       }
     }
     if (!ready) {
-      throw new Error("disposable PostgreSQL 17 did not become ready");
+      throw new Error("disposable PostgreSQL did not become ready");
     }
     const binding = await docker(["port", container, "5432/tcp"]);
     const match = /127\.0\.0\.1:(\d+)/u.exec(binding);

@@ -41,6 +41,10 @@
       CLI against a fresh disposable PostgreSQL 17 database; require exact 001/002
       filename/SHA-256 history, idempotent re-apply, all correctness tables, all six 002
       snapshot columns, and `Database.schemaReady() === true`.
+- [ ] Require the bounded PostgreSQL 18 compatibility job: repeat the clean-artifact
+      migration contract on 18, then pass the Python migration/Event race subset and the
+      native/mixed-runtime TypeScript transaction subset without duplicating both full
+      PostgreSQL 17 suites.
 - [ ] Install that exact `.tgz` into the locked minimal Next.js consumer and require a
       production App Router build of the billing catch-all, Stripe webhook, and health
       Route Handlers.
@@ -52,8 +56,10 @@
       publish. A failed-job retry may accept only an earlier signed attempt from that same
       run. Then verify version, CLI, all four public ESM exports, and the production
       Next.js/PostgreSQL consumer from a fresh anonymous exact-version install.
-- [ ] Run `stripe-entitlements doctor --json` against the release database and retain a
-      secret-free report; do not label it Stripe endpoint or payload evidence.
+- [ ] Run `stripe-entitlements doctor --profile portal --stripe-network --json` against
+      the release database
+      and retain a secret-free report; do not label it authentication, scheduler, Stripe
+      endpoint, or signed-payload evidence.
 - [ ] `cd web && npm ci`
 - [ ] `cd web && npm audit --omit=dev`
 - [ ] `cd web && npm audit`
@@ -221,8 +227,8 @@
       return routes `noindex` using `docs/SEO.md`.
 - [ ] Confirm visible landing, plan, savings and FAQ copy matches JSON-LD and the
       enforced catalog; do not advertise unsupported coupons, trials, tax or currency.
-- [ ] Confirm CI `Backend`, `TypeScript billing core`, `Container`, and `Web` jobs pass
-      from a clean clone. Backend
+- [ ] Confirm CI `Backend`, `PostgreSQL 18 compatibility`, `TypeScript billing core`,
+      `Container`, and `Web` jobs pass from a clean clone. Backend
       must install the Wheel independently and apply the complete baseline to fresh
       PostgreSQL; Container must do the same from the built image, then return
       `ok=true`/`database=true` from host `curl` while UID/GID 10001 and read-only.
@@ -256,19 +262,22 @@
       moving channel rolled back; the immutable commit tag uses the complete Git SHA. It
       proves every container tag resolves to one digest and records that digest; it does
       not substitute for real Stripe or live-payload evidence.
-- [ ] For a transient failure before any OCI immutable tag is pushed, rerun the failed
-      jobs from the original tag-push run; do not create a new dispatch or a replacement
-      tag. npm recovery accepts only byte-identical integrity and provenance signed by the
-      same run ID with an attempt no newer than the retry. A draft Release is resumable
-      only when its hidden checkpoint contains that run ID and annotated tag object, and
-      every existing asset must compare byte-for-byte.
-- [ ] If the OCI publication job stops after pushing only part of its immutable/moving
-      tag set, do not rerun it blindly: immutable vacancy guards intentionally fail closed.
-      Inspect the tag object, draft/public Release, npm exact version, integrity,
-      provenance/candidate tag, OCI version/full-SHA/moving tags and every digest. Never
-      unpublish npm to make recovery convenient. Complete or remove only recoverable OCI
-      partial state under administrator review, then rerun downstream failed jobs and
-      record the decision, npm integrity and final digest in the private release log.
+- [ ] For a transient or unknown-result failure, rerun **failed jobs** from the original
+      tag-push run; do not create a new dispatch, replace the tag, or rerun every successful
+      build job. npm recovery accepts only byte-identical integrity, the exact candidate
+      tag, and provenance signed by the same run ID with an attempt no newer than the
+      retry. A draft Release is resumable only when its hidden checkpoint contains that
+      run ID and annotated tag object, and every existing asset must compare byte-for-byte.
+      Cross-job package, Release, container, and provenance artifacts are retained for
+      seven days; investigate and rerun within that window instead of assuming a later
+      attempt can reconstruct the same signed transfer.
+- [ ] OCI publication may safely resume when only the version or full-SHA immutable tag
+      exists: every existing immutable name must identify one shared manifest digest, and
+      that manifest's config digest must equal the tested image ID before the workflow
+      fills the missing name. An index, config mismatch, or two different immutable
+      digests stops without completing the partial state. Never unpublish npm or delete an
+      immutable OCI tag merely to make recovery convenient; inspect and record a genuine
+      conflict under administrator review.
 - [ ] Download the published GitHub assets, verify `SHA256SUMS`, install the Wheel in a
       clean environment, and require `stripe-entitlements --version` to equal the tag.
 - [ ] Install the downloaded `.tgz` in a second clean Node project; require its CLI

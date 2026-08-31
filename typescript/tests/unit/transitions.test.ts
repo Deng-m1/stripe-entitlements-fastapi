@@ -187,3 +187,27 @@ it("makes monthly higher-tier upgrades immediate under both explicit policies", 
     decideTransition(starter, "month", pro, "month", "prorated_delta").timing,
   ).toBe("immediate");
 });
+
+it("defers a prorated rank upgrade without a positive credit delta", () => {
+  const starter = catalog.require("starter");
+  const pro = {
+    ...catalog.require("pro"),
+    monthlyCredits: starter.monthlyCredits,
+  };
+
+  expect(
+    decideTransition(starter, "month", pro, "month", "full_period_reset")
+      .timing,
+  ).toBe("immediate");
+  const delta = decideTransition(
+    starter,
+    "month",
+    pro,
+    "month",
+    "prorated_delta",
+  );
+  expect(delta.timing).toBe("period_end");
+  expect(delta.reason).toBe(
+    "prorated delta requires a positive credit difference",
+  );
+});

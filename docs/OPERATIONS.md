@@ -8,11 +8,16 @@ Initialize a fresh PostgreSQL database before deploying matching API/worker code
 uv run stripe-entitlements migrate
 ```
 
+This command initializes or evolves the application's schema on PostgreSQL 17 or 18. It
+does not upgrade the PostgreSQL server between major versions. A brand-new PostgreSQL 18
+database follows the same 001 + 002 application-schema path as a brand-new PostgreSQL 17
+database.
+
 This command loads only `DATABASE_URL` and optional `DATABASE_POOL_*` bounds. Run it as a least-privilege schema-init Job
 without Stripe API or webhook credentials; the API and workers still require their full
 runtime configuration.
 
-Fresh v0.4.0 installations apply `001_v3_baseline.sql` and then
+Fresh databases using the current 0.4.0 candidate apply `001_v3_baseline.sql` and then
 `002_stripe_request_snapshots.sql`. The baseline creates the complete fourteen-table
 correctness model, all constraints, coordination indexes, the immutable Invoice-owner
 trigger, and causal incident defaults in one transaction. Migration 002 atomically adds

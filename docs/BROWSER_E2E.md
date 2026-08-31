@@ -223,7 +223,7 @@ The runner:
   backend CLI;
 - creates one ephemeral RSA key in memory, persists only its public JWKS and two
   mode-`0600` short-lived JWTs, and gives the account a canonical
-  `v1:user:<UUID>` Personal Auth subject;
+  `v1:user:user_e2e_<opaque-id>` Personal Auth subject;
 - starts the selected FastAPI or native TypeScript host with `APP_ENV=production`,
   `PersonalJwtAuthAdapter`, an HTTPS JWKS
   URL, and a separate workload-audience verifier; no demo adapter is configured;

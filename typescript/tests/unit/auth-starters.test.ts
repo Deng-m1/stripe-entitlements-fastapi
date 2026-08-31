@@ -12,6 +12,7 @@ import {
   SigningKeyNotFoundError,
   TeamAuthorizationError,
   TeamBillingAuthorizationPolicy,
+  TeamBillingCapability,
   TeamBillingRole,
   TeamJwtAuthAdapter,
 } from "../../src/auth-starters.js";
@@ -243,7 +244,7 @@ describe("JWT verification configuration", () => {
 });
 
 describe("personal JWT starter", () => {
-  it("uses only the verified UUID subject and verified email", async () => {
+  it("uses only the verified subject and verified email", async () => {
     const { verifier } = verifierFor();
     const adapter = new PersonalJwtAuthAdapter(verifier);
     const token = await tokenFor({
@@ -256,6 +257,52 @@ describe("personal JWT starter", () => {
       externalRef: `v1:user:${USER_ID}`,
       email: "person@example.test",
     });
+  });
+
+  it.each([true, false])(
+    "accepts an opaque provider subject when nbf presence is %s",
+    async (includeNbf) => {
+      const { verifier } = verifierFor();
+      const token = await tokenFor({
+        claims: { sub: "user_provider_123" },
+        ...(includeNbf ? {} : { remove: new Set(["nbf"]) }),
+      });
+
+      await expect(
+        new PersonalJwtAuthAdapter(verifier).authenticate(requestFor(token)),
+      ).resolves.toEqual({ externalRef: "v1:user:user_provider_123" });
+    },
+  );
+
+  it.each([
+    "auth0|provider-user-123",
+    USER_ID.toUpperCase(),
+    "00000000-0000-0000-0000-000000000000",
+  ])("preserves opaque provider subject exactly: %s", async (subject) => {
+    const { verifier } = verifierFor();
+    const token = await tokenFor({ claims: { sub: subject } });
+
+    await expect(
+      new PersonalJwtAuthAdapter(verifier).authenticate(requestFor(token)),
+    ).resolves.toEqual({ externalRef: `v1:user:${subject}` });
+  });
+
+  it("accounts for the owner-reference prefix in the personal subject bound", async () => {
+    const { verifier } = verifierFor();
+    const adapter = new PersonalJwtAuthAdapter(verifier);
+    const accepted = "a".repeat(504);
+    const rejected = "a".repeat(505);
+
+    await expect(
+      adapter.authenticate(
+        requestFor(await tokenFor({ claims: { sub: accepted } })),
+      ),
+    ).resolves.toEqual({ externalRef: `v1:user:${accepted}` });
+    await expect(
+      adapter.authenticate(
+        requestFor(await tokenFor({ claims: { sub: rejected } })),
+      ),
+    ).rejects.toThrow(AuthenticationError);
   });
 
   it.each([false, "true", 1, null])(
@@ -298,11 +345,11 @@ describe("personal JWT starter", () => {
     { claims: { exp: Math.floor(Date.now() / 1000) + 300.5 } },
     { claims: { nbf: Math.floor(Date.now() / 1000) + 600 } },
     { claims: { nbf: false } },
-    { claims: { sub: "not-a-uuid" } },
-    { claims: { sub: USER_ID.toUpperCase() } },
-    { claims: { sub: "00000000-0000-0000-0000-000000000000" } },
+    { claims: { sub: "" } },
+    { claims: { sub: " user_provider_123" } },
+    { claims: { sub: "user\nprovider" } },
+    { claims: { sub: [USER_ID] } },
     { remove: new Set(["exp"]) },
-    { remove: new Set(["nbf"]) },
     { remove: new Set(["sub"]) },
   ])("rejects wrong issuer/audience/time/subject case %#", async (options) => {
     const { verifier } = verifierFor();
@@ -1076,6 +1123,69 @@ describe("team JWT starter", () => {
     ]);
   });
 
+  it("looks up team membership with opaque user and tenant subjects", async () => {
+    const { verifier } = verifierFor();
+    const opaqueSubject = "auth0|team-user-123";
+    const opaqueTenant = "org_provider_123";
+    const memberships = new MemoryMemberships({
+      userId: opaqueSubject,
+      tenantId: opaqueTenant,
+      role: TeamBillingRole.Viewer,
+    });
+    const adapter = new TeamJwtAuthAdapter(verifier, memberships);
+    const token = await tokenFor({
+      claims: { sub: opaqueSubject, tenant_id: opaqueTenant },
+    });
+
+    await expect(adapter.authenticate(requestFor(token))).resolves.toEqual({
+      externalRef: `v1:tenant:${opaqueTenant}`,
+    });
+    expect(memberships.queries).toEqual([[opaqueSubject, opaqueTenant]]);
+  });
+
+  it.each([TENANT_A.toUpperCase(), "00000000-0000-0000-0000-000000000000"])(
+    "preserves UUID-like opaque tenant exactly: %s",
+    async (tenantId) => {
+      const { verifier } = verifierFor();
+      const memberships = new MemoryMemberships({
+        userId: USER_ID,
+        tenantId,
+        role: TeamBillingRole.Viewer,
+      });
+      const adapter = new TeamJwtAuthAdapter(verifier, memberships);
+      const token = await tokenFor({ claims: { tenant_id: tenantId } });
+
+      await expect(adapter.authenticate(requestFor(token))).resolves.toEqual({
+        externalRef: `v1:tenant:${tenantId}`,
+      });
+      expect(memberships.queries).toEqual([[USER_ID, tenantId]]);
+    },
+  );
+
+  it("accounts for the owner-reference prefix in the tenant bound", async () => {
+    const { verifier } = verifierFor();
+    const accepted = "t".repeat(502);
+    const rejected = "t".repeat(503);
+    const memberships = new MemoryMemberships({
+      userId: USER_ID,
+      tenantId: accepted,
+      role: TeamBillingRole.Viewer,
+    });
+    const adapter = new TeamJwtAuthAdapter(verifier, memberships);
+
+    await expect(
+      adapter.authenticate(
+        requestFor(await tokenFor({ claims: { tenant_id: accepted } })),
+      ),
+    ).resolves.toEqual({ externalRef: `v1:tenant:${accepted}` });
+    await expect(
+      adapter.authenticate(
+        requestFor(await tokenFor({ claims: { tenant_id: rejected } })),
+      ),
+    ).rejects.toThrow(AuthenticationError);
+    expect(memberships.queries).toEqual([[USER_ID, accepted]]);
+  });
+
   it("forwards an email only after JWT verification", async () => {
     const { adapter } = await teamAdapter(TeamBillingRole.Viewer);
     await expect(
@@ -1108,6 +1218,31 @@ describe("team JWT starter", () => {
       "billing prefix",
     );
   });
+
+  it.each([
+    ["GET", "/api/catalog", TeamBillingCapability.CatalogRead],
+    ["GET", "/api/account", TeamBillingCapability.AccountRead],
+    ["POST", "/api/checkout", TeamBillingCapability.CheckoutCreate],
+    [
+      "POST",
+      "/api/credit-packs/checkout",
+      TeamBillingCapability.CreditPackCheckoutCreate,
+    ],
+    ["POST", "/api/billing/portal", TeamBillingCapability.PortalOpen],
+    ["POST", "/api/billing/change/preview", TeamBillingCapability.PlanChange],
+    ["POST", "/api/billing/change/confirm", TeamBillingCapability.PlanChange],
+  ] as const)(
+    "maps the public billing capability %s %s",
+    (method, path, capability) => {
+      const policy = new TeamBillingAuthorizationPolicy();
+
+      expect(
+        policy.capabilityFor(
+          new Request(`https://billing.example.test${path}`, { method }),
+        ),
+      ).toBe(capability);
+    },
+  );
 
   it("requires the explicit configured prefix without path guessing", async () => {
     const authorization = new TeamBillingAuthorizationPolicy({
@@ -1186,19 +1321,19 @@ describe("team JWT starter", () => {
     ).resolves.toMatchObject({ externalRef: `v1:tenant:${TENANT_A}` });
   });
 
-  it.each([
-    undefined,
-    "not-a-uuid",
-    TENANT_A.toUpperCase(),
-    "00000000-0000-0000-0000-000000000000",
-  ])("requires a canonical nonzero tenant UUID %#", async (tenantId) => {
-    const { adapter, memberships } = await teamAdapter(TeamBillingRole.Viewer);
-    const claims = tenantId === undefined ? {} : { tenant_id: tenantId };
-    await expect(
-      adapter.authenticate(requestFor(await tokenFor({ claims }))),
-    ).rejects.toThrow(AuthenticationError);
-    expect(memberships.queries).toEqual([]);
-  });
+  it.each([undefined, "", " org_provider_123", "org\nprovider", [TENANT_A]])(
+    "requires a bounded visible tenant string %#",
+    async (tenantId) => {
+      const { adapter, memberships } = await teamAdapter(
+        TeamBillingRole.Viewer,
+      );
+      const claims = tenantId === undefined ? {} : { tenant_id: tenantId };
+      await expect(
+        adapter.authenticate(requestFor(await tokenFor({ claims }))),
+      ).rejects.toThrow(AuthenticationError);
+      expect(memberships.queries).toEqual([]);
+    },
+  );
 
   it("rejects a repository result for another tenant or user", async () => {
     const { verifier } = verifierFor();

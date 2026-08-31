@@ -10,6 +10,7 @@ import {
   hasUnsupportedInvoiceAdjustments,
   hasUnsupportedInvoicePaymentShape,
 } from "../../src/invoice-policy.js";
+import { validateOwnerExternalRef } from "../../src/owner-reference.js";
 import {
   catalogOneTimePriceMatches,
   catalogPriceMatches,
@@ -110,6 +111,21 @@ describe("shared Python/TypeScript domain policy vectors", () => {
       expect(creditDecimal(atoms)).toBe(
         text(vector["canonical"], "credit vector canonical"),
       );
+    }
+  });
+
+  it("matches host owner-reference acceptance and rejection vectors", () => {
+    for (const raw of array(vectors["ownerReferences"], "ownerReferences")) {
+      const vector = record(raw, "owner reference vector");
+      const input = text(vector["input"], "owner reference input");
+      if (!boolean(vector["valid"], "owner reference valid")) {
+        expect(
+          () => validateOwnerExternalRef(input),
+          text(vector["name"], "vector name"),
+        ).toThrow();
+        continue;
+      }
+      expect(validateOwnerExternalRef(input)).toBe(input);
     }
   });
 

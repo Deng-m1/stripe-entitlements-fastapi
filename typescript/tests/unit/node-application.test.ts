@@ -52,10 +52,22 @@ describe("standalone Node application", () => {
       name: "doctor",
       json: false,
       stripeNetwork: false,
+      profile: "core",
     });
     expect(
-      parseNodeBillingCommand(["doctor", "--stripe-network", "--json"]),
-    ).toEqual({ name: "doctor", json: true, stripeNetwork: true });
+      parseNodeBillingCommand([
+        "doctor",
+        "--stripe-network",
+        "--json",
+        "--profile",
+        "portal",
+      ]),
+    ).toEqual({
+      name: "doctor",
+      json: true,
+      stripeNetwork: true,
+      profile: "portal",
+    });
     expect(parseNodeBillingCommand(["cron", "reconcile"])).toEqual({
       name: "cron",
       job: "reconcile",
@@ -64,6 +76,21 @@ describe("standalone Node application", () => {
     expect(() => parseNodeBillingCommand(["doctor", "extra"])).toThrow("usage");
     expect(() =>
       parseNodeBillingCommand(["doctor", "--json", "--json"]),
+    ).toThrow("usage");
+    expect(() =>
+      parseNodeBillingCommand(["doctor", "--profile", "unknown"]),
+    ).toThrow("usage");
+    expect(() =>
+      parseNodeBillingCommand(["doctor", "--profile", "full"]),
+    ).toThrow("usage");
+    expect(() =>
+      parseNodeBillingCommand([
+        "doctor",
+        "--profile",
+        "core",
+        "--profile",
+        "portal",
+      ]),
     ).toThrow("usage");
     expect(() => parseNodeBillingCommand(["bootstrap", "--catalog"])).toThrow(
       "usage",
@@ -92,6 +119,30 @@ describe("standalone Node application", () => {
       `stripe-entitlements ${TYPESCRIPT_PACKAGE_VERSION}`,
     ]);
     expect(errors).toEqual([]);
+  });
+
+  it("names a missing operator setting without rendering secret values", async () => {
+    const output: string[] = [];
+    const errors: string[] = [];
+    const exitCode = await runNodeBillingCommand(
+      parseNodeBillingCommand(["migrate"]),
+      { STRIPE_SECRET_KEY: "sk_test_must_not_be_rendered" },
+      {
+        out: (value) => output.push(value),
+        error: (value) => errors.push(value),
+      },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(output).toEqual([]);
+    expect(errors).toEqual([
+      JSON.stringify({
+        ok: false,
+        error: "ConfigurationError",
+        detail: "DATABASE_URL is required",
+      }),
+    ]);
+    expect(errors.join(" ")).not.toContain("sk_test_must_not_be_rendered");
   });
 
   it("owns the HTTP listener and closes its runtime exactly once", async () => {

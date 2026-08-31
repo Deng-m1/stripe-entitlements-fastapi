@@ -3,7 +3,11 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { runDoctor, TYPESCRIPT_PACKAGE_VERSION } from "../../src/doctor.js";
+import {
+  runDoctor,
+  TYPESCRIPT_PACKAGE_VERSION,
+  type DoctorProfile,
+} from "../../src/doctor.js";
 
 describe("TypeScript doctor fail-closed reporting", () => {
   it("keeps runtime and npm artifact versions aligned", async () => {
@@ -29,6 +33,7 @@ describe("TypeScript doctor fail-closed reporting", () => {
     const rendered = JSON.stringify(report.asObject());
     expect(report.ok).toBe(false);
     expect(rendered).toContain("ConfigurationError");
+    expect(rendered).toContain("DATABASE_URL is required");
     expect(rendered).not.toContain("sk_live_must_never_be_rendered");
     expect(rendered).not.toContain("whsec_must_never_be_rendered");
     expect(
@@ -38,4 +43,13 @@ describe("TypeScript doctor fail-closed reporting", () => {
       report.checks.find((item) => item.name === "stripe.network")?.status,
     ).toBe("skipped");
   });
+
+  it.each(["full", "unknown"])(
+    "rejects unsupported profile %s before loading configuration",
+    async (profile) => {
+      await expect(
+        runDoctor({ profile: profile as DoctorProfile }),
+      ).rejects.toThrow("doctor profile");
+    },
+  );
 });

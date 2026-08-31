@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { AuthAccountAdapter } from "../../src/auth.js";
 import { DefaultBillingHttpServices } from "../../src/billing-http-services.js";
@@ -16,7 +16,10 @@ import {
   buildSubscriptionCheckoutRequestSnapshot,
   type CheckoutRequestSnapshot,
 } from "../../src/stripe-request-snapshots.js";
-import { StripeGateway } from "../../src/stripe-gateway.js";
+import {
+  PortalConfigurationUnavailableError,
+  StripeGateway,
+} from "../../src/stripe-gateway.js";
 import type {
   CreateCheckoutSessionInput,
   CreateCreditPackCheckoutSessionInput,
@@ -1017,6 +1020,32 @@ describe("connected TypeScript billing runtime", () => {
     expect(await portal.json()).toEqual({
       session_id: "bps_test_runtime",
       url: "https://billing.stripe.test/portal",
+    });
+  });
+
+  test("maps an unusable Portal configuration to a sanitized 503", async () => {
+    const created = await postgresDatabase().accountForExternalRef(
+      "v1:user:11111111-1111-4111-8111-111111111111",
+    );
+    await postgresDatabase().query(
+      "update billing_accounts set stripe_customer_id='cus_runtime' where id=$1::uuid",
+      [created.id],
+    );
+    vi.spyOn(gateway, "createPortalSession").mockRejectedValue(
+      new PortalConfigurationUnavailableError(
+        "private Portal configuration detail",
+      ),
+    );
+
+    const response = await handler(
+      mutation("/api/billing/portal", {
+        return_url: "https://app.example/account",
+      }),
+    );
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      detail: "Stripe Portal configuration is missing or invalid",
     });
   });
 

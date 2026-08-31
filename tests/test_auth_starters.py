@@ -33,6 +33,7 @@ from stripe_entitlements.auth_starters import (
     PersonalJwtAuthAdapter,
     PyJwksSigningKeyProvider,
     TeamBillingAuthorizationPolicy,
+    TeamBillingCapability,
     TeamBillingRole,
     TeamJwtAuthAdapter,
     TeamMembership,
@@ -221,7 +222,7 @@ def test_verification_configuration_rejects_unsafe_or_unbounded_values(
         verification_config(**overrides)
 
 
-async def test_personal_adapter_uses_only_verified_uuid_subject_and_verified_email(
+async def test_personal_adapter_uses_only_verified_subject_and_verified_email(
     signing_keys: tuple[Any, Any],
 ) -> None:
     private_key, public_key = signing_keys
@@ -241,6 +242,61 @@ async def test_personal_adapter_uses_only_verified_uuid_subject_and_verified_ema
 
     assert identity.external_ref == f"v1:user:{USER_ID}"
     assert identity.email == "person@example.test"
+
+
+@pytest.mark.parametrize("include_nbf", [True, False])
+async def test_personal_adapter_accepts_an_opaque_subject_and_optional_nbf(
+    include_nbf: bool,
+    signing_keys: tuple[Any, Any],
+) -> None:
+    private_key, public_key = signing_keys
+    verifier, _ = verifier_for(public_key)
+    remove = frozenset() if include_nbf else frozenset({"nbf"})
+    token = token_for(private_key, claims={"sub": "user_provider_123"}, remove=remove)
+
+    identity = await PersonalJwtAuthAdapter(verifier).authenticate(request_for(f"Bearer {token}"))
+
+    assert identity.external_ref == "v1:user:user_provider_123"
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "auth0|provider-user-123",
+        str(USER_ID).upper(),
+        "00000000-0000-0000-0000-000000000000",
+    ],
+)
+async def test_personal_adapter_preserves_opaque_subject_exactly(
+    subject: str,
+    signing_keys: tuple[Any, Any],
+) -> None:
+    private_key, public_key = signing_keys
+    verifier, _ = verifier_for(public_key)
+    token = token_for(private_key, claims={"sub": subject})
+
+    identity = await PersonalJwtAuthAdapter(verifier).authenticate(request_for(f"Bearer {token}"))
+
+    assert identity.external_ref == f"v1:user:{subject}"
+
+
+async def test_personal_subject_bound_includes_the_owner_reference_prefix(
+    signing_keys: tuple[Any, Any],
+) -> None:
+    private_key, public_key = signing_keys
+    verifier, _ = verifier_for(public_key)
+    accepted = "a" * 504
+    rejected = "a" * 505
+
+    identity = await PersonalJwtAuthAdapter(verifier).authenticate(
+        request_for(f"Bearer {token_for(private_key, claims={'sub': accepted})}")
+    )
+    with pytest.raises(AuthenticationError, match="invalid bearer token"):
+        await PersonalJwtAuthAdapter(verifier).authenticate(
+            request_for(f"Bearer {token_for(private_key, claims={'sub': rejected})}")
+        )
+
+    assert len(identity.external_ref.encode("utf-8")) == 512
 
 
 @pytest.mark.parametrize("email_verified", [False, "true", 1, None])
@@ -281,11 +337,11 @@ async def test_malformed_verified_email_fails_closed(signing_keys: tuple[Any, An
         ({"exp": int(time.time()) + 300.5}, frozenset()),
         ({"nbf": int(time.time()) + 600}, frozenset()),
         ({"nbf": False}, frozenset()),
-        ({"sub": "not-a-uuid"}, frozenset()),
-        ({"sub": str(USER_ID).upper()}, frozenset()),
+        ({"sub": ""}, frozenset()),
+        ({"sub": " user_provider_123"}, frozenset()),
+        ({"sub": "user\nprovider"}, frozenset()),
         ({"sub": [str(USER_ID)]}, frozenset()),
         ({}, frozenset({"exp"})),
-        ({}, frozenset({"nbf"})),
         ({}, frozenset({"sub"})),
     ],
 )
@@ -846,9 +902,11 @@ class MemoryMemberships:
         self._memberships = {
             (membership.user_id, membership.tenant_id): membership for membership in memberships
         }
-        self.queries: list[tuple[UUID, UUID]] = []
+        self.queries: list[tuple[UUID | str, UUID | str]] = []
 
-    async def membership_for(self, user_id: UUID, tenant_id: UUID) -> TeamMembership | None:
+    async def membership_for(
+        self, user_id: UUID | str, tenant_id: UUID | str
+    ) -> TeamMembership | None:
         self.queries.append((user_id, tenant_id))
         return self._memberships.get((user_id, tenant_id))
 
@@ -857,7 +915,7 @@ def team_adapter(
     public_key: Any,
     role: TeamBillingRole,
     *,
-    tenant_id: UUID = TENANT_A,
+    tenant_id: UUID | str = TENANT_A,
     authorization: TeamBillingAuthorizationPolicy | None = None,
 ) -> tuple[TeamJwtAuthAdapter, MemoryMemberships]:
     verifier, _ = verifier_for(public_key)
@@ -883,6 +941,73 @@ async def test_team_owner_uses_signed_claim_and_server_membership_not_spoofed_he
     assert memberships.queries == [(USER_ID, TENANT_A)]
 
 
+async def test_team_membership_lookup_accepts_opaque_user_and_tenant_subjects(
+    signing_keys: tuple[Any, Any],
+) -> None:
+    private_key, public_key = signing_keys
+    opaque_subject = "auth0|team-user-123"
+    opaque_tenant = "org_provider_123"
+    verifier, _ = verifier_for(public_key)
+    memberships = MemoryMemberships(
+        TeamMembership(opaque_subject, opaque_tenant, TeamBillingRole.VIEWER)
+    )
+    adapter = TeamJwtAuthAdapter(verifier, memberships)
+    token = token_for(
+        private_key,
+        claims={"sub": opaque_subject, "tenant_id": opaque_tenant},
+    )
+
+    identity = await adapter.authenticate(request_for(f"Bearer {token}"))
+
+    assert identity.external_ref == f"v1:tenant:{opaque_tenant}"
+    assert memberships.queries == [(opaque_subject, opaque_tenant)]
+
+
+@pytest.mark.parametrize(
+    "tenant_id",
+    [
+        str(TENANT_A).upper(),
+        "00000000-0000-0000-0000-000000000000",
+    ],
+)
+async def test_team_membership_preserves_uuid_like_opaque_tenant_exactly(
+    tenant_id: str,
+    signing_keys: tuple[Any, Any],
+) -> None:
+    private_key, public_key = signing_keys
+    verifier, _ = verifier_for(public_key)
+    memberships = MemoryMemberships(TeamMembership(USER_ID, tenant_id, TeamBillingRole.VIEWER))
+    adapter = TeamJwtAuthAdapter(verifier, memberships)
+    token = token_for(private_key, claims={"tenant_id": tenant_id})
+
+    identity = await adapter.authenticate(request_for(f"Bearer {token}"))
+
+    assert identity.external_ref == f"v1:tenant:{tenant_id}"
+    assert memberships.queries == [(USER_ID, tenant_id)]
+
+
+async def test_team_tenant_bound_includes_the_owner_reference_prefix(
+    signing_keys: tuple[Any, Any],
+) -> None:
+    private_key, public_key = signing_keys
+    accepted = "t" * 502
+    rejected = "t" * 503
+    verifier, _ = verifier_for(public_key)
+    memberships = MemoryMemberships(TeamMembership(USER_ID, accepted, TeamBillingRole.VIEWER))
+    adapter = TeamJwtAuthAdapter(verifier, memberships)
+
+    identity = await adapter.authenticate(
+        request_for(f"Bearer {token_for(private_key, claims={'tenant_id': accepted})}")
+    )
+    with pytest.raises(AuthenticationError, match="invalid bearer token"):
+        await adapter.authenticate(
+            request_for(f"Bearer {token_for(private_key, claims={'tenant_id': rejected})}")
+        )
+
+    assert len(identity.external_ref.encode("utf-8")) == 512
+    assert memberships.queries == [(USER_ID, accepted)]
+
+
 @pytest.mark.parametrize(
     "prefix",
     ["stripe", "/stripe/", "/stripe//billing", "/stripe?x=1", "/stripe#x", "/{tenant}"],
@@ -890,6 +1015,32 @@ async def test_team_owner_uses_signed_claim_and_server_membership_not_spoofed_he
 def test_team_policy_rejects_ambiguous_billing_prefix(prefix: str) -> None:
     with pytest.raises(ValueError, match="billing prefix"):
         TeamBillingAuthorizationPolicy(billing_prefix=prefix)
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "capability"),
+    [
+        ("GET", "/api/catalog", TeamBillingCapability.CATALOG_READ),
+        ("GET", "/api/account", TeamBillingCapability.ACCOUNT_READ),
+        ("POST", "/api/checkout", TeamBillingCapability.CHECKOUT_CREATE),
+        (
+            "POST",
+            "/api/credit-packs/checkout",
+            TeamBillingCapability.CREDIT_PACK_CHECKOUT_CREATE,
+        ),
+        ("POST", "/api/billing/portal", TeamBillingCapability.PORTAL_OPEN),
+        ("POST", "/api/billing/change/preview", TeamBillingCapability.PLAN_CHANGE),
+        ("POST", "/api/billing/change/confirm", TeamBillingCapability.PLAN_CHANGE),
+    ],
+)
+def test_team_policy_maps_each_public_billing_capability(
+    method: str,
+    path: str,
+    capability: TeamBillingCapability,
+) -> None:
+    policy = TeamBillingAuthorizationPolicy()
+
+    assert policy.capability_for(request_for("", method=method, path=path)) == capability
 
 
 async def test_team_policy_requires_the_explicit_prefix_without_path_guessing(
@@ -959,6 +1110,7 @@ async def test_signed_tenant_selector_without_current_membership_is_forbidden(
         ("GET", "/api/account", False),
         ("GET", "/billing/account", False),
         ("POST", "/api/checkout", False),
+        ("POST", "/api/credit-packs/checkout", False),
         ("POST", "/api/billing/portal", False),
         ("POST", "/api/billing/change/preview", False),
         ("POST", "/api/billing/change/confirm", False),
@@ -988,6 +1140,7 @@ async def test_team_viewer_route_matrix_fails_closed(
         ("GET", "/api/catalog"),
         ("GET", "/api/account"),
         ("POST", "/api/checkout"),
+        ("POST", "/api/credit-packs/checkout"),
         ("POST", "/api/billing/portal"),
         ("POST", "/api/billing/change/preview"),
         ("POST", "/api/billing/change/confirm"),
@@ -1005,8 +1158,11 @@ async def test_team_billing_admin_can_use_each_billing_capability(
     assert identity.external_ref == f"v1:tenant:{TENANT_A}"
 
 
-@pytest.mark.parametrize("tenant_claim", [None, "not-a-uuid", str(TENANT_A).upper()])
-async def test_team_tenant_claim_must_be_a_canonical_nonzero_uuid(
+@pytest.mark.parametrize(
+    "tenant_claim",
+    [None, "", " org_provider_123", "org\nprovider", [str(TENANT_A)]],
+)
+async def test_team_tenant_claim_must_be_a_bounded_visible_string(
     signing_keys: tuple[Any, Any], tenant_claim: object
 ) -> None:
     private_key, public_key = signing_keys
@@ -1020,7 +1176,7 @@ async def test_team_tenant_claim_must_be_a_canonical_nonzero_uuid(
 
 
 class MismatchedMemberships:
-    async def membership_for(self, user_id: UUID, tenant_id: UUID) -> TeamMembership:
+    async def membership_for(self, user_id: UUID | str, tenant_id: UUID | str) -> TeamMembership:
         return TeamMembership(user_id, TENANT_B, TeamBillingRole.BILLING_ADMIN)
 
 
@@ -1105,6 +1261,15 @@ async def test_real_prefixed_router_enforces_viewer_and_billing_admin_matrix(
         ),
         (
             "POST",
+            "/stripe/api/credit-packs/checkout",
+            {
+                "pack_key": "boost_500",
+                "success_url": "http://localhost:3000/billing/success",
+                "cancel_url": "http://localhost:3000/pricing",
+            },
+        ),
+        (
+            "POST",
             "/stripe/api/billing/portal",
             {"return_url": "http://localhost:3000/account"},
         ),
@@ -1161,26 +1326,50 @@ async def test_real_prefixed_router_enforces_viewer_and_billing_admin_matrix(
 async def test_example_postgres_membership_schema_and_repository_run_against_host_database(
     pool: asyncpg.Pool,
 ) -> None:
+    opaque_subject = "auth0|Database-User-123"
+    opaque_tenant = "org_Database_123"
     schema = (
         Path(__file__).parents[1] / "examples" / "auth_starters" / "team_schema.sql"
     ).read_text(encoding="utf-8")
     async with pool.acquire() as connection:
         await connection.execute(schema)
-        await connection.execute("insert into app_users(id) values($1)", USER_ID)
-        await connection.execute("insert into app_tenants(id) values($1)", TENANT_A)
-        await connection.execute(
+        await connection.executemany(
+            "insert into app_users(id) values($1)",
+            [(str(USER_ID),), (opaque_subject,)],
+        )
+        await connection.executemany(
+            "insert into app_tenants(id) values($1)",
+            [(str(TENANT_A),), (opaque_tenant,)],
+        )
+        await connection.executemany(
             """insert into app_team_memberships(user_id,tenant_id,billing_role)
                values($1,$2,'billing_admin')""",
-            USER_ID,
-            TENANT_A,
+            [
+                (str(USER_ID), str(TENANT_A)),
+                (opaque_subject, opaque_tenant),
+            ],
         )
     database = Database(TEST_DSN)
     database.pool = pool
     repository = PostgresTeamMembershipRepository(database)
     try:
         membership = await repository.membership_for(USER_ID, TENANT_A)
+        opaque_membership = await repository.membership_for(
+            opaque_subject,
+            opaque_tenant,
+        )
+        wrong_case = await repository.membership_for(
+            opaque_subject.lower(),
+            opaque_tenant.lower(),
+        )
         missing = await repository.membership_for(USER_ID, TENANT_B)
         assert membership == TeamMembership(USER_ID, TENANT_A, TeamBillingRole.BILLING_ADMIN)
+        assert opaque_membership == TeamMembership(
+            opaque_subject,
+            opaque_tenant,
+            TeamBillingRole.BILLING_ADMIN,
+        )
+        assert wrong_case is None
         assert missing is None
     finally:
         async with pool.acquire() as connection:

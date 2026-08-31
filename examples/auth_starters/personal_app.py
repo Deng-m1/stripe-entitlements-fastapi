@@ -10,7 +10,7 @@ from ._environment import jwt_config_from_environment
 
 
 def create_host_app() -> FastAPI:
-    """Create billing APIs whose owner is the verified UUID JWT subject."""
+    """Create billing APIs whose owner is the verified stable JWT subject."""
 
     verifier = JwtVerifier(jwt_config_from_environment())
     return create_app(

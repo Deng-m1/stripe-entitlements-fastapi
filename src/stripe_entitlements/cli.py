@@ -14,7 +14,7 @@ from .annual import AnnualGrantService
 from .catalog import PlanCatalog
 from .config import Settings, get_database_settings, get_settings
 from .database import Database
-from .doctor import run_doctor
+from .doctor import DoctorProfile, run_doctor
 from .pack_reconcile import CreditPackReconciliationService
 from .processor import EventProcessor
 from .reconcile import ReconciliationService
@@ -160,8 +160,16 @@ async def _reconcile() -> None:
         await db.close()
 
 
-async def _doctor(*, json_output: bool = False, stripe_network: bool = False) -> int:
-    report = await run_doctor(stripe_network=stripe_network)
+async def _doctor(
+    *,
+    json_output: bool = False,
+    stripe_network: bool = False,
+    profile: DoctorProfile = "core",
+) -> int:
+    report = await run_doctor(
+        stripe_network=stripe_network,
+        profile=profile,
+    )
     if json_output:
         print(json.dumps(report.as_dict(), ensure_ascii=False, sort_keys=True))
     else:
@@ -190,13 +198,23 @@ def main() -> None:
     doctor_parser.add_argument(
         "--stripe-network",
         action="store_true",
-        help="opt in to read-only Stripe Account and Portal retrieval",
+        help="opt in to read-only Stripe Account, catalog, and configured Portal retrieval",
+    )
+    doctor_parser.add_argument(
+        "--profile",
+        choices=("core", "portal"),
+        default="core",
+        help="select required capabilities; core leaves Customer Portal optional",
     )
     args = parser.parse_args()
     commands = {"migrate": _migrate, "grant-due": _grant_due, "reconcile": _reconcile}
     if args.command == "doctor":
         exit_code = asyncio.run(
-            _doctor(json_output=args.json_output, stripe_network=args.stripe_network)
+            _doctor(
+                json_output=args.json_output,
+                stripe_network=args.stripe_network,
+                profile=args.profile,
+            )
         )
         if exit_code:
             raise SystemExit(exit_code)

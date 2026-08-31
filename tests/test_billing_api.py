@@ -1379,6 +1379,64 @@ async def test_portal_scoped_idempotency_key_needs_no_hash(
     assert len(scoped_key.encode("utf-8")) <= 255
 
 
+@pytest.mark.parametrize(
+    "configuration_id",
+    [None, "pc_invalid_private_value", "bpc_", "bpc_replace_me_private_value"],
+)
+async def test_portal_route_rejects_unusable_configuration_before_stripe_io(
+    postgres_container: None,
+    monkeypatch: pytest.MonkeyPatch,
+    configuration_id: str | None,
+) -> None:
+    settings = _settings().model_copy(update={"stripe_portal_configuration_id": configuration_id})
+    database = Database(TEST_DSN)
+    retrieve_calls: list[object] = []
+    create_calls: list[object] = []
+
+    def retrieve(*args: object, **kwargs: object) -> object:
+        retrieve_calls.append((args, kwargs))
+        raise AssertionError("unusable Portal ID crossed the Stripe boundary")
+
+    def create(*args: object, **kwargs: object) -> object:
+        create_calls.append((args, kwargs))
+        raise AssertionError("unusable Portal ID crossed the Stripe boundary")
+
+    monkeypatch.setattr(
+        "stripe_entitlements.stripe_gateway.stripe.billing_portal.Configuration.retrieve",
+        retrieve,
+    )
+    monkeypatch.setattr(
+        "stripe_entitlements.stripe_gateway.stripe.billing_portal.Session.create",
+        create,
+    )
+    app = create_app(settings, database=database, auth_adapter=StaticAuth())
+
+    async with app.router.lifespan_context(app):
+        account = await database.account_for_external_ref("api-user")
+        async with database.require_pool().acquire() as conn:
+            await conn.execute(
+                "update billing_accounts set stripe_customer_id='cus_api' where id=$1",
+                account["id"],
+            )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/billing/portal",
+                headers={
+                    "Authorization": "Bearer ignored",
+                    "Idempotency-Key": "portal-unavailable",
+                },
+                json={"return_url": "http://localhost:3000/account"},
+            )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Stripe Portal configuration is missing or invalid"}
+    assert "private_value" not in response.text
+    assert retrieve_calls == []
+    assert create_calls == []
+
+
 async def test_http_rejects_malformed_intent_and_redirect_inputs(
     postgres_container: None,
 ) -> None:

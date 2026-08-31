@@ -546,19 +546,21 @@ def _write_private_json_atomic(output: Path, payload: dict[str, Any]) -> None:
 def create_auth_fixture(args: argparse.Namespace) -> None:
     """Create short-lived local IdP credentials without persisting the private key."""
 
+    personal_subject = args.personal_subject
+    if (
+        type(personal_subject) is not str
+        or not personal_subject
+        or personal_subject != personal_subject.strip()
+        or len(personal_subject.encode("utf-8")) > 504
+        or any(not character.isprintable() for character in personal_subject)
+    ):
+        raise ValueError("browser E2E Personal JWT subject must be a bounded visible string")
     try:
-        parsed_personal_subject = uuid.UUID(args.personal_subject)
         parsed_workload_subject = uuid.UUID(args.workload_subject)
     except (AttributeError, ValueError) as exc:
-        raise ValueError("browser E2E JWT subjects must be canonical UUIDs") from exc
-    if (
-        parsed_personal_subject.int == 0
-        or parsed_workload_subject.int == 0
-        or str(parsed_personal_subject) != args.personal_subject
-        or str(parsed_workload_subject) != args.workload_subject
-    ):
-        raise ValueError("browser E2E JWT subjects must be canonical nonzero UUIDs")
-    personal_subject = str(parsed_personal_subject)
+        raise ValueError("browser E2E workload JWT subject must be a canonical UUID") from exc
+    if parsed_workload_subject.int == 0 or str(parsed_workload_subject) != args.workload_subject:
+        raise ValueError("browser E2E workload JWT subject must be a canonical nonzero UUID")
     workload_subject = str(parsed_workload_subject)
     for field, value in (
         ("issuer", args.issuer),

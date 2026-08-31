@@ -535,9 +535,15 @@ const zhCN: Record<string, string> = {
   "from \\ to": "从 \\ 到",
   "prorated_delta · paid two-line Invoice · +{{credits}} credits · period preserved":
     "prorated_delta · 已支付双行发票 · +{{credits}} 额度 · 保留周期",
+  "prorated_delta · non-positive credit difference · scheduled at period end":
+    "prorated_delta · 额度差非正 · 安排在周期末生效",
   "Starter → Pro · monthly (highlighted cell)": "Starter → Pro · 月付（高亮单元格）",
+  "{{from}} → {{to}} · monthly (highlighted cell)":
+    "{{from}} → {{to}} · 月付（高亮单元格）",
   "prorated_delta settles it immediately: a paid two-line Invoice, +{{credits}} credits, and the current period preserved.":
     "prorated_delta 会立即结算：已支付双行发票、增加 {{credits}} 额度，并保留当前周期。",
+  "prorated_delta schedules it at period end because immediate delta settlement requires a positive credit difference.":
+    "prorated_delta 会将其安排在周期末生效，因为即时差额结算要求额度差为正。",
   "Immediate prorated settlement": "立即按比例结算",
   "No-op": "无操作",
   "Shown: the prorated_delta template. The full_period_reset template defines the same 36 cells and instead settles monthly-origin upgrades immediately at the full target price.":

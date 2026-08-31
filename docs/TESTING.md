@@ -41,6 +41,10 @@ Coverage includes:
 - plan catalog validation and both complete 6 × 6 transition matrices;
 - raw webhook signature, livemode and Event snapshot-version rejection;
 - authenticated catalog/account/Checkout/Portal/preview/confirm APIs;
+- doctor profile boundaries: core accepts an absent optional Portal, while portal and
+  explicit Portal requirements fail closed without a usable configuration;
+- optional Portal configuration isolation: malformed and placeholder IDs leave core
+  startup available but make the Portal route return a sanitized 503 before Stripe I/O;
 - fail-closed production auth and explicit test-only demo auth;
 - strict JWT/JWKS verification boundaries, personal owner mapping, live team membership,
   explicit prefix-aware viewer/catalog policy, and billing-admin-only privileged routes;
@@ -150,7 +154,8 @@ thresholds is not a successful `check`.
 The PostgreSQL project is serial at the file level and owns a disposable PostgreSQL 17
 container. It covers the native subscription projector, both transition policies,
 Invoice binding and SCA recovery, annual grants, Checkout coordinators, credit packs,
-entitlement/internal HTTP services, reconciliation leases/fencing, commit-time
+entitlement/internal HTTP services, doctor capability profiles, reconciliation
+leases/fencing, commit-time
 constraints, and same-account concurrency. Shared golden vectors execute the catalog,
 credit precision, ordering, invoice, and transition policy contract in both languages.
 Mixed-runtime tests start Python and TypeScript workers against one real database and
@@ -162,10 +167,30 @@ byte-for-byte with the repository canonicals. A second clean install then starts
 disposable PostgreSQL 17 instance and invokes that installed package's CLI from outside
 the repository. It requires exact 001/002 filenames and SHA-256 history, an idempotent
 second `migrate`, all correctness tables, all six 002 snapshot columns, and
-`Database.schemaReady() === true`. This proves the published package resource lookup and
+`Database.schemaReady() === true`. This proves the packed artifact's resource lookup and
 migration path; it does not prove an upgrade of application data or a production rollout.
 The checked-in Next.js reference then lint/typechecks/tests/builds against that local
 package.
+
+## PostgreSQL 18 compatibility gate
+
+The complete Python and TypeScript regression suites continue to use PostgreSQL 17 as
+their baseline. CI also has a bounded PostgreSQL 18 gate rather than duplicating both
+large suites. Against a pinned PostgreSQL 18.6 image it:
+
+- clean-installs the npm artifact, applies 001 and 002 to a fresh database twice, checks
+  exact migration history and resources, and requires `Database.schemaReady()`;
+- runs the Python migration contract, including concurrent first apply, 001-to-002
+  upgrade, failed-migration rollback, schema fingerprints, and readiness checks;
+- runs duplicate/different-Event races, refund/order convergence, same-second ordering,
+  and Event-inbox rollback/retry; and
+- runs native TypeScript transaction/rollback checks plus mixed Python/TypeScript
+  same-key, no-overspend, and refund races on one database.
+
+PostgreSQL 18 compatibility evidence covers the checked-in schema and critical
+transaction paths. It is not a claim that every test is duplicated on both majors, nor
+does a disposable container prove a particular managed PostgreSQL provider's operational
+configuration.
 
 The opt-in TypeScript real-Stripe suite has a fail-fast test-key guard and creates
 isolated run-marked Products, Prices, Customers, Subscriptions, PaymentIntents,

@@ -1,0 +1,8 @@
+[plans.credits-only]
+name = "Credits only"
+description = "No feature or numeric limit flags."
+currency = "usd"
+rank = 10
+monthly_credits = 10
+month_usd = 5
+year_usd = 60

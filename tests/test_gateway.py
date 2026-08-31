@@ -1219,6 +1219,40 @@ async def test_runtime_portal_rejects_dashboard_policy_drift(monkeypatch) -> Non
 
 
 @pytest.mark.parametrize(
+    "configuration_id",
+    [None, "pc_invalid_private_value", "bpc_", "bpc_replace_me_private_value"],
+)
+async def test_runtime_portal_rejects_unusable_configuration_before_stripe_io(
+    monkeypatch: pytest.MonkeyPatch,
+    configuration_id: str | None,
+) -> None:
+    gateway = StripeGateway(
+        "sk_test_dummy",
+        "whsec_test",
+        portal_configuration_id=configuration_id,
+    )
+    retrieve_calls: list[object] = []
+
+    def retrieve(*args: object, **kwargs: object) -> object:
+        retrieve_calls.append((args, kwargs))
+        raise AssertionError("invalid Portal configuration crossed the Stripe boundary")
+
+    monkeypatch.setattr(
+        "stripe_entitlements.stripe_gateway.stripe.billing_portal.Configuration.retrieve",
+        retrieve,
+    )
+
+    with pytest.raises(RuntimeError, match="configuration is missing or invalid") as exc_info:
+        await gateway.create_portal_session(
+            customer_id="cus_test",
+            idempotency_key="portal:1",
+        )
+
+    assert "private_value" not in str(exc_info.value)
+    assert retrieve_calls == []
+
+
+@pytest.mark.parametrize(
     "mutation",
     [
         {"id": None},

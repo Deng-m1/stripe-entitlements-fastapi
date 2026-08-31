@@ -64,6 +64,48 @@
       "valid": false
     }
   ],
+  "ownerReferences": [
+    {
+      "name": "namespaced UUID owner",
+      "input": "v1:user:00000000-0000-4000-8000-000000000001",
+      "valid": true
+    },
+    {
+      "name": "provider stable subject",
+      "input": "auth0|stable-subject",
+      "valid": true
+    },
+    {
+      "name": "raw canonical UUID v4",
+      "input": "00000000-0000-4000-8000-000000000001",
+      "valid": false
+    },
+    {
+      "name": "raw compact UUID v4",
+      "input": "00000000000040008000000000000001",
+      "valid": false
+    },
+    {
+      "name": "raw canonical UUID v7",
+      "input": "018f47a2-4eb5-7cc5-aacb-cb02f81f9ecb",
+      "valid": false
+    },
+    {
+      "name": "raw braced UUID",
+      "input": "{018f47a2-4eb5-7cc5-aacb-cb02f81f9ecb}",
+      "valid": false
+    },
+    {
+      "name": "raw UUID URN",
+      "input": "urn:uuid:018f47a2-4eb5-7cc5-aacb-cb02f81f9ecb",
+      "valid": false
+    },
+    {
+      "name": "raw Stripe customer",
+      "input": "cus_database_owner",
+      "valid": false
+    }
+  ],
   "transitions": {
     "states": [
       { "plan": "starter", "interval": "month" },

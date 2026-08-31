@@ -45,10 +45,22 @@ describe("annual pricing display math", () => {
         year: { ...base.prices.year, unit_amount: base.prices.month.unit_amount * 12 },
       },
     };
+    const annualPremium: CatalogPlan = {
+      ...base,
+      prices: {
+        ...base.prices,
+        year: {
+          ...base.prices.year,
+          unit_amount: base.prices.month.unit_amount * 12 + 1,
+        },
+      },
+    };
 
     expect(annualSavings(mismatched)).toBeNull();
     expect(annualSavings(noDiscount)).toBeNull();
+    expect(annualSavings(annualPremium)).toBeNull();
     expect(annualSavingsPercent(mismatched)).toBeNull();
     expect(annualSavingsPercent(noDiscount)).toBeNull();
+    expect(annualSavingsPercent(annualPremium)).toBeNull();
   });
 });

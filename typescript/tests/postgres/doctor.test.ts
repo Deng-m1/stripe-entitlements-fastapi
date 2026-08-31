@@ -16,13 +16,15 @@ beforeAll(async () => {
   catalog = await PlanCatalog.fromToml(ROOT_CATALOG);
 });
 
-function settings(overrides: Readonly<Record<string, string>> = {}): Settings {
+function settings(
+  overrides: Readonly<Record<string, string | undefined>> = {},
+): Settings {
   return loadSettings({
     DATABASE_URL: "postgresql://doctor.invalid/doctor",
     STRIPE_SECRET_KEY: "sk_test_doctor_valid",
     STRIPE_WEBHOOK_SECRET: "whsec_doctor_valid",
     STRIPE_WEBHOOK_API_VERSION: "2026-06-24.dahlia",
-    STRIPE_PORTAL_CONFIGURATION_ID: "bpc_doctor_valid",
+    STRIPE_PORTAL_CONFIGURATION_ID: "bpc_DoctorValid",
     PLAN_CATALOG_PATH: ROOT_CATALOG,
     APP_ENV: "test",
     FRONTEND_ORIGINS: "https://app.example",
@@ -83,7 +85,62 @@ function packPrice(lookupKey: string): Record<string, unknown> {
   };
 }
 
+function doctorNetwork(
+  retrievePortalConfiguration: (configurationId: string) => Promise<unknown>,
+): DoctorStripeNetwork {
+  return {
+    retrieveAccount: () => Promise.resolve({ id: "acct_doctor" }),
+    pricesForLookup: (lookupKey: string) =>
+      Promise.resolve([
+        catalog.parseLookupKey(lookupKey) === undefined
+          ? packPrice(lookupKey)
+          : recurringPrice(lookupKey),
+      ]),
+    retrievePortalConfiguration,
+  };
+}
+
 describe("TypeScript doctor local and read-only network closure", () => {
+  test.each([
+    { portalId: undefined, status: "skipped" },
+    { portalId: "bpc_replace_me_private_value", status: "warning" },
+    { portalId: "pc_invalid_private_value", status: "warning" },
+    { portalId: "bpc_", status: "warning" },
+  ])(
+    "keeps $portalId optional in the default core profile",
+    async (selection) => {
+      const report = await runDoctor({
+        settings: settings({
+          STRIPE_PORTAL_CONFIGURATION_ID: selection.portalId,
+        }),
+        database: postgresDatabase(),
+      });
+      const portal = report.checks.find(
+        (item) => item.name === "stripe.portal_configuration",
+      );
+
+      expect(report.ok).toBe(true);
+      expect(portal?.status).toBe(selection.status);
+      expect(portal?.summary).toContain("core billing");
+      expect(JSON.stringify(portal)).not.toContain("private_value");
+    },
+  );
+
+  test("requires Portal for the portal profile", async () => {
+    const report = await runDoctor({
+      settings: settings({ STRIPE_PORTAL_CONFIGURATION_ID: undefined }),
+      database: postgresDatabase(),
+      profile: "portal",
+    });
+    const portal = report.checks.find(
+      (item) => item.name === "stripe.portal_configuration",
+    );
+
+    expect(report.ok).toBe(false);
+    expect(portal?.status).toBe("fail");
+    expect(portal?.summary).toContain("selected doctor profile");
+  });
+
   test("passes complete local and database checks without any Stripe request", async () => {
     const calls: string[] = [];
     const network: DoctorStripeNetwork = {
@@ -163,6 +220,110 @@ describe("TypeScript doctor local and read-only network closure", () => {
       catalog.plans.size * 2 + catalog.creditPacks.size,
     );
   });
+
+  test.each([
+    {
+      portalId: "bpc_replace_me_private_value",
+      profile: "core" as const,
+      expectedStatus: "skipped",
+    },
+    {
+      portalId: "bpc_replace_me_private_value",
+      profile: "portal" as const,
+      expectedStatus: "fail",
+    },
+    {
+      portalId: "pc_invalid_private_value",
+      profile: "core" as const,
+      expectedStatus: "skipped",
+    },
+    {
+      portalId: "pc_invalid_private_value",
+      profile: "portal" as const,
+      expectedStatus: "fail",
+    },
+  ])(
+    "does not send unusable Portal ID $portalId to Stripe in $profile profile",
+    async ({ portalId, profile, expectedStatus }) => {
+      const portalCalls: string[] = [];
+      const report = await runDoctor({
+        settings: settings({ STRIPE_PORTAL_CONFIGURATION_ID: portalId }),
+        database: postgresDatabase(),
+        stripeNetwork: true,
+        profile,
+        network: doctorNetwork((configurationId) => {
+          portalCalls.push(configurationId);
+          return Promise.reject(
+            new Error("an unusable Portal ID must not be sent to Stripe"),
+          );
+        }),
+      });
+      const portal = report.checks.find(
+        (item) => item.name === "stripe.network.portal",
+      );
+
+      expect(portalCalls).toEqual([]);
+      expect(portal?.status).toBe(expectedStatus);
+      expect(JSON.stringify(portal)).not.toContain("private_value");
+    },
+  );
+
+  test.each([
+    {
+      outcome: "retrieval failure" as const,
+      profile: "core" as const,
+      expectedStatus: "warning",
+    },
+    {
+      outcome: "retrieval failure" as const,
+      profile: "portal" as const,
+      expectedStatus: "fail",
+    },
+    {
+      outcome: "policy drift" as const,
+      profile: "core" as const,
+      expectedStatus: "warning",
+    },
+    {
+      outcome: "policy drift" as const,
+      profile: "portal" as const,
+      expectedStatus: "fail",
+    },
+  ])(
+    "reports a valid Portal ID $outcome as $expectedStatus in $profile profile",
+    async ({ outcome, profile, expectedStatus }) => {
+      const report = await runDoctor({
+        settings: settings(),
+        database: postgresDatabase(),
+        stripeNetwork: true,
+        profile,
+        network: doctorNetwork((configurationId) =>
+          outcome === "retrieval failure"
+            ? Promise.reject(new Error("private Stripe response"))
+            : Promise.resolve({
+                id: configurationId,
+                active: true,
+                livemode: false,
+                metadata: { product_line: "example-entitlements" },
+                features: {
+                  subscription_update: { enabled: true },
+                  subscription_cancel: {
+                    enabled: true,
+                    mode: "at_period_end",
+                  },
+                },
+              }),
+        ),
+      });
+      const portal = report.checks.find(
+        (item) => item.name === "stripe.network.portal",
+      );
+
+      expect(portal?.status).toBe(expectedStatus);
+      expect(report.ok).toBe(profile === "core");
+      expect(JSON.stringify(portal)).not.toContain("private Stripe response");
+    },
+  );
 
   test("reports placeholder field names without rendering secret values", async () => {
     const values = settings({

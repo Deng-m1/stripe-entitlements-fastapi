@@ -53,7 +53,7 @@ if [[ -z "$e2e_postgres_image" ]]; then
   exit 2
 fi
 e2e_run_id="$(date -u +%Y%m%d%H%M%S)-$$"
-e2e_user_id="$(uv run python -c 'import uuid; print(uuid.uuid4())')"
+e2e_user_id="user_e2e_$(uv run python -c 'import uuid; print(uuid.uuid4().hex)')"
 e2e_workload_subject="$(uv run python -c 'import uuid; print(uuid.uuid4())')"
 e2e_external_ref="v1:user:${e2e_user_id}"
 e2e_description="stripe-entitlements-browser-e2e-$e2e_run_id"
@@ -454,7 +454,7 @@ for e2e_command in docker curl git uv npm node openssl; do
   }
 done
 
-if ! e2e_commit_sha="$(git rev-parse --verify HEAD^{commit})" || \
+if ! e2e_commit_sha="$(git rev-parse --verify 'HEAD^{commit}')" || \
     [[ ! "$e2e_commit_sha" =~ ^[0-9a-f]{40,64}$ ]]; then
   echo "browser E2E could not resolve its source commit" >&2
   exit 1
@@ -577,6 +577,7 @@ fi
 
 docker run -d --rm --name "$e2e_pg_container" \
   --tmpfs /var/lib/postgresql/data:rw,nosuid,nodev,size=512m \
+  -e PGDATA=/var/lib/postgresql/data \
   -e POSTGRES_DB=stripe_entitlements \
   -e POSTGRES_USER=postgres \
   -e POSTGRES_PASSWORD=local-only \
