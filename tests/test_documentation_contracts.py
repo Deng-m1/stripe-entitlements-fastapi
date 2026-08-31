@@ -220,16 +220,56 @@ def test_changelog_marks_the_candidate_as_unreleased() -> None:
     assert changelog.startswith("# Changelog\n\n## [Unreleased 0.4.0]\n")
 
 
-def test_readme_has_a_short_three_path_entrypoint_before_contents() -> None:
+def test_readme_has_a_short_four_path_entrypoint_before_contents() -> None:
     readme = _text("README.md")
     entrypoint = readme.split("## Start here", maxsplit=1)[1].split("## Contents", maxsplit=1)[0]
 
     assert "Python/FastAPI" in entrypoint
     assert "native Next.js/TypeScript" in entrypoint
+    assert "real Stripe test-mode staging" in entrypoint
     assert "UI-only link without Stripe/DB" in entrypoint
     assert "#quick-start" in entrypoint
     assert "typescript/README.md#requirements" in entrypoint
+    assert "docs/DEPLOYMENT.md" in entrypoint
     assert "docs/AI_BUILDERS.md#publish-a-ui-only-simulation" in entrypoint
+
+
+def test_first_deployment_guide_keeps_ai_and_webhook_boundaries_explicit() -> None:
+    guide = _text("docs/DEPLOYMENT.md")
+    normalized = " ".join(guide.split())
+
+    for choice in (
+        "person or one team",
+        "Python/FastAPI or TypeScript/Node/Next.js",
+        "full_period_reset",
+        "prorated_delta",
+        "stable staging domain",
+        "UI simulation, Stripe test staging",
+    ):
+        assert choice in normalized
+
+    for event_type in (
+        "checkout.session.completed",
+        "checkout.session.expired",
+        "invoice.paid",
+        "invoice.payment_failed",
+        "customer.subscription.updated",
+        "customer.subscription.deleted",
+        "charge.refunded",
+        "charge.dispute.created",
+        "payment_intent.succeeded",
+    ):
+        assert event_type in guide
+
+    assert "outputFileTracingIncludes" in guide
+    assert "dist/plans.toml" in guide
+    assert "dist/migrations/**/*.sql" in guide
+    assert "Ignored `.env` and `.env.local` files are local inputs" in guide
+    assert "temporary signing secret" in guide
+    assert "two phases" in guide
+    assert "Registration itself fails" in guide
+    assert "host application" in guide.lower()
+    assert "Stripe does not grant application access" in guide
 
 
 def test_adoption_guide_uses_the_packaged_http_subpath_export() -> None:

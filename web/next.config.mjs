@@ -172,6 +172,17 @@ const nextConfig = {
   agentRules: false,
   reactStrictMode: true,
   outputFileTracingRoot: repositoryRoot,
+  // The billing runtime resolves these files from disk rather than importing
+  // them into JavaScript. Include them explicitly in every Node Route Handler
+  // so a serverless build contains the catalog and migration bundle.
+  outputFileTracingIncludes: {
+    "/*": [
+      "./node_modules/@tosea/stripe-entitlements/dist/plans.toml",
+      "./node_modules/@tosea/stripe-entitlements/dist/migrations/**/*.sql",
+      "../typescript/dist/plans.toml",
+      "../typescript/dist/migrations/**/*.sql",
+    ],
+  },
   transpilePackages: ["@tosea/stripe-entitlements"],
   turbopack: { root: repositoryRoot },
   env: productionRouteAuthSentinel

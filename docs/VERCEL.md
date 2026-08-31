@@ -207,6 +207,27 @@ required cadence, or run the existing `stripe-entitlements grant-due` and `recon
 commands elsewhere. The FastAPI function has an explicit 60-second bound; tune batch
 sizes before raising that limit within the selected plan's maximum.
 
+## Domain and webhook bootstrap order
+
+There is one unavoidable two-phase dependency: a persistent Stripe Webhook Endpoint
+needs the final HTTPS destination, while a platform-generated URL may not exist until the
+Vercel project is linked or first deployed. Prefer to link the project and reserve its
+stable staging/custom domain first, then create the test-mode endpoint, store its real
+signing secret in Vercel, and deploy the ready application.
+
+If Vercel reveals the usable URL only after an initial deployment, that deployment is a
+bootstrap artifact. Its build may succeed, but billing initialization or `/health` can
+remain unavailable until `STRIPE_WEBHOOK_SECRET` and the endpoint's actual signed-payload
+API version are configured. Create the endpoint, add those server variables, and redeploy
+before testing or accepting traffic. Do not use a fake signing secret to make the first
+deployment look ready.
+
+An ignored `.env` or `.env.local` file is never uploaded as Vercel configuration. Add
+every server value through the target environment's secret/variable store. The temporary
+secret printed by local `stripe listen` belongs only to that listener; the Vercel endpoint
+has a different persistent secret. The provider-neutral sequence and responsibility
+boundary are in [First real deployment](DEPLOYMENT.md).
+
 ## 1. Prepare test-mode Stripe and PostgreSQL
 
 Do this before the first deployment. Migration and catalog bootstrap are operator jobs,

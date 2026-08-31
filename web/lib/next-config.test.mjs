@@ -15,6 +15,17 @@ describe("Next.js public billing build boundary", () => {
     expect(nextConfig.agentRules).toBe(false);
   });
 
+  it("traces the billing catalog and migrations into server bundles", () => {
+    expect(nextConfig.outputFileTracingIncludes).toEqual({
+      "/*": [
+        "./node_modules/@tosea/stripe-entitlements/dist/plans.toml",
+        "./node_modules/@tosea/stripe-entitlements/dist/migrations/**/*.sql",
+        "../typescript/dist/plans.toml",
+        "../typescript/dist/migrations/**/*.sql",
+      ],
+    });
+  });
+
   it.each([
     ["production", "mock", undefined],
     ["production", "http", "browser-visible-token"],

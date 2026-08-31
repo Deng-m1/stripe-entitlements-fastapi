@@ -9,6 +9,7 @@
     "dev": "next dev",
     "prebuild": "npm --prefix ../typescript run build",
     "build": "next build",
+    "postbuild": "node scripts/verify-runtime-traces.mjs",
     "start": "next start",
     "prelint": "npm --prefix ../typescript run build",
     "lint": "eslint .",

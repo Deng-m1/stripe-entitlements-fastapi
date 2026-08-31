@@ -22,6 +22,31 @@ server-side code.
 Never describe `simulation` as a Stripe E2E test. Never describe test staging as proof of
 live settlement.
 
+## Before an AI agent edits the product
+
+The agent should first ask only for unanswered choices that change the implementation:
+
+- personal or team billing, and the verified immutable owner ID;
+- Python/FastAPI or native TypeScript/Next.js as the one billing runtime;
+- plan prices, monthly credit grants, features, limits, yearly billing, and credit packs;
+- `full_period_reset` or `prorated_delta` for immediate upgrades;
+- identity provider, PostgreSQL database, stable staging domain, Portal, and scheduler;
+  and
+- UI simulation, Stripe test staging, or explicitly approved live production.
+
+The agent should state its selected defaults before editing when the product brief does
+not answer them. It may automate source integration, migrations, test-mode catalog
+bootstrap, Route Handlers, environment templates, and verification with the credentials
+and platform access it has been given. It must not invent a production domain, identity
+contract, live-mode approval, or signing secret.
+
+Use the provider-neutral [first real deployment guide](DEPLOYMENT.md) as the handoff
+contract. It explains the subscription mechanisms, host/Stripe/repository responsibility
+boundary, two-phase domain and webhook setup, Next.js runtime-resource tracing, and a
+symptom-to-owner diagnosis table. That distinction matters with generated applications:
+a host registration failure is not a Stripe bug, while a successful Checkout with no
+projected access usually is a webhook/configuration problem.
+
 ## Publish a UI-only simulation
 
 The reference frontend has a browser-local simulation mode for a public design/demo

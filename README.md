@@ -33,6 +33,7 @@ setup and verification steps:
 | --------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | Add billing to a Python/FastAPI service | [Quick start](#quick-start), then [adoption](docs/ADOPTION.md#compose-the-fastapi-application) |
 | Use native Next.js/TypeScript billing   | [TypeScript source, Git vendor, or tarball](typescript/README.md#requirements)                 |
+| Deploy real Stripe test-mode staging    | [First real deployment](docs/DEPLOYMENT.md)                                                    |
 | Share a UI-only link without Stripe/DB  | [Credential-free public simulation](docs/AI_BUILDERS.md#publish-a-ui-only-simulation)          |
 
 No registry release is required for either backend. The
@@ -46,6 +47,7 @@ downloading this unpublished package from the public registry.
 
 - [Implemented scope](#what-is-completeand-what-is-not)
 - [Choose Python or TypeScript](#choose-python-or-typescript)
+- [Choose the subscription flow](#choose-the-subscription-flow-before-coding)
 - [Plan catalog and annual savings](#plan-catalog)
 - [One-time credit packs](#one-time-credit-packs)
 - [Two plan-change templates](#safe-stripe-plan-transitions-full-price-or-prorated-difference)
@@ -94,6 +96,34 @@ A deployment normally chooses one backend runtime. Do not mix arbitrary package
 versions as interchangeable replicas: every API/webhook/worker process must use a
 compatible migration level, identical catalog, Stripe mode/version contracts, product
 line, and transition policy. See the [TypeScript package guide](typescript/README.md).
+
+## Choose the subscription flow before coding
+
+Ask these questions once: is the billable owner a person or team, which runtime owns the
+backend, which plans and entitlements exist, which upgrade policy applies, and whether
+yearly billing, credit packs, Portal, and a scheduler are needed. Also identify the real
+identity provider, PostgreSQL 17 or 18 database, stable staging domain, and whether the
+target is a UI simulation, Stripe test staging, or approved live production.
+
+The implemented lifecycle uses several deliberate mechanisms rather than granting access
+from one generic “subscription changed” callback:
+
+| Action | Implemented mechanism |
+| --- | --- |
+| First subscription | Stripe Hosted Checkout; access begins after signed `invoice.paid` projection |
+| Upgrade | App preview/confirm using either `full_period_reset` or `prorated_delta` |
+| Downgrade, annual-origin, or unsupported interval change | Period-end Subscription Schedule |
+| Cancellation | Dedicated Portal configuration, cancellation at period end |
+| Renewal | Paid Invoice projection; annual plans release credits in monthly slots |
+| One-time credits | Hosted Checkout plus exact `payment_intent.succeeded` projection |
+
+Portal price changes are disabled so they cannot bypass the selected upgrade policy.
+Stripe owns payment objects and hosted pages; this repository owns the PostgreSQL
+entitlement projection; the host application still owns verified login/team membership,
+business entities, and server-side enforcement. The concise
+[first-deployment guide](docs/DEPLOYMENT.md) gives the complete responsibility table,
+Agent discovery questions, two-phase domain/webhook setup, environment boundary, and
+failure diagnosis.
 
 ## What is complete—and what is not
 
