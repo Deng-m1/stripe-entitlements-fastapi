@@ -45,9 +45,13 @@
       production App Router build of the billing catch-all, Stripe webhook, and health
       Route Handlers.
 - [ ] Require Registry 404 vacancy or byte-identical existing `dist.integrity`, publish
-      the already-verified `.tgz` without repacking, then verify Registry integrity,
-      SLSA provenance metadata/signatures, version, CLI, and all four public ESM exports
-      from a fresh anonymous exact-version install.
+      the already-verified `.tgz` without repacking under its `release-*` candidate tag,
+      then verify Registry integrity, SLSA provenance signature, Fulcio chain, CT/Rekor
+      proofs, issuer, workflow SAN, the `npm-publish` environment/token subject,
+      immutable repository/owner IDs, tag commit, run ID, and exact attempt on a fresh
+      publish. A failed-job retry may accept only an earlier signed attempt from that same
+      run. Then verify version, CLI, all four public ESM exports, and the production
+      Next.js/PostgreSQL consumer from a fresh anonymous exact-version install.
 - [ ] Run `stripe-entitlements doctor --json` against the release database and retain a
       secret-free report; do not label it Stripe endpoint or payload evidence.
 - [ ] `cd web && npm ci`
@@ -184,15 +188,25 @@
 ## Publish
 
 - [ ] Update README/docs, changelog and version metadata without overstating evidence.
-- [ ] For the brand-new npm package only, create a least-scope, short-expiry granular
-      token with bypass-2FA publishing, store it temporarily as the `NPM_TOKEN` Actions
-      secret, and let the tag workflow validate that credential before reserving a draft
-      Release, then publish with provenance. Never paste it into an issue, PR, log, or
-      chat.
+- [ ] Create the GitHub Environment `npm-publish`, restrict deployment branches/tags to
+      `v*`, and store `NPM_TOKEN` only as an Environment secret. The OIDC identity job
+      and its provenance certificate must name this exact Environment; build, test,
+      anonymous verification and container jobs must never receive the secret.
+- [ ] Before a release that can advance `latest`, create a least-scope, short-expiry
+      granular token with bypass-2FA publishing. It bootstraps the brand-new package when
+      needed and otherwise is exposed only to the final candidate-to-`latest` dist-tag
+      promotion step. npm Trusted Publisher currently authenticates `npm publish` and staged
+      publish, not `npm dist-tag`; therefore this workflow cannot combine automatic
+      post-verification promotion with “disallow tokens.” Never paste the token into an
+      issue, PR, log, or chat, and revoke it/delete the Environment secret immediately
+      after a successful Release. A non-latest backpatch needs no token after bootstrap.
 - [ ] Immediately after the first npm publish, configure the package Trusted Publisher
-      as `Deng-m1` / `stripe-entitlements-fastapi` / `release.yml` with `npm publish`
-      permission, select “Require 2FA and disallow tokens,” delete the Actions secret,
-      and revoke the bootstrap token. Later releases must use OIDC only.
+      as `Deng-m1` / `stripe-entitlements-fastapi` / `release.yml` / `npm-publish`, with
+      `npm publish` permission. Later package publishes must use OIDC; the temporary token
+      remains limited to `npm dist-tag` promotion and must be rotated per release. If the
+      package is switched to “Require 2FA and disallow tokens,” replace automatic
+      candidate promotion with an explicit maintainer/2FA promotion before using this
+      workflow again.
 - [ ] Before creating `v*`, require an active GitHub tag ruleset targeting
       `refs/tags/v*` that blocks updates and deletion with no ordinary bypass. The
       workflow's repeated tag-object checks do not replace server-side immutability.
@@ -232,25 +246,29 @@
   - [ ] unless a new cut is recorded and reviewed, label the 48.800-second video as the
         `0.2.0` visual artifact rather than `0.2.2` code/network evidence.
 - [ ] Tag with an annotated `v<project-version>` only after all applicable networked
-      gates above are bound to that exact commit. The tag workflow reruns network-free
-      backend/web gates, creates Wheel/sdist checksums, publishes or byte-verifies the
-      exact npm artifact, and publishes exact/minor/commit/latest GHCR tags without
-      allowing an older patch to roll back either moving channel. The
-      immutable commit tag uses the complete Git commit SHA. It refuses an existing
-      Release, version image tag, or commit image tag, rechecks the annotated tag object,
-      reserves a draft Release before publishing the immutable image, uploads and verifies
-      the draft assets, publishes and digest-verifies every moving tag, and makes the
-      GitHub Release public only as the final commit point. It proves every container tag
-      resolves to one digest and records that digest; it does not substitute for real
-      Stripe or live-payload evidence.
-- [ ] If publication stops after reserving the draft Release or pushing only part of the
-      immutable/moving tag set, do not blindly rerun: the vacancy guards intentionally
-      fail. Inspect the remote tag object, draft/public Release, npm exact version,
-      `dist.integrity`, provenance, dist-tag, OCI exact-version tag, full-SHA tag, and each
-      digest. Never unpublish an npm version to make a retry convenient; if its bytes and
-      provenance match, finish the same verified release under administrator review. Only
-      remove an unpublished draft or recoverable OCI partial state. Record the recovery
-      decision, npm integrity, and final container digest in the private release log.
+      gates above are bound to that exact commit. The tag workflow gives build/test jobs
+      no OIDC or publication secret, transfers manifest-verified artifacts into separate
+      minimum-privilege jobs, creates Wheel/sdist checksums, and publishes the exact npm
+      artifact under a non-default candidate tag. Only after anonymous Registry/Sigstore/
+      Next.js verification, exact OCI publication, anonymous pull, container attestation,
+      and byte-verified Release assets may it advance npm `latest` and make the GitHub
+      Release public. Exact/minor/commit/latest GHCR tags cannot let an older patch leave a
+      moving channel rolled back; the immutable commit tag uses the complete Git SHA. It
+      proves every container tag resolves to one digest and records that digest; it does
+      not substitute for real Stripe or live-payload evidence.
+- [ ] For a transient failure before any OCI immutable tag is pushed, rerun the failed
+      jobs from the original tag-push run; do not create a new dispatch or a replacement
+      tag. npm recovery accepts only byte-identical integrity and provenance signed by the
+      same run ID with an attempt no newer than the retry. A draft Release is resumable
+      only when its hidden checkpoint contains that run ID and annotated tag object, and
+      every existing asset must compare byte-for-byte.
+- [ ] If the OCI publication job stops after pushing only part of its immutable/moving
+      tag set, do not rerun it blindly: immutable vacancy guards intentionally fail closed.
+      Inspect the tag object, draft/public Release, npm exact version, integrity,
+      provenance/candidate tag, OCI version/full-SHA/moving tags and every digest. Never
+      unpublish npm to make recovery convenient. Complete or remove only recoverable OCI
+      partial state under administrator review, then rerun downstream failed jobs and
+      record the decision, npm integrity and final digest in the private release log.
 - [ ] Download the published GitHub assets, verify `SHA256SUMS`, install the Wheel in a
       clean environment, and require `stripe-entitlements --version` to equal the tag.
 - [ ] Install the downloaded `.tgz` in a second clean Node project; require its CLI

@@ -25,8 +25,7 @@
   ],
   "sideEffects": false,
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   },
   "engines": {
     "node": ">=22.0.0"
@@ -67,14 +66,16 @@
     "format:check": "prettier --check .",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --project unit --project postgres",
-    "test:unit": "vitest run --project unit",
+    "test": "npm run test:provenance && vitest run --project unit --project postgres",
+    "test:unit": "npm run test:provenance && vitest run --project unit",
+    "test:provenance": "node --test scripts/verify-npm-attestation.test.mjs",
     "test:postgres": "vitest run --project postgres",
     "test:real-stripe": "bash scripts/run-real-stripe.sh",
     "test:coverage": "vitest run --coverage --project unit --project postgres",
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test:coverage && npm run build"
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test:provenance && npm run test:coverage && npm run build"
   },
   "dependencies": {
+    "@types/pg": "8.23.1",
     "jose": "6.2.10",
     "pg": "8.23.0",
     "smol-toml": "1.8.0",
@@ -84,11 +85,11 @@
   "devDependencies": {
     "@eslint/js": "9.39.2",
     "@types/node": "22.20.1",
-    "@types/pg": "8.23.1",
     "@vitest/coverage-v8": "4.1.11",
     "eslint": "9.39.2",
     "eslint-plugin-security": "3.0.1",
     "prettier": "3.6.2",
+    "sigstore": "4.1.1",
     "typescript": "5.9.3",
     "typescript-eslint": "8.56.1",
     "vitest": "4.1.11"

@@ -329,14 +329,21 @@ stripe listen \
 ```
 
 The forwarding URL uses the single Vercel development origin; its routing table sends
-the request to FastAPI.
+the request to the selected webhook handler: FastAPI under `vercel.json`, or the native
+TypeScript Route Handler under `vercel.typescript.json`.
 
 ## 5. Run the complete deployment locally
 
-Install the pinned CLI and run both services through the real routing table:
+Install the pinned CLI and run the selected monorepo configuration through its real
+routing table. The default command starts the split Next.js + FastAPI topology; the
+explicit `-A` command starts the single-service native TypeScript topology:
 
 ```bash
+# Split Next.js + FastAPI
 npx vercel@59.10.0 dev -L
+
+# Native TypeScript / Next.js
+npx vercel@59.10.0 -A vercel.typescript.json dev -L
 ```
 
 `-L` uses local configuration without linking or deploying a cloud project. It still
@@ -359,10 +366,16 @@ only as a schematic example.
 Link and deploy after the environment matrix is configured:
 
 ```bash
+# Split Next.js + FastAPI
 npx vercel@59.10.0 link
 npx vercel@59.10.0 deploy
 # after preview verification
 npx vercel@59.10.0 deploy --prod
+
+# Native TypeScript / Next.js (use the same -A flag for link and both deploys)
+npx vercel@59.10.0 -A vercel.typescript.json link
+npx vercel@59.10.0 -A vercel.typescript.json deploy
+npx vercel@59.10.0 -A vercel.typescript.json deploy --prod
 ```
 
 Verify the deployed commit as one system:
@@ -384,15 +397,15 @@ keep the evidence layers separate as described in [`TESTING.md`](TESTING.md).
 
 ## Platform boundary
 
-The FastAPI service is safe across multiple warm instances because correctness lives in
-PostgreSQL, not process memory. Cold starts and function termination can still interrupt
-a request; Stripe retries webhook 5xx, callers replay durable idempotency keys, and Cron
-returns a retryable failure. Each warm instance owns a pool. Set `DATABASE_POOL_MAX`
-from the database-wide connection budget divided by the maximum warm-instance count;
-`DATABASE_POOL_MIN=0` is appropriate when idle instances should retain no floor. Bound
-idle and connect waits with `DATABASE_POOL_IDLE_TIMEOUT_MS` and
-`DATABASE_CONNECT_TIMEOUT_MS`, then monitor saturation. Both the FastAPI and native
-TypeScript runtimes validate and apply these four settings.
+Both the FastAPI and native TypeScript services are safe across multiple warm instances
+because correctness lives in PostgreSQL, not process memory. Cold starts and function
+termination can still interrupt a request; Stripe retries webhook 5xx, callers replay
+durable idempotency keys, and Cron returns a retryable failure. Each warm instance owns a
+pool. Set `DATABASE_POOL_MAX` from the database-wide connection budget divided by the
+maximum warm-instance count; `DATABASE_POOL_MIN=0` is appropriate when idle instances
+should retain no floor. Bound idle and connect waits with
+`DATABASE_POOL_IDLE_TIMEOUT_MS` and `DATABASE_CONNECT_TIMEOUT_MS`, then monitor
+saturation. Both runtimes validate and apply these four settings.
 
 Long-running conversion, video, AI, or file-processing jobs should not be placed inside
 these billing Functions merely because the frontend is on Vercel. Keep product work in
