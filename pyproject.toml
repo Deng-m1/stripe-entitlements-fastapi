@@ -63,11 +63,11 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Deng-m1/stripe-entitlements-fastapi"
-Repository = "https://github.com/Deng-m1/stripe-entitlements-fastapi"
-Issues = "https://github.com/Deng-m1/stripe-entitlements-fastapi/issues"
-Documentation = "https://github.com/Deng-m1/stripe-entitlements-fastapi#readme"
-Changelog = "https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/ToseaAI/stripe-entitlements"
+Repository = "https://github.com/ToseaAI/stripe-entitlements"
+Issues = "https://github.com/ToseaAI/stripe-entitlements/issues"
+Documentation = "https://github.com/ToseaAI/stripe-entitlements#readme"
+Changelog = "https://github.com/ToseaAI/stripe-entitlements/blob/main/CHANGELOG.md"
 
 [project.scripts]
 stripe-entitlements = "stripe_entitlements.cli:main"

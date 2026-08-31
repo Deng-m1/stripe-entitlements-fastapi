@@ -42,9 +42,9 @@ def test_release_guard_is_bound_to_the_canonical_repository_identity() -> None:
         _jobs()["build-and-verify"],
         "Verify immutable tag and coordinated versions",
     )
-    assert guard["env"]["EXPECTED_REPOSITORY"] == ("Deng-m1/stripe-entitlements-fastapi")
+    assert guard["env"]["EXPECTED_REPOSITORY"] == ("ToseaAI/stripe-entitlements")
     assert guard["env"]["EXPECTED_REPOSITORY_ID"] == "1346854294"
-    assert guard["env"]["EXPECTED_REPOSITORY_OWNER_ID"] == "80449295"
+    assert guard["env"]["EXPECTED_REPOSITORY_OWNER_ID"] == "251731194"
     guard_text = guard["run"]
     required = [
         'test "$GITHUB_REPOSITORY" = "$EXPECTED_REPOSITORY"',
@@ -55,6 +55,15 @@ def test_release_guard_is_bound_to_the_canonical_repository_identity() -> None:
     ]
     for fragment in required:
         assert fragment in guard_text
+
+
+def test_ghcr_preflight_tracks_the_org_repository_name() -> None:
+    preflight = _step(
+        _jobs()["container-publish"],
+        "Require the repository-named GHCR package to be public",
+    )["run"]
+    assert "api.github.com/orgs/ToseaAI/packages/container/stripe-entitlements" in preflight
+    assert 'package.get("name") != "stripe-entitlements"' in preflight
 
 
 def test_release_jobs_have_minimum_and_separated_permissions() -> None:
@@ -319,7 +328,7 @@ def test_oci_immutable_tags_are_retry_safe_and_channels_wait_for_attestation() -
     promotion = _step(final, "Promote and anonymously verify eligible OCI channels")["run"]
     verification = _step(final, "Revalidate every remote candidate before channel promotion")["run"]
     assert '"ls-remote"' in policy
-    assert "https://github.com/Deng-m1/stripe-entitlements-fastapi.git" in policy
+    assert "https://github.com/ToseaAI/stripe-entitlements.git" in policy
     assert "current >= max(released" in policy
     assert "version[:2] == current[:2]" in policy
     assert '"npm", "view", "@tosea/stripe-entitlements", "dist-tags"' in policy
@@ -375,7 +384,7 @@ def test_generator_rejects_release_tokens_before_reading_npm_sources(
 ) -> None:
     node = shutil.which("node")
     assert node is not None
-    repository = "Deng-m1/stripe-entitlements-fastapi"
+    repository = "ToseaAI/stripe-entitlements"
     tag = "v0.4.0"
     commit = "a" * 40
     environment = {
@@ -385,7 +394,7 @@ def test_generator_rejects_release_tokens_before_reading_npm_sources(
         "GITHUB_REF": f"refs/tags/{tag}",
         "GITHUB_REPOSITORY": repository,
         "GITHUB_REPOSITORY_ID": "1346854294",
-        "GITHUB_REPOSITORY_OWNER_ID": "80449295",
+        "GITHUB_REPOSITORY_OWNER_ID": "251731194",
         "GITHUB_RUN_ATTEMPT": "1",
         "GITHUB_RUN_ID": "123456",
         "GITHUB_SHA": commit,
@@ -415,7 +424,7 @@ def test_generator_rejects_release_tokens_before_reading_npm_sources(
             "--repository-id",
             "1346854294",
             "--repository-owner-id",
-            "80449295",
+            "251731194",
             "--workflow-path",
             ".github/workflows/release.yml",
             "--run-id",

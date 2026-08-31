@@ -6,11 +6,11 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Deng-m1/stripe-entitlements-fastapi.git",
+    "url": "git+https://github.com/ToseaAI/stripe-entitlements.git",
     "directory": "typescript"
   },
-  "homepage": "https://github.com/Deng-m1/stripe-entitlements-fastapi/tree/main/typescript#readme",
-  "bugs": "https://github.com/Deng-m1/stripe-entitlements-fastapi/issues",
+  "homepage": "https://github.com/ToseaAI/stripe-entitlements/tree/main/typescript#readme",
+  "bugs": "https://github.com/ToseaAI/stripe-entitlements/issues",
   "keywords": [
     "stripe",
     "typescript",

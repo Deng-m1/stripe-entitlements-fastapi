@@ -11,6 +11,25 @@ def _text(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
+def test_agent_guide_requires_dual_runtime_discovery_before_architecture_claims() -> None:
+    guide = _text("AGENTS.md")
+    readme_entry = _text("README.md").split("## Contents", maxsplit=1)[0]
+
+    for path in (
+        "src/stripe_entitlements/",
+        "typescript/src/",
+        "typescript/src/next/",
+        "web/app/",
+    ):
+        assert path in guide
+        assert path in readme_entry
+
+    assert "independent native TypeScript/Node billing backend" in guide
+    assert "must not be\nused to classify the whole project as Python-only" in guide
+    assert "npm run check" in guide
+    assert "npm run build" in guide
+
+
 def test_source_checkout_guides_build_typescript_before_the_first_cli_call() -> None:
     source_sections = {
         "README.md": "For contributors running this source checkout instead:",
@@ -73,7 +92,7 @@ def test_pinned_git_and_minimum_vendor_paths_are_first_class() -> None:
 
     assert (
         "stripe-entitlements-fastapi[auth] @ "
-        "git+https://github.com/Deng-m1/stripe-entitlements-fastapi.git@FULL_COMMIT_SHA" in adoption
+        "git+https://github.com/ToseaAI/stripe-entitlements.git@FULL_COMMIT_SHA" in adoption
     )
     assert '"@tosea/stripe-entitlements": "file:vendor/stripe-entitlements/typescript"' in adoption
     assert "src/stripe_entitlements/" in adoption

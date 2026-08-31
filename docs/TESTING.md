@@ -7,7 +7,7 @@ production verification. Passing one layer must not be described as passing anot
 The billing-core and Stripe-network parity gate below is bound to clean commit
 `f757fcce4aeb1194b3db04f87579e8f5ef169058`. Its Git tree is byte-identical to
 the subsequent squash-merged `main` commit `89646e5`. GitHub Actions run
-[`33283480383`](https://github.com/Deng-m1/stripe-entitlements-fastapi/actions/runs/33283480383)
+[`33283480383`](https://github.com/ToseaAI/stripe-entitlements/actions/runs/33283480383)
 passed Backend, TypeScript billing core, Container, and Web:
 
 | Layer                   | Exact-head evidence                                                                                                                                      | Boundary                                                                 |

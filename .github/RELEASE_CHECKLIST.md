@@ -207,7 +207,7 @@
       issue, PR, log, or chat, and revoke it/delete the Environment secret immediately
       after a successful Release. A non-latest backpatch needs no token after bootstrap.
 - [ ] Immediately after the first npm publish, configure the package Trusted Publisher
-      as `Deng-m1` / `stripe-entitlements-fastapi` / `release.yml` / `npm-publish`, with
+      as `ToseaAI` / `stripe-entitlements` / `release.yml` / `npm-publish`, with
       `npm publish` permission. Later package publishes must use OIDC; the temporary token
       remains limited to `npm dist-tag` promotion and must be rotated per release. If the
       package is switched to “Require 2FA and disallow tokens,” replace automatic

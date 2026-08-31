@@ -118,7 +118,7 @@ describe("public SEO surface", () => {
       "FAQPage",
     ]);
     expect(json["@graph"]?.[0]?.codeRepository).toBe(
-      "https://github.com/Deng-m1/stripe-entitlements-fastapi",
+      "https://github.com/ToseaAI/stripe-entitlements",
     );
     expect(
       screen.getAllByRole("link", { name: /GitHub|source/i }).map((link) =>
@@ -126,7 +126,7 @@ describe("public SEO surface", () => {
       ),
     ).toEqual(
       expect.arrayContaining([
-        "https://github.com/Deng-m1/stripe-entitlements-fastapi",
+        "https://github.com/ToseaAI/stripe-entitlements",
       ]),
     );
   });

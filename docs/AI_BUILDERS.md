@@ -214,7 +214,7 @@ developer build must not be the deployment's hidden prerequisite.
 This short prompt is enough to start:
 
 ```text
-Use https://github.com/Deng-m1/stripe-entitlements-fastapi as the starting repository.
+Use https://github.com/ToseaAI/stripe-entitlements as the starting repository.
 Build my product UI in web/ and keep its local typescript/ billing dependency. Preserve
 the existing /api, /webhooks/stripe and /health Route Handlers. Use the native TypeScript
 deployment: select vercel.typescript.json explicitly, or copy it to vercel.json only

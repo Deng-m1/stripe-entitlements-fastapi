@@ -4,6 +4,6 @@ title: Stripe Entitlements for FastAPI and TypeScript
 type: software
 authors:
   - name: Tosea
-repository-code: https://github.com/Deng-m1/stripe-entitlements-fastapi
+repository-code: https://github.com/ToseaAI/stripe-entitlements
 license: Apache-2.0
 version: 0.4.0
