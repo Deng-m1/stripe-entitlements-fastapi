@@ -17,8 +17,8 @@ are not published. For a new product, fork or clone the complete repository so `
 can keep its checked-in `file:../typescript` dependency:
 
 ```bash
-git clone https://github.com/Deng-m1/stripe-entitlements-fastapi.git
-cd stripe-entitlements-fastapi
+git clone https://github.com/ToseaAI/stripe-entitlements.git
+cd stripe-entitlements
 git checkout main
 ```
 
@@ -51,7 +51,7 @@ PyPI. Put this shape in `pyproject.toml` or `requirements.txt`, replacing the pl
 with a reviewed 40-character commit SHA:
 
 ```text
-stripe-entitlements-fastapi[auth] @ git+https://github.com/Deng-m1/stripe-entitlements-fastapi.git@FULL_COMMIT_SHA
+stripe-entitlements-fastapi[auth] @ git+https://github.com/ToseaAI/stripe-entitlements.git@FULL_COMMIT_SHA
 ```
 
 `uv lock` or `pip install -r requirements.txt` clones that commit and builds the Python
@@ -96,7 +96,7 @@ subdirectory. Use the complete repository as v0 does, or pin it as a Git submodu
 checkout and point the host at that local package:
 
 ```bash
-git submodule add https://github.com/Deng-m1/stripe-entitlements-fastapi.git vendor/stripe-entitlements
+git submodule add https://github.com/ToseaAI/stripe-entitlements.git vendor/stripe-entitlements
 git -C vendor/stripe-entitlements checkout FULL_COMMIT_SHA
 npm --prefix vendor/stripe-entitlements/typescript ci
 npm --prefix vendor/stripe-entitlements/typescript run build

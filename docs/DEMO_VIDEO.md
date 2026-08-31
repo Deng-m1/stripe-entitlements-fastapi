@@ -105,10 +105,10 @@ The editor:
 By default the outputs are:
 
 ```text
-web/test-results/promo-final/stripe-entitlements-fastapi-promo.mp4
-web/test-results/promo-final/stripe-entitlements-fastapi-promo-poster.png
-web/test-results/promo-final/stripe-entitlements-fastapi-promo-milestones.json
-web/test-results/promo-final/stripe-entitlements-fastapi-promo-scenes.json
+web/test-results/promo-final/stripe-entitlements-promo.mp4
+web/test-results/promo-final/stripe-entitlements-promo-poster.png
+web/test-results/promo-final/stripe-entitlements-promo-milestones.json
+web/test-results/promo-final/stripe-entitlements-promo-scenes.json
 web/test-results/promo-final/review/contact-sheet.jpg
 web/test-results/promo-final/review/report.md
 ```

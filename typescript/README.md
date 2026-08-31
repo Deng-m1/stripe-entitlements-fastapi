@@ -46,10 +46,10 @@ The TypeScript implementation includes:
 The deliberately unsupported scope is the same as the Python implementation: no
 multi-currency, seats/quantities, trials, tax engine, metered billing, mixed arbitrary
 Invoice items, or enabled promotion codes. See the root
-[README](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/main/README.md),
-[invariants](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/main/docs/INVARIANTS.md),
+[README](https://github.com/ToseaAI/stripe-entitlements/blob/main/README.md),
+[invariants](https://github.com/ToseaAI/stripe-entitlements/blob/main/docs/INVARIANTS.md),
 and
-[architecture](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/main/docs/ARCHITECTURE.md)
+[architecture](https://github.com/ToseaAI/stripe-entitlements/blob/main/docs/ARCHITECTURE.md)
 before extending the state machine.
 
 ## Requirements
@@ -67,8 +67,8 @@ clone the repository, optionally pin an exact reviewed commit, and keep `web/` n
 `@tosea/stripe-entitlements: file:../typescript` and builds it before Next.js:
 
 ```bash
-git clone https://github.com/Deng-m1/stripe-entitlements-fastapi.git
-cd stripe-entitlements-fastapi
+git clone https://github.com/ToseaAI/stripe-entitlements.git
+cd stripe-entitlements
 git checkout main
 npm --prefix web ci
 npm --prefix web run dev
@@ -109,7 +109,7 @@ would not find this `package.json`. Pin the repository as a submodule/local chec
 build its TypeScript package, and use a local file dependency:
 
 ```bash
-git submodule add https://github.com/Deng-m1/stripe-entitlements-fastapi.git vendor/stripe-entitlements
+git submodule add https://github.com/ToseaAI/stripe-entitlements.git vendor/stripe-entitlements
 git -C vendor/stripe-entitlements checkout FULL_COMMIT_SHA
 npm --prefix vendor/stripe-entitlements/typescript ci
 npm --prefix vendor/stripe-entitlements/typescript run build
@@ -131,7 +131,7 @@ licenses, together with root `migrations/001_v3_baseline.sql`,
 `migrations/002_stripe_request_snapshots.sql`, and `plans.toml`. Preserve their upstream
 layout: the TypeScript build copies `../migrations/` and `../plans.toml` into `dist/`.
 The exact tree and upgrade procedure are in the
-[source-vendoring guide](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/main/docs/ADOPTION.md#consume-a-pinned-git-source-or-vendored-copy).
+[source-vendoring guide](https://github.com/ToseaAI/stripe-entitlements/blob/main/docs/ADOPTION.md#consume-a-pinned-git-source-or-vendored-copy).
 
 The host-root `npm install --save-exact` command records the local `file:` dependency in
 both `package.json` and `package-lock.json`; without that lockfile update a later
@@ -169,7 +169,7 @@ the resulting file. This exercises the same package boundary intended for npm wi
 depending on the unpublished registry entry:
 
 ```bash
-cd /path/to/stripe-entitlements-fastapi/typescript
+cd /path/to/stripe-entitlements/typescript
 npm ci
 mkdir -p /path/to/your-next-app/vendor
 npm pack --pack-destination /path/to/your-next-app/vendor
@@ -194,7 +194,7 @@ Next.js may use a project `.env.local` for Route Handlers, but the standalone
 as shown below (source `.env.local` instead if that is the file you chose). Never place
 Stripe or database credentials in a `NEXT_PUBLIC_*` variable.
 
-The root [environment requirements table](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/main/README.md#environment-requirements-by-process)
+The root [environment requirements table](https://github.com/ToseaAI/stripe-entitlements/blob/main/README.md#environment-requirements-by-process)
 separates baseline runtime values from Portal, browser Stripe.js, authentication, Cron,
 and SEO settings. Copying the full example is convenient; it does not make every value
 mandatory for every process.
@@ -233,10 +233,10 @@ belong on Node or FastAPI. A Vite frontend calls the deployed billing HTTP API w
 current user's short-lived access token.
 
 The copyable, dependency-free
-[`vite-billing-client.ts`](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/main/examples/browser_adapters/vite-billing-client.ts) example
+[`vite-billing-client.ts`](https://github.com/ToseaAI/stripe-entitlements/blob/main/examples/browser_adapters/vite-billing-client.ts) example
 contains no repository aliases and does not depend on the unpublished npm package. It is
 only a browser transport; the server still verifies identity and remains the source of
-truth. See the [AI-builder guide](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/main/docs/AI_BUILDERS.md#lovable--supabase) for Supabase
+truth. See the [AI-builder guide](https://github.com/ToseaAI/stripe-entitlements/blob/main/docs/AI_BUILDERS.md#lovable--supabase) for Supabase
 wiring and the HttpOnly-cookie BFF boundary.
 
 ## Initialize PostgreSQL
@@ -264,9 +264,9 @@ triggers in the connection's current `search_path`; this release has no
 `public.schema_migrations`, read replica, HTTP database adapter, or browser database
 client. Runtime traffic needs a normal server-side PostgreSQL wire URL to one writable
 primary. Pool sizing and rollout guidance live in
-[Operations](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/main/docs/OPERATIONS.md)
+[Operations](https://github.com/ToseaAI/stripe-entitlements/blob/main/docs/OPERATIONS.md)
 and
-[Distributed deployment](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/main/docs/DISTRIBUTED.md).
+[Distributed deployment](https://github.com/ToseaAI/stripe-entitlements/blob/main/docs/DISTRIBUTED.md).
 
 The TypeScript build packages the canonical root migration bundle and catalog. The full
 concurrency suites default to PostgreSQL 17. PostgreSQL 18 has a separate compatibility
@@ -277,7 +277,7 @@ database simply applies both migrations.
 
 Only adopters with an existing v0.3 application schema need the 001 → 002 writer
 cutover. Follow
-[Operations](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/main/docs/OPERATIONS.md)
+[Operations](https://github.com/ToseaAI/stripe-entitlements/blob/main/docs/OPERATIONS.md)
 for that case; it is not part of a
 new project's database setup.
 
@@ -402,10 +402,10 @@ export const OPTIONS = handle;
 
 Add equivalent explicit handlers for `/webhooks/stripe` and `/health`; a catch-all under
 `/api` cannot receive either path. The matching source-tag examples are
-[`/api/[...billing]`](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/main/tests/npm-next-consumer/app/api/%5B...billing%5D/route.ts),
-[`/webhooks/stripe`](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/main/tests/npm-next-consumer/app/webhooks/stripe/route.ts),
+[`/api/[...billing]`](https://github.com/ToseaAI/stripe-entitlements/blob/main/tests/npm-next-consumer/app/api/%5B...billing%5D/route.ts),
+[`/webhooks/stripe`](https://github.com/ToseaAI/stripe-entitlements/blob/main/tests/npm-next-consumer/app/webhooks/stripe/route.ts),
 and
-[`/health`](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/main/tests/npm-next-consumer/app/health/route.ts).
+[`/health`](https://github.com/ToseaAI/stripe-entitlements/blob/main/tests/npm-next-consumer/app/health/route.ts).
 
 The catalog and migrations are runtime files, not JavaScript imports. Include them in
 Next.js/Vercel output-file tracing:
@@ -432,12 +432,12 @@ trace; an absolute path that exists only on the developer machine is invalid.
 
 Use the Node runtime, never Edge, because Stripe, `pg`, raw webhook bodies, and database
 transactions are server-only. The source repository's
-[`vercel.typescript.json`](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/main/vercel.typescript.json)
+[`vercel.typescript.json`](https://github.com/ToseaAI/stripe-entitlements/blob/main/vercel.typescript.json)
 deploys this as one Next.js service and schedules the two secured Cron routes; it is not
 part of the npm tarball. It assumes the source repository's `web/` + `typescript/`
 monorepo layout; do not copy it unchanged into a standalone root-level Next.js project.
 For that project, let Vercel detect Next.js and add only the Cron entries shown in the
-[Vercel guide](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/main/docs/VERCEL.md#native-typescript-topology). Managed PostgreSQL remains
+[Vercel guide](https://github.com/ToseaAI/stripe-entitlements/blob/main/docs/VERCEL.md#native-typescript-topology). Managed PostgreSQL remains
 required; Vercel state or in-memory locks are not a substitute.
 
 Import the package only from server modules. Do not import it from a Client Component,
@@ -627,7 +627,7 @@ npm run test:real-stripe
 ```
 
 See the matching
-[testing guide](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/main/docs/TESTING.md)
+[testing guide](https://github.com/ToseaAI/stripe-entitlements/blob/main/docs/TESTING.md)
 for the database container and browser E2E runners, which are not bundled in the npm
 tarball.
 
@@ -649,6 +649,6 @@ Use test credentials from a private ignored environment file. Passing mocked tes
 not prove Stripe network behavior; Event polling does not prove signed delivery; and a
 test endpoint does not prove a live production webhook contract. The exact evidence
 boundaries are documented in
-[TESTING](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/main/docs/TESTING.md)
+[TESTING](https://github.com/ToseaAI/stripe-entitlements/blob/main/docs/TESTING.md)
 and
-[BROWSER_E2E](https://github.com/Deng-m1/stripe-entitlements-fastapi/blob/main/docs/BROWSER_E2E.md).
+[BROWSER_E2E](https://github.com/ToseaAI/stripe-entitlements/blob/main/docs/BROWSER_E2E.md).

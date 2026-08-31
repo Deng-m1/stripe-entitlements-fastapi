@@ -4,7 +4,7 @@ set -Eeuo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-video="${1:-$repo_root/web/test-results/promo-final/stripe-entitlements-fastapi-promo.mp4}"
+video="${1:-$repo_root/web/test-results/promo-final/stripe-entitlements-promo.mp4}"
 review_dir="${2:-$repo_root/web/test-results/promo-final/review}"
 scene_manifest="${PROMO_SCENE_MANIFEST:-${video%.mp4}-scenes.json}"
 privacy_times="${PROMO_PRIVACY_REVIEW_TIMES:-22.2 24.8 26.0 26.8 36.7 37.4}"

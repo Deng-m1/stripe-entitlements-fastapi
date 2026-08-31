@@ -1,12 +1,12 @@
-# Stripe Billing, Entitlements & Credit Packs for FastAPI and TypeScript
+# Stripe Billing, Entitlements & Credit Packs for TypeScript and FastAPI
 
-[![CI](https://github.com/Deng-m1/stripe-entitlements-fastapi/actions/workflows/ci.yml/badge.svg)](https://github.com/Deng-m1/stripe-entitlements-fastapi/actions/workflows/ci.yml)
+[![CI](https://github.com/ToseaAI/stripe-entitlements/actions/workflows/ci.yml/badge.svg)](https://github.com/ToseaAI/stripe-entitlements/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12%2B-3776AB.svg)](pyproject.toml)
 [![Node](https://img.shields.io/badge/node-22%2B-339933.svg)](typescript/package.json)
 
 An open-source Stripe billing, SaaS entitlements, and credit-ledger starter with two
-native backend choices: Python/FastAPI or TypeScript/Node/Next.js. Both use PostgreSQL
+native backend choices: TypeScript/Node/Next.js or Python/FastAPI. Both use PostgreSQL
 and the same reviewed accounting contract. It includes monthly/yearly subscriptions, exact fractional
 credits, one-time credit packs, two selectable upgrade policies, Checkout, refunds,
 disputes, SCA recovery, Test Clock renewals, and webhook-authoritative accounting under
@@ -31,8 +31,8 @@ setup and verification steps:
 
 | Goal                                    | Start with                                                                                     |
 | --------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Add billing to a Python/FastAPI service | [Quick start](#quick-start), then [adoption](docs/ADOPTION.md#compose-the-fastapi-application) |
 | Use native Next.js/TypeScript billing   | [TypeScript source, Git vendor, or tarball](typescript/README.md#requirements)                 |
+| Add billing to a Python/FastAPI service | [Quick start](#quick-start), then [adoption](docs/ADOPTION.md#compose-the-fastapi-application) |
 | Deploy real Stripe test-mode staging    | [First real deployment](docs/DEPLOYMENT.md)                                                    |
 | Share a UI-only link without Stripe/DB  | [Credential-free public simulation](docs/AI_BUILDERS.md#publish-a-ui-only-simulation)          |
 
@@ -42,6 +42,17 @@ lists the exact Python/TypeScript source, SQL, catalog, build, and upgrade bound
 The TypeScript source path still uses npm or another compatible JavaScript package
 manager to install its third-party dependencies and produce `dist/`; it only avoids
 downloading this unpublished package from the public registry.
+
+Do not infer the implementation from a historical repository name or from the root
+Python manifest. Both backend directories contain complete server-side billing code, and
+the reference Web includes real Node Route Handlers as well as pages:
+
+```text
+src/stripe_entitlements/   Python/FastAPI backend
+typescript/src/            independent TypeScript/Node backend
+typescript/src/next/       Next.js App Router adapter
+web/app/                   SSR UI, API, webhook, health, metadata, robots and sitemap
+```
 
 ## Contents
 
@@ -470,8 +481,8 @@ The commands below run from a source checkout. For a repeatable deployment, repl
 catalog, migrations, examples, tests, and reference UI:
 
 ```bash
-git clone https://github.com/Deng-m1/stripe-entitlements-fastapi.git
-cd stripe-entitlements-fastapi
+git clone https://github.com/ToseaAI/stripe-entitlements.git
+cd stripe-entitlements
 git checkout main
 ```
 
@@ -729,7 +740,7 @@ not prove the current tree against Stripe's network.
 The billing-core and Stripe-network parity gate is bound to clean commit
 `f757fcce4aeb1194b3db04f87579e8f5ef169058`. Its tree is byte-identical to the
 subsequent squash-merged `main` commit `89646e5`. GitHub Actions run
-[`33283480383`](https://github.com/Deng-m1/stripe-entitlements-fastapi/actions/runs/33283480383)
+[`33283480383`](https://github.com/ToseaAI/stripe-entitlements/actions/runs/33283480383)
 passed Backend, TypeScript billing core, Container, and Web:
 
 - Python passed Ruff, Mypy, the version check, dependency audit, and 1,257 network-free
