@@ -27,12 +27,14 @@
     0 1px 2px rgba(10, 30, 38, 0.05),
     0 14px 36px rgba(10, 30, 38, 0.06);
   --font-body-stack:
-    var(--font-body, "IBM Plex Sans"), "Segoe UI", ui-sans-serif, sans-serif;
+    var(--font-body, "IBM Plex Sans"), "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Segoe UI", ui-sans-serif, sans-serif;
   --font-display-stack:
-    var(--font-display, "Schibsted Grotesk"), var(--font-body-stack);
+    var(--font-display, "Schibsted Grotesk"), "PingFang SC",
+    "Microsoft YaHei", var(--font-body-stack);
   --font-mono-stack:
-    var(--font-mono, "IBM Plex Mono"), ui-monospace, "SFMono-Regular", Menlo,
-    Consolas, monospace;
+    var(--font-mono, "IBM Plex Mono"), "SFMono-Regular", "PingFang SC",
+    "Microsoft YaHei", ui-monospace, Menlo, Consolas, monospace;
   --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
   font-family: var(--font-body-stack);
 }
@@ -65,6 +67,10 @@ a {
 button,
 input {
   font: inherit;
+}
+
+html[lang="zh-CN"] body {
+  letter-spacing: 0;
 }
 
 :where(a, button, input, [tabindex]):focus-visible {
@@ -148,6 +154,38 @@ input {
 
 .header-inner nav a:hover::after {
   transform: scaleX(1);
+}
+
+.locale-toggle {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  display: inline-flex;
+  font-family: var(--font-mono-stack);
+  font-size: 0.72rem;
+  font-weight: 600;
+  height: 32px;
+  justify-content: center;
+  padding: 0;
+  transition: 180ms ease;
+  width: 32px;
+}
+
+.locale-toggle:hover {
+  border-color: var(--accent);
+  color: var(--text);
+  transform: translateY(-1px);
+}
+
+.header-inner nav a[aria-current="page"] {
+  color: var(--text);
+}
+
+.source-icon {
+  display: none;
 }
 
 .demo-notice {
@@ -2637,7 +2675,7 @@ dd {
   }
 }
 
-/* ===== Paper theme: landing route only (brief §4). =====
+/* ===== Paper theme: original landing route (brief §4). =====
    Header, footer, and demo notice live outside the landing wrapper in
    layout.tsx, so the scope is body:has(.landing-page) — pure CSS, no
    client-side pathname logic. App routes (/pricing, /account, /billing/*)
@@ -2754,4 +2792,1190 @@ body:has(.landing-page) .button.ink {
 
 body:has(.landing-page) .button.ink:hover:not(:disabled) {
   background: var(--cta-hover);
+}
+
+/* ===== Stripe landing refresh =====
+   The product page borrows the reference app's warm-paper, calm-blue and
+   floating-chrome grammar. App routes keep their existing operational skin. */
+
+body:has(.stripe-landing) {
+  --bg: #fbfaf7;
+  --surface: #ffffff;
+  --surface-soft: #f4f7fb;
+  --text: #1f2738;
+  --muted: #697386;
+  --line: #dfe3e9;
+  --hairline: #e7e9ed;
+  --accent: #2f78bd;
+  --accent-strong: #205f9b;
+  --accent-soft: #eaf3fc;
+  --cta: #2f78bd;
+  --cta-hover: #205f9b;
+  --paper: #fbfaf7;
+  --paper-raised: #ffffff;
+  --ink: #1f2738;
+  --ink-dim: #697386;
+  --band-ink: #0e1726;
+  background: #fbfaf7;
+}
+
+body:has(.stripe-landing) ::selection {
+  background: rgba(47, 120, 189, 0.2);
+}
+
+body:has(.stripe-landing) :where(a, button, input, [tabindex]):focus-visible {
+  outline-color: rgba(47, 120, 189, 0.58);
+}
+
+body:has(.stripe-landing) .site-header {
+  backdrop-filter: none;
+  background: transparent;
+  border: 0;
+  padding: 12px 0;
+}
+
+body:has(.stripe-landing) .header-inner {
+  backdrop-filter: blur(22px) saturate(165%);
+  background: rgba(255, 255, 253, 0.72);
+  border: 1px solid rgba(180, 190, 203, 0.55);
+  border-radius: 999px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 12px 32px rgba(28, 48, 76, 0.08);
+  max-width: 1000px;
+  min-height: 53px;
+  padding: 0 8px 0 17px;
+}
+
+body:has(.stripe-landing) .brand {
+  color: #253047;
+  font-size: 0.87rem;
+  gap: 9px;
+  letter-spacing: -0.005em;
+}
+
+body:has(.stripe-landing) .brand-mark {
+  background: #2f78bd;
+  border-radius: 6px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    0 4px 9px rgba(38, 102, 165, 0.22);
+  height: 22px;
+  position: relative;
+  width: 22px;
+}
+
+body:has(.stripe-landing) .brand-mark::before,
+body:has(.stripe-landing) .brand-mark::after {
+  background: rgba(255, 255, 255, 0.92);
+  border-radius: 99px;
+  content: "";
+  height: 2px;
+  left: 5px;
+  position: absolute;
+  transform: rotate(-18deg);
+  width: 12px;
+}
+
+body:has(.stripe-landing) .brand-mark::before {
+  top: 7px;
+}
+
+body:has(.stripe-landing) .brand-mark::after {
+  top: 13px;
+}
+
+body:has(.stripe-landing) .brand-suffix {
+  color: #7c8799;
+  font-weight: 500;
+}
+
+body:has(.stripe-landing) .header-inner nav {
+  gap: 4px;
+}
+
+body:has(.stripe-landing) .header-inner nav a {
+  border-radius: 999px;
+  color: #657185;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 9px 12px;
+}
+
+body:has(.stripe-landing) .header-inner nav a::after {
+  display: none;
+}
+
+body:has(.stripe-landing) .header-inner nav a:hover {
+  background: rgba(64, 91, 125, 0.06);
+  color: #28364b;
+}
+
+body:has(.stripe-landing) .header-inner nav .header-source {
+  background: #2f78bd;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.23),
+    0 6px 14px -8px rgba(37, 98, 159, 0.75);
+  color: #fff;
+  padding-inline: 15px;
+}
+
+body:has(.stripe-landing) .header-inner nav .header-source:hover {
+  background: #205f9b;
+  color: #fff;
+}
+
+body:has(.stripe-landing) .demo-notice {
+  background: #f4f6f8;
+  border-block: 1px solid #e1e5ea;
+  color: #7a8494;
+  font-family: var(--font-mono-stack);
+  font-size: 0.62rem;
+  font-weight: 500;
+  letter-spacing: 0.025em;
+  padding: 8px 20px;
+}
+
+body:has(.stripe-landing) .demo-notice::before {
+  background: #d3a347;
+  height: 6px;
+  width: 6px;
+}
+
+body:has(.stripe-landing) .page {
+  max-width: none;
+  padding-block: 0;
+  padding-inline: 0;
+}
+
+body:has(.stripe-landing) > .footer {
+  background: #fbfaf7;
+  border-color: #e0e4e9;
+  color: #8992a0;
+  font-size: 0.72rem;
+  max-width: none;
+  padding-inline: max(24px, calc((100vw - 1104px) / 2));
+}
+
+body:has(.stripe-landing) > .footer .footer-brand {
+  color: #3b475b;
+}
+
+@media (max-width: 680px) {
+  body:has(.stripe-landing) .site-header {
+    padding: 8px 0;
+  }
+
+  body:has(.stripe-landing) .header-inner {
+    margin-inline: 10px;
+    min-height: 49px;
+    padding-left: 12px;
+  }
+
+  body:has(.stripe-landing) .header-inner nav a {
+    padding-inline: 9px;
+  }
+
+  body:has(.stripe-landing) .header-inner nav a:nth-child(2) {
+    display: initial;
+  }
+
+  body:has(.stripe-landing) .header-inner nav .nav-overview {
+    display: none;
+  }
+
+  body:has(.stripe-landing) .demo-notice {
+    font-size: 0.55rem;
+    line-height: 1.45;
+    padding: 7px 13px;
+  }
+}
+
+@media (max-width: 460px) {
+  body:has(.stripe-landing) .brand {
+    font-size: 0.8rem;
+  }
+}
+
+/* ===== Shared product-app surface =====
+   Pricing, account, and billing result routes use the landing page's warm
+   paper + calm-blue system while keeping their operational DOM contracts. */
+
+body:has(.app-page) {
+  --bg: #fbfaf7;
+  --surface: #ffffff;
+  --surface-soft: #f3f6fa;
+  --text: #1f2738;
+  --muted: #697386;
+  --line: #dfe3e9;
+  --hairline: #e7e9ed;
+  --accent: #2f78bd;
+  --accent-strong: #205f9b;
+  --accent-soft: #eaf3fc;
+  --cta: #2f78bd;
+  --cta-hover: #205f9b;
+  --radius-lg: 22px;
+  --radius-md: 14px;
+  --radius-sm: 999px;
+  --shadow-card:
+    0 1px 1px rgba(27, 42, 64, 0.03),
+    0 20px 55px rgba(41, 58, 82, 0.07);
+  background:
+    radial-gradient(circle at 90% 4%, rgba(92, 146, 204, 0.11), transparent 29rem),
+    radial-gradient(circle at 8% 28%, rgba(201, 218, 238, 0.18), transparent 25rem),
+    #fbfaf7;
+  color: var(--text);
+}
+
+body:has(.app-page) ::selection {
+  background: rgba(47, 120, 189, 0.2);
+}
+
+body:has(.app-page) :where(a, button, input, [tabindex]):focus-visible {
+  outline-color: rgba(47, 120, 189, 0.58);
+}
+
+body:has(.app-page) .site-header {
+  backdrop-filter: none;
+  background: transparent;
+  border: 0;
+  padding: 12px 0;
+}
+
+body:has(.app-page) .header-inner {
+  backdrop-filter: blur(22px) saturate(165%);
+  background: rgba(255, 255, 253, 0.76);
+  border: 1px solid rgba(180, 190, 203, 0.58);
+  border-radius: 999px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.94),
+    0 12px 32px rgba(28, 48, 76, 0.08);
+  max-width: 1000px;
+  min-height: 53px;
+  padding: 0 8px 0 17px;
+}
+
+body:has(.app-page) .brand {
+  color: #253047;
+  font-size: 0.87rem;
+  gap: 9px;
+  letter-spacing: -0.005em;
+}
+
+body:has(.app-page) .brand-mark {
+  background: #2f78bd;
+  border-radius: 6px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    0 4px 9px rgba(38, 102, 165, 0.22);
+  height: 22px;
+  position: relative;
+  width: 22px;
+}
+
+body:has(.app-page) .brand-mark::before,
+body:has(.app-page) .brand-mark::after {
+  background: rgba(255, 255, 255, 0.92);
+  border-radius: 99px;
+  content: "";
+  height: 2px;
+  left: 5px;
+  position: absolute;
+  transform: rotate(-18deg);
+  width: 12px;
+}
+
+body:has(.app-page) .brand-mark::before {
+  top: 7px;
+}
+
+body:has(.app-page) .brand-mark::after {
+  top: 13px;
+}
+
+body:has(.app-page) .brand-suffix {
+  color: #7c8799;
+  font-weight: 500;
+}
+
+body:has(.app-page) .header-inner nav {
+  gap: 3px;
+}
+
+body:has(.app-page) .header-inner nav a {
+  border-radius: 999px;
+  color: #657185;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 9px 12px;
+}
+
+body:has(.app-page) .header-inner nav a::after {
+  display: none;
+}
+
+body:has(.app-page) .header-inner nav a:hover,
+body:has(.app-page) .header-inner nav a[aria-current="page"] {
+  background: rgba(64, 91, 125, 0.07);
+  color: #28364b;
+}
+
+body:has(.app-page) .header-inner nav .header-source {
+  background: #2f78bd;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.23),
+    0 6px 14px -8px rgba(37, 98, 159, 0.75);
+  color: #fff;
+  padding-inline: 15px;
+}
+
+body:has(.app-page) .header-inner nav .header-source:hover {
+  background: #205f9b;
+  color: #fff;
+}
+
+body:has(.app-page) .locale-toggle,
+body:has(.stripe-landing) .locale-toggle {
+  background: rgba(64, 91, 125, 0.055);
+  border: 0;
+  color: #5f6c80;
+  height: 31px;
+  margin-left: 2px;
+  width: 31px;
+}
+
+body:has(.app-page) .demo-notice {
+  background: #f4f6f8;
+  border-block: 1px solid #e1e5ea;
+  color: #7a8494;
+  font-family: var(--font-mono-stack);
+  font-size: 0.62rem;
+  font-weight: 500;
+  letter-spacing: 0.025em;
+  padding: 8px 20px;
+}
+
+body:has(.app-page) .demo-notice::before {
+  background: #d3a347;
+  border-radius: 50%;
+  content: "";
+  display: inline-block;
+  height: 6px;
+  margin-right: 9px;
+  width: 6px;
+}
+
+body:has(.app-page) .page {
+  max-width: 1180px;
+  min-height: calc(100vh - 160px);
+  padding-block: 50px 96px;
+}
+
+body:has(.app-page) > .footer {
+  background: #fbfaf7;
+  border-color: #e0e4e9;
+  color: #8992a0;
+  font-size: 0.72rem;
+  max-width: none;
+  padding-inline: max(24px, calc((100vw - 1104px) / 2));
+}
+
+body:has(.app-page) > .footer .footer-brand {
+  color: #3b475b;
+}
+
+.app-page .eyebrow {
+  color: #2f78bd;
+  font-family: var(--font-mono-stack);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.11em;
+}
+
+.app-page .button {
+  border-radius: 999px;
+  min-height: 43px;
+  padding-inline: 19px;
+}
+
+.app-page .button.primary {
+  background: #2f78bd;
+}
+
+.app-page .button.primary:hover:not(:disabled) {
+  background: #205f9b;
+  box-shadow: 0 12px 24px rgba(47, 120, 189, 0.2);
+}
+
+.app-page .button.ghost {
+  border: 1px solid #d7dde5;
+  color: #526075;
+}
+
+.app-page .button.ghost:hover:not(:disabled) {
+  background: #f4f7fb;
+  border-color: #aebdce;
+}
+
+/* Pricing: editorial header, verified catalog artifact, and three-tier rail. */
+
+.pricing-page .pricing-hero {
+  align-items: stretch;
+  display: grid;
+  gap: 34px;
+  grid-template-columns: minmax(0, 1fr) 235px;
+  margin: 0 0 26px;
+  max-width: none;
+  text-align: left;
+}
+
+.pricing-page .pricing-hero-copy {
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0.88)),
+    radial-gradient(#bdc8d6 0.8px, transparent 0.8px);
+  background-size: auto, 17px 17px;
+  border: 1px solid #e0e4e9;
+  border-radius: 28px;
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+  padding: 45px 48px 41px;
+  position: relative;
+}
+
+.pricing-page .pricing-hero-copy::after {
+  background: #2f78bd;
+  content: "";
+  height: 4px;
+  left: 48px;
+  position: absolute;
+  top: 0;
+  width: 78px;
+}
+
+.pricing-page .pricing-hero h1 {
+  font-size: clamp(2.35rem, 5vw, 4.7rem);
+  letter-spacing: -0.052em;
+  line-height: 0.98;
+  margin-bottom: 20px;
+  max-width: 850px;
+}
+
+.pricing-page .pricing-hero-copy > p:last-child {
+  color: #697386;
+  line-height: 1.7;
+  margin: 0;
+  max-width: 650px;
+}
+
+.pricing-page .pricing-hero-proof {
+  background:
+    linear-gradient(145deg, rgba(47, 120, 189, 0.18), transparent 45%),
+    #111b2c;
+  border: 1px solid #25334a;
+  border-radius: 28px;
+  box-shadow: 0 28px 65px rgba(15, 29, 50, 0.16);
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-height: 292px;
+  overflow: hidden;
+  padding: 26px;
+  position: relative;
+}
+
+.pricing-page .pricing-hero-proof::before {
+  background:
+    linear-gradient(90deg, transparent 49%, rgba(255, 255, 255, 0.08) 50%, transparent 51%),
+    linear-gradient(transparent 49%, rgba(255, 255, 255, 0.08) 50%, transparent 51%);
+  background-size: 38px 38px;
+  content: "";
+  inset: 0;
+  mask-image: linear-gradient(to bottom, #000, transparent 70%);
+  position: absolute;
+}
+
+.pricing-page .pricing-hero-proof span,
+.pricing-page .pricing-hero-proof small,
+.pricing-page .pricing-hero-proof i {
+  font-family: var(--font-mono-stack);
+  position: relative;
+}
+
+.pricing-page .pricing-hero-proof span {
+  color: #92a1b7;
+  font-size: 0.62rem;
+  letter-spacing: 0.13em;
+}
+
+.pricing-page .pricing-hero-proof strong {
+  font-family: var(--font-display-stack);
+  font-size: 4rem;
+  letter-spacing: -0.07em;
+  line-height: 1;
+  margin-top: 10px;
+  position: relative;
+}
+
+.pricing-page .pricing-hero-proof small {
+  color: #b5c1d0;
+  font-size: 0.68rem;
+  margin-top: 4px;
+}
+
+.pricing-page .pricing-hero-proof i {
+  align-self: flex-start;
+  background: rgba(113, 204, 160, 0.14);
+  border: 1px solid rgba(113, 204, 160, 0.25);
+  border-radius: 999px;
+  color: #83ddb2;
+  font-size: 0.55rem;
+  font-style: normal;
+  letter-spacing: 0.09em;
+  margin-top: 20px;
+  padding: 6px 9px;
+}
+
+.pricing-page .interval-toggle {
+  background: rgba(234, 239, 245, 0.9);
+  border-color: #d9e0e8;
+  margin-bottom: 34px;
+  padding: 5px;
+}
+
+.pricing-page .interval-toggle button {
+  min-height: 40px;
+  padding-inline: 20px;
+}
+
+.pricing-page .interval-toggle button.active {
+  box-shadow: 0 5px 16px rgba(44, 63, 88, 0.11);
+}
+
+.pricing-page .plan-grid {
+  gap: 14px;
+}
+
+.pricing-page .plan-card {
+  border-color: #e0e4e9;
+  border-radius: 24px;
+  gap: 23px;
+  min-height: 530px;
+  overflow: hidden;
+  padding: 30px;
+  position: relative;
+}
+
+.pricing-page .plan-card::before {
+  color: #ccd3dd;
+  content: "0" counter(plan-card);
+  counter-increment: plan-card;
+  font-family: var(--font-mono-stack);
+  font-size: 0.63rem;
+  letter-spacing: 0.1em;
+  position: absolute;
+  right: 24px;
+  top: 22px;
+}
+
+.pricing-page .plan-grid {
+  counter-reset: plan-card;
+}
+
+.pricing-page .plan-card:hover {
+  border-color: #a8bfd7;
+  box-shadow: 0 26px 64px rgba(38, 60, 89, 0.1);
+  transform: translateY(-4px);
+}
+
+.pricing-page .plan-card.pricing-featured {
+  background:
+    radial-gradient(circle at 100% 0, rgba(92, 152, 215, 0.15), transparent 15rem),
+    #f1f6fc;
+  border-color: #9db9d7;
+  box-shadow: 0 24px 62px rgba(42, 91, 143, 0.12);
+}
+
+.pricing-page .pricing-flag {
+  background: #2f78bd;
+  right: 22px;
+  top: 50px;
+}
+
+.pricing-page .plan-card h2 {
+  font-size: 1.8rem;
+  letter-spacing: -0.035em;
+}
+
+.pricing-page .price-block strong,
+.pricing-page .credit-pack-amount,
+.account-page .credit-balance,
+.app-page dd,
+.billing-result code {
+  font-family: var(--font-mono-stack);
+}
+
+.pricing-page .price-block strong {
+  font-size: 2.5rem;
+  font-weight: 600;
+}
+
+.pricing-page .entitlement-list li {
+  border-top: 1px solid rgba(209, 216, 225, 0.72);
+  padding-top: 10px;
+}
+
+.pricing-page .credit-pack-section {
+  background:
+    radial-gradient(circle at 90% 5%, rgba(72, 141, 209, 0.22), transparent 28rem),
+    #111b2c;
+  border-radius: 30px;
+  color: #f7f9fc;
+  margin-top: 64px;
+  overflow: hidden;
+  padding: 48px;
+  position: relative;
+}
+
+.pricing-page .credit-pack-intro > p:last-child {
+  color: #aeb9c9;
+}
+
+.pricing-page .credit-pack-section .credit-pack-card {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.13);
+  border-radius: 20px;
+  box-shadow: none;
+  color: #f8faff;
+  min-height: 320px;
+}
+
+.pricing-page .credit-pack-card > p:not(.eyebrow, .credit-pack-amount) {
+  color: #aeb9c9;
+}
+
+.pricing-page .credit-pack-card .credit-pack-amount {
+  color: #fff;
+}
+
+.pricing-page .credit-pack-card .button.ghost {
+  background: #fff;
+  border-color: #fff;
+  color: #1e2a3e;
+}
+
+.pricing-page .credit-pack-section .pricing-footnote {
+  color: #91a0b4;
+}
+
+.app-page.pricing-page .pricing-compare {
+  background: #fff;
+  border: 1px solid #e0e4e9;
+  border-radius: 28px;
+  box-shadow: var(--shadow-card);
+  margin-top: 24px;
+  padding: 42px;
+}
+
+.pricing-page .comparison-table-wrap {
+  border-radius: 16px;
+  overflow: auto;
+}
+
+/* Account: a compact read-model dashboard rather than a generic form page. */
+
+.account-page .account-hero {
+  align-items: stretch;
+  background:
+    radial-gradient(circle at 88% 0, rgba(59, 132, 204, 0.27), transparent 25rem),
+    #111b2c;
+  border: 1px solid #28364e;
+  border-radius: 30px;
+  box-shadow: 0 30px 70px rgba(24, 38, 60, 0.15);
+  color: #f8faff;
+  display: grid;
+  gap: 40px;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  margin: 0 0 22px;
+  max-width: none;
+  overflow: hidden;
+  padding: 48px;
+  position: relative;
+}
+
+.account-page .account-hero h1 {
+  font-size: clamp(2.35rem, 5vw, 4.35rem);
+  letter-spacing: -0.055em;
+  line-height: 1;
+  margin-bottom: 18px;
+}
+
+.account-page .account-hero-copy > p:last-child {
+  color: #aeb9c9;
+  line-height: 1.7;
+  margin: 0;
+  max-width: 650px;
+}
+
+.account-page .account-hero-status {
+  align-self: center;
+  background: rgba(255, 255, 255, 0.065);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+  min-height: 190px;
+  padding: 24px;
+}
+
+.account-page .account-hero-status span,
+.account-page .account-hero-status small,
+.account-page .account-hero-status i {
+  font-family: var(--font-mono-stack);
+}
+
+.account-page .account-hero-status span {
+  color: #8190a6;
+  font-size: 0.58rem;
+  letter-spacing: 0.12em;
+}
+
+.account-page .account-hero-status strong {
+  font-family: var(--font-display-stack);
+  font-size: 1.45rem;
+  letter-spacing: -0.03em;
+  margin-top: auto;
+}
+
+.account-page .account-hero-status small {
+  color: #aab6c6;
+  font-size: 0.62rem;
+  margin-top: 4px;
+}
+
+.account-page .account-hero-status i {
+  align-self: flex-start;
+  background: rgba(114, 216, 166, 0.14);
+  border-radius: 999px;
+  color: #85ddb3;
+  font-size: 0.59rem;
+  font-style: normal;
+  margin-top: 18px;
+  padding: 5px 8px;
+}
+
+.account-page .account-grid {
+  gap: 14px;
+}
+
+.account-page .account-card,
+.account-page .entitlements-section {
+  border-color: #e0e4e9;
+  border-radius: 24px;
+  padding: 30px;
+}
+
+.account-page .account-card h2 {
+  letter-spacing: -0.04em;
+}
+
+.account-page .credit-balance {
+  color: #2f78bd !important;
+  font-size: clamp(3rem, 7vw, 4.8rem);
+  font-weight: 500;
+}
+
+.account-page .fact-list div {
+  align-items: baseline;
+  display: flex;
+  gap: 18px;
+  justify-content: space-between;
+}
+
+.account-page .fact-list dd {
+  max-width: 60%;
+  text-align: right;
+}
+
+.account-page .pending-banner {
+  background: #fff8e9;
+  border-color: #edd9ad;
+  border-left: 4px solid #d19b3e;
+  border-radius: 18px;
+  box-shadow: none;
+}
+
+.account-page .entitlements-section {
+  margin-top: 14px;
+}
+
+.account-page .entitlement-card {
+  background: #f5f7fa;
+  border: 0;
+  border-radius: 16px;
+  min-height: 150px;
+}
+
+.account-page .entitlement-card strong {
+  color: #26354b;
+  font-family: var(--font-mono-stack);
+  font-size: 1.08rem;
+}
+
+/* Result, loading, and dialog states share one deliberate system. */
+
+.state-page,
+.billing-result {
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0.94)),
+    radial-gradient(#bfc9d5 0.8px, transparent 0.8px);
+  background-size: auto, 18px 18px;
+  border-color: #dfe4ea;
+  border-radius: 28px;
+  box-shadow: 0 30px 80px rgba(28, 45, 68, 0.11);
+  margin-block: 5vh;
+  max-width: 780px;
+  min-height: 430px;
+  overflow: hidden;
+  padding: 60px;
+  position: relative;
+}
+
+.state-page::before,
+.billing-result::before {
+  background: #2f78bd;
+  content: "";
+  height: 4px;
+  left: 50%;
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  width: 86px;
+}
+
+.billing-result.error-card::before,
+.state-page.error-card::before {
+  background: #c34d48;
+}
+
+.billing-result .success-mark {
+  border-radius: 18px;
+  height: 64px;
+  width: 64px;
+}
+
+.billing-result h1 {
+  font-size: clamp(2rem, 5vw, 3.25rem);
+  letter-spacing: -0.045em;
+}
+
+.billing-result code {
+  background: #f1f4f8;
+  border: 1px solid #dce2e9;
+  border-radius: 999px;
+  color: #5d6b7f;
+  font-size: 0.74rem;
+  padding: 7px 12px;
+}
+
+.dialog-backdrop {
+  backdrop-filter: blur(12px);
+  background: rgba(14, 25, 42, 0.64);
+}
+
+.dialog {
+  border: 1px solid rgba(211, 219, 228, 0.85);
+  border-radius: 26px;
+  box-shadow: 0 36px 100px rgba(8, 18, 32, 0.32);
+  padding: 34px;
+}
+
+.dialog .timing-panel,
+.dialog .confirmation {
+  border-radius: 16px;
+}
+
+@media (max-width: 850px) {
+  .pricing-page .pricing-hero,
+  .account-page .account-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .pricing-page .pricing-hero-proof {
+    min-height: 220px;
+  }
+
+  .account-page .account-hero-status {
+    min-height: 170px;
+  }
+
+  .pricing-page .credit-pack-section,
+  .pricing-page .pricing-compare {
+    padding: 32px;
+  }
+}
+
+@media (max-width: 680px) {
+  body:has(.app-page) .site-header {
+    padding: 8px 0;
+  }
+
+  body:has(.app-page) .header-inner {
+    margin-inline: 10px;
+    min-height: 49px;
+    padding-left: 12px;
+  }
+
+  body:has(.app-page) .header-inner nav a {
+    padding-inline: 9px;
+  }
+
+  body:has(.app-page) .header-inner nav .nav-overview {
+    display: none;
+  }
+
+  body:has(.app-page) .demo-notice {
+    font-size: 0.55rem;
+    line-height: 1.45;
+    padding: 7px 13px;
+  }
+
+  body:has(.app-page) .page {
+    padding-block: 30px 70px;
+  }
+
+  .pricing-page .pricing-hero-copy,
+  .account-page .account-hero {
+    padding: 34px 28px;
+  }
+
+  .pricing-page .pricing-hero-copy::after {
+    left: 28px;
+  }
+
+  .pricing-page .credit-pack-section,
+  .pricing-page .pricing-compare {
+    border-radius: 24px;
+    padding: 28px 22px;
+  }
+
+  .account-page .account-card,
+  .account-page .entitlements-section {
+    padding: 24px;
+  }
+
+  .state-page,
+  .billing-result {
+    min-height: 390px;
+    padding: 42px 25px;
+  }
+}
+
+@media (max-width: 460px) {
+  body:has(.app-page) .brand,
+  body:has(.stripe-landing) .brand {
+    font-size: 0.78rem;
+  }
+
+  body:has(.app-page) .header-inner nav .header-source,
+  body:has(.stripe-landing) .header-inner nav .header-source {
+    align-items: center;
+    display: inline-flex;
+    height: 31px;
+    justify-content: center;
+    padding: 0;
+    width: 31px;
+  }
+
+  body:has(.app-page) .header-source .source-label,
+  body:has(.stripe-landing) .header-source .source-label {
+    display: none;
+  }
+
+  body:has(.app-page) .header-source .source-icon,
+  body:has(.stripe-landing) .header-source .source-icon {
+    display: inline;
+  }
+
+  .pricing-page .pricing-hero h1,
+  .account-page .account-hero h1 {
+    font-size: 2.45rem;
+  }
+
+  .pricing-page .pricing-hero-copy,
+  .account-page .account-hero {
+    border-radius: 22px;
+    padding: 30px 22px;
+  }
+
+  .pricing-page .pricing-hero-proof {
+    border-radius: 22px;
+    min-height: 190px;
+  }
+
+  .pricing-page .interval-toggle button {
+    padding-inline: 13px;
+  }
+
+  .pricing-page .plan-card {
+    min-height: 0;
+    padding: 25px 22px;
+  }
+
+  .account-page .fact-list div {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .account-page .fact-list dd {
+    max-width: none;
+    text-align: left;
+  }
+}
+
+/* Simulation status — a subordinate, self-contained environment indicator. */
+body:has(.stripe-landing) .demo-notice,
+body:has(.app-page) .demo-notice {
+  align-items: center;
+  backdrop-filter: blur(18px) saturate(150%);
+  background: rgba(255, 255, 253, 0.82);
+  border: 1px solid rgba(190, 200, 212, 0.62);
+  border-radius: 15px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.94),
+    0 8px 24px rgba(35, 53, 78, 0.06);
+  color: #758196;
+  display: grid;
+  font-family: var(--font-body-stack);
+  font-size: 0.68rem;
+  font-weight: 500;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  letter-spacing: 0;
+  line-height: 1.35;
+  margin: 0 auto 8px;
+  max-width: 1000px;
+  padding: 7px 8px 7px 11px;
+  text-align: left;
+  width: calc(100% - 48px);
+}
+
+body:has(.stripe-landing) .demo-notice::before,
+body:has(.app-page) .demo-notice::before {
+  content: none;
+}
+
+.demo-status {
+  align-items: center;
+  border-right: 1px solid #e1e6ec;
+  color: #48566b;
+  display: inline-flex;
+  font-family: var(--font-mono-stack);
+  font-size: 0.61rem;
+  font-weight: 600;
+  gap: 8px;
+  letter-spacing: 0.075em;
+  padding-right: 11px;
+  white-space: nowrap;
+}
+
+.demo-status i {
+  background: #d6a544;
+  border-radius: 50%;
+  box-shadow: 0 0 0 4px rgba(214, 165, 68, 0.12);
+  flex: none;
+  height: 6px;
+  width: 6px;
+}
+
+.demo-copy {
+  align-items: baseline;
+  display: flex;
+  gap: 5px;
+  min-width: 0;
+}
+
+.demo-scope {
+  color: #98a1af;
+}
+
+body:has(.stripe-landing) .demo-reset,
+body:has(.app-page) .demo-reset {
+  align-items: center;
+  background: #f0f3f7;
+  border: 1px solid #e0e5eb;
+  border-radius: 10px;
+  color: #5f6d80;
+  display: inline-flex;
+  font-family: var(--font-body-stack);
+  font-size: 0.65rem;
+  font-weight: 650;
+  gap: 6px;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 10px;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
+  white-space: nowrap;
+}
+
+body:has(.stripe-landing) .demo-reset:hover,
+body:has(.app-page) .demo-reset:hover {
+  background: #e8eef5;
+  border-color: #cad5e1;
+  color: #2f78bd;
+  transform: translateY(-1px);
+}
+
+.demo-reset-icon {
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+@media (max-width: 680px) {
+  body:has(.stripe-landing) .demo-notice,
+  body:has(.app-page) .demo-notice {
+    gap: 7px 10px;
+    grid-template-areas:
+      "status reset"
+      "copy copy";
+    grid-template-columns: minmax(0, 1fr) auto;
+    margin-bottom: 7px;
+    padding: 9px 9px 10px 11px;
+    width: calc(100% - 20px);
+  }
+
+  .demo-status {
+    border-right: 0;
+    grid-area: status;
+    padding-right: 0;
+  }
+
+  .demo-copy {
+    display: block;
+    font-size: 0.64rem;
+    grid-area: copy;
+    line-height: 1.48;
+    padding-left: 14px;
+  }
+
+  .demo-scope {
+    display: block;
+  }
+
+  body:has(.stripe-landing) .demo-reset,
+  body:has(.app-page) .demo-reset {
+    grid-area: reset;
+    min-height: 28px;
+    padding: 0;
+    width: 28px;
+  }
+
+  .demo-reset-label {
+    display: none;
+  }
 }

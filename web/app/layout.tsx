@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { IBM_Plex_Mono, IBM_Plex_Sans, Schibsted_Grotesk } from "next/font/google";
 import type { ReactNode } from "react";
 import { DemoNotice } from "@/components/DemoNotice";
+import { LocaleProvider } from "@/components/LocaleProvider";
+import { SiteFooter } from "@/components/SiteFooter";
 import { SiteHeader } from "@/components/SiteHeader";
 import {
   absoluteSiteUrl,
@@ -109,15 +111,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       lang="en"
     >
       <body>
-        <SiteHeader />
-        <DemoNotice />
-        <main className="shell page">{children}</main>
-        <footer className="shell footer">
-          <span className="footer-brand">{SITE_NAME}</span>
-          <span>
-            Reference UI only. Stripe and webhook state remain server-authoritative.
-          </span>
-        </footer>
+        <LocaleProvider>
+          <SiteHeader />
+          <DemoNotice />
+          <main className="shell page">{children}</main>
+          <SiteFooter />
+        </LocaleProvider>
       </body>
     </html>
   );

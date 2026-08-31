@@ -1,7 +1,11 @@
 import type { BillingInterval, CatalogPlan, Price } from "@/lib/types";
 
-export function formatMoney(amount: number, currency: string): string {
-  return new Intl.NumberFormat("en-US", {
+export function formatMoney(
+  amount: number,
+  currency: string,
+  locale = "en-US",
+): string {
+  return new Intl.NumberFormat(locale, {
     style: "currency",
     currency,
     minimumFractionDigits: 2,
@@ -38,9 +42,9 @@ export function annualSavingsPercent(plan: CatalogPlan): number | null {
   return Math.round((savings / monthlyTotal) * 100);
 }
 
-export function formatDate(value: string | null): string {
-  if (!value) return "Not scheduled";
-  return new Intl.DateTimeFormat("en-US", {
+export function formatDate(value: string | null, locale = "en-US"): string {
+  if (!value) return locale.toLowerCase().startsWith("zh") ? "未安排" : "Not scheduled";
+  return new Intl.DateTimeFormat(locale, {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));

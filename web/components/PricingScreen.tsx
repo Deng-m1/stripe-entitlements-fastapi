@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ChangePreviewDialog } from "@/components/ChangePreviewDialog";
 import { ErrorState, LoadingState } from "@/components/AsyncState";
+import { useLocale } from "@/components/LocaleProvider";
 import {
   creditAmountFromEntitlement,
   formatCreditDecimal,
@@ -49,12 +50,15 @@ interface PricingScreenProps {
   internalRedirect?: Redirect;
 }
 
+type Translate = ReturnType<typeof useLocale>["t"];
+
 export function PricingScreen({
   api = getBillingApi(),
   billingRedirect = browserBillingRedirect,
   initialCatalog,
   internalRedirect = browserInternalRedirect,
 }: PricingScreenProps) {
+  const { numberLocale, t } = useLocale();
   const [interval, setInterval] = useState<BillingInterval>("month");
   const [catalog, setCatalog] = useState<CatalogResponse | null>(
     initialCatalog ?? null,
@@ -220,8 +224,8 @@ export function PricingScreen({
       setPaymentUrl(null);
       setMessage(
         publicSimulationMode
-          ? "The browser-local simulation records the pending period-end change."
-          : "The server accepted the request. The account API reports the pending period-end change.",
+          ? t("The browser-local simulation records the pending period-end change.")
+          : t("The server accepted the request. The account API reports the pending period-end change."),
       );
     } catch (caught) {
       setPreviewError(errorMessage(caught));
@@ -251,29 +255,38 @@ export function PricingScreen({
     maxSavingsPercent === null
       ? null
       : savingsAreUniform
-        ? `Save ${maxSavingsPercent}%`
-        : `Save up to ${maxSavingsPercent}%`;
+        ? t("Save {{percent}}%", { percent: maxSavingsPercent })
+        : t("Save up to {{percent}}%", { percent: maxSavingsPercent });
   const featuredPlanKey =
     sortedPlans.length >= 3
       ? sortedPlans[Math.floor(sortedPlans.length / 2)].key
       : null;
-  const compareRows = comparisonRows(sortedPlans);
+  const compareRows = comparisonRows(sortedPlans, t, numberLocale);
 
   return (
-    <div className="pricing-page">
+    <div className="app-page pricing-page">
       <style>{pricingLocalStyles}</style>
-      <section className="hero">
-        <p className="eyebrow">Explicit billing, structured entitlements</p>
-        <h1>Choose a plan without hiding the billing consequences.</h1>
-        <p>
-          Plan identity comes from stable catalog keys. Prices are display and billing
-          data—not tier detection logic.
-        </p>
+      <section className="hero pricing-hero">
+        <div className="pricing-hero-copy">
+          <p className="eyebrow">{t("Explicit billing, structured entitlements")}</p>
+          <h1>{t("Choose a plan without hiding the billing consequences.")}</h1>
+          <p>
+            {t(
+              "Plan identity comes from stable catalog keys. Prices are display and billing data—not tier detection logic.",
+            )}
+          </p>
+        </div>
+        <div aria-hidden="true" className="pricing-hero-proof">
+          <span>{t("CATALOG / LIVE")}</span>
+          <strong>3 × 2</strong>
+          <small>{t("plans · intervals")}</small>
+          <i>{t("WEBHOOK VERIFIED")}</i>
+        </div>
       </section>
 
       <div
         className="interval-toggle"
-        aria-label="Billing interval"
+        aria-label={t("Billing interval")}
         role="group"
       >
         {(["month", "year"] as const).map((value) => (
@@ -284,7 +297,7 @@ export function PricingScreen({
             onClick={() => setInterval(value)}
             type="button"
           >
-            {value === "month" ? "Monthly" : "Yearly"}
+            {value === "month" ? t("Monthly") : t("Yearly")}
             {value === "year" && yearlyToggleBadge ? (
               <span aria-hidden="true" className="toggle-save">
                 {yearlyToggleBadge}
@@ -297,14 +310,14 @@ export function PricingScreen({
       {message ? <p className="success-banner" role="status">{message}</p> : null}
       {!account && !error ? (
         <p className="account-loading" role="status">
-          Plans are ready. Loading the authenticated account state…
+          {t("Plans are ready. Loading the authenticated account state…")}
         </p>
       ) : null}
       {error ? (
         <div className="inline-error" role="alert">
           <span>{error}</span>
           <button className="button ghost" onClick={() => void load()} type="button">
-            Try again
+            {t("Try again")}
           </button>
         </div>
       ) : null}
@@ -336,20 +349,26 @@ export function PricingScreen({
               className={featured ? "plan-card pricing-featured" : "plan-card"}
               key={plan.key}
             >
-              {featured ? <p className="pricing-flag">Recommended</p> : null}
+              {featured ? <p className="pricing-flag">{t("Recommended")}</p> : null}
               <div>
-                <p className="eyebrow">Plan key: {plan.key}</p>
+                <p className="eyebrow">{t("Plan key: {{key}}", { key: plan.key })}</p>
                 <h2>{plan.name}</h2>
-                <p>{plan.description}</p>
+                <p>{t(plan.description)}</p>
               </div>
               <div className="price-block">
                 {interval === "month" ? (
                   <>
-                    <strong>{formatMoney(selectedPrice.unit_amount, selectedPrice.currency)}</strong>
-                    <span>/month</span>
+                    <strong>{formatMoney(selectedPrice.unit_amount, selectedPrice.currency, numberLocale)}</strong>
+                    <span>{t("/month")}</span>
                     {savings !== null ? (
                       <small>
-                        or {formatMoney(annualEquivalentMonthly(plan), selectedPrice.currency)}/mo with yearly billing
+                        {t("or {{amount}}/mo with yearly billing", {
+                          amount: formatMoney(
+                            annualEquivalentMonthly(plan),
+                            selectedPrice.currency,
+                            numberLocale,
+                          ),
+                        })}
                       </small>
                     ) : null}
                   </>
@@ -359,40 +378,57 @@ export function PricingScreen({
                       {formatMoney(
                         annualEquivalentMonthly(plan),
                         selectedPrice.currency,
+                        numberLocale,
                       )}
                     </strong>
-                    <span>/mo equivalent</span>
+                    <span>{t("/mo equivalent")}</span>
                     <small>
-                      {formatMoney(selectedPrice.unit_amount, selectedPrice.currency)} billed
-                      yearly
+                      {t("{{amount}} billed yearly", {
+                        amount: formatMoney(
+                          selectedPrice.unit_amount,
+                          selectedPrice.currency,
+                          numberLocale,
+                        ),
+                      })}
                     </small>
                     {savings !== null ? (
                       <small className="saving">
-                        Save {formatMoney(savings, selectedPrice.currency)}/year
+                        {t("Save {{amount}}/year", {
+                          amount: formatMoney(
+                            savings,
+                            selectedPrice.currency,
+                            numberLocale,
+                          ),
+                        })}
                       </small>
                     ) : null}
                   </>
                 )}
               </div>
               <p className="pricing-inherits">
-                {previous ? `Everything in ${previous.name}, plus:` : "Includes:"}
+                {previous
+                  ? t("Everything in {{name}}, plus:", { name: previous.name })
+                  : t("Includes:")}
               </p>
               <ul className="entitlement-list">
                 {cardEntitlements.map((entitlement) => (
                   <li key={entitlement.key}>
                     <span aria-hidden="true">✓</span>
-                    {entitlementLine(entitlement)}
+                    {entitlementLine(entitlement, t, numberLocale)}
                   </li>
                 ))}
                 {interval === "year" ? (
                   <li>
                     <span aria-hidden="true">✓</span>
-                    Annual payment; credits continue on monthly grant slots
+                    {t("Annual payment; credits continue on monthly grant slots")}
                   </li>
                 ) : null}
               </ul>
               <button
-                aria-label={`Choose ${plan.name} ${interval}`}
+                aria-label={t("Choose {{name}} {{interval}}", {
+                  name: plan.name,
+                  interval: t(interval),
+                })}
                 aria-busy={busyKey === plan.key}
                 className="button primary full"
                 disabled={!account || current || cancellationPending || busyKey !== null}
@@ -400,16 +436,16 @@ export function PricingScreen({
                 type="button"
               >
                 {!account
-                  ? "Loading account…"
+                  ? t("Loading account…")
                   : current
-                  ? "Current plan"
+                  ? t("Current plan")
                   : cancellationPending
-                    ? "Cancellation scheduled"
+                    ? t("Cancellation scheduled")
                   : busyKey === plan.key
-                    ? "Preparing…"
+                    ? t("Preparing…")
                     : account.plan_key === "free" || account.plan_interval === null
-                      ? `Start ${plan.name}`
-                      : `Preview ${plan.name} change`}
+                      ? t("Start {{name}}", { name: plan.name })
+                      : t("Preview {{name}} change", { name: plan.name })}
               </button>
             </article>
           );
@@ -418,12 +454,12 @@ export function PricingScreen({
 
       <section aria-labelledby="credit-pack-heading" className="credit-pack-section">
         <div className="credit-pack-intro">
-          <p className="eyebrow">One-time credit packs</p>
-          <h2 id="credit-pack-heading">Add burst capacity without changing your plan</h2>
+          <p className="eyebrow">{t("One-time credit packs")}</p>
+          <h2 id="credit-pack-heading">{t("Add burst capacity without changing your plan")}</h2>
           <p>
             {publicSimulationMode
-              ? "Sample packs add browser-local credits without changing plan features or limits. No payment is created."
-              : "Packs are one-time Stripe payments, not subscriptions. They add only product credits, never plan features or higher limits, and remain separate from monthly grant resets."}
+              ? t("Sample packs add browser-local credits without changing plan features or limits. No payment is created.")
+              : t("Packs are one-time Stripe payments, not subscriptions. They add only product credits, never plan features or higher limits, and remain separate from monthly grant resets.")}
           </p>
         </div>
         <div className="credit-pack-grid">
@@ -433,17 +469,24 @@ export function PricingScreen({
               const packBusyKey = `pack:${pack.key}`;
               return (
                 <article className="credit-pack-card" key={pack.key}>
-                  <p className="eyebrow">Pack key: {pack.key}</p>
+                  <p className="eyebrow">{t("Pack key: {{key}}", { key: pack.key })}</p>
                   <h3>{pack.name}</h3>
-                  <p>{pack.description}</p>
+                  <p>{t(pack.description)}</p>
                   <p className="credit-pack-amount">
-                    {formatCreditDecimal(pack.credits)} <span>credits</span>
+                    {formatCreditDecimal(pack.credits)} <span>{t("credits")}</span>
                   </p>
                   <p>
-                    {formatMoney(pack.price.unit_amount, pack.price.currency)} one time ·
-                    expires {pack.expires_days} days after {publicSimulationMode
-                      ? "the simulated purchase"
-                      : "payment"}
+                    {t("{{amount}} one time · expires {{days}} days after {{event}}", {
+                      amount: formatMoney(
+                        pack.price.unit_amount,
+                        pack.price.currency,
+                        numberLocale,
+                      ),
+                      days: pack.expires_days,
+                      event: publicSimulationMode
+                        ? t("the simulated purchase")
+                        : t("payment"),
+                    })}
                   </p>
                   <button
                     aria-busy={busyKey === packBusyKey}
@@ -453,12 +496,12 @@ export function PricingScreen({
                     type="button"
                   >
                     {!account
-                      ? "Loading account…"
+                      ? t("Loading account…")
                       : busyKey === packBusyKey
                         ? publicSimulationMode
-                          ? "Preparing simulation…"
-                          : "Preparing Stripe Checkout…"
-                        : `Buy ${pack.name}`}
+                          ? t("Preparing simulation…")
+                          : t("Preparing Stripe Checkout…")
+                        : t("Buy {{name}}", { name: pack.name })}
                   </button>
                 </article>
               );
@@ -466,32 +509,29 @@ export function PricingScreen({
         </div>
         <p className="pricing-footnote">
           {publicSimulationMode ? (
-            "The simulation delays its browser-local projection so the return page does not grant sample credits synchronously."
+            t("The simulation delays its browser-local projection so the return page does not grant sample credits synchronously.")
           ) : (
             <>
-              The return page does not grant credits. The balance changes only after a
-              signed <code>payment_intent.succeeded</code> webhook is committed.
+              {t("The return page does not grant credits. The balance changes only after a signed payment_intent.succeeded webhook is committed.")}
             </>
           )}
         </p>
       </section>
 
       <section aria-labelledby="plan-comparison-heading" className="pricing-compare">
-        <h2 id="plan-comparison-heading">Compare plans</h2>
+        <h2 id="plan-comparison-heading">{t("Compare plans")}</h2>
         <p>
-          Every value below comes from {publicSimulationMode
-            ? "the canonical sample catalog."
-            : "the same catalog the billing server enforces."}
-          The yearly discount is the catalog&apos;s explicit annual price—no Stripe
-          Coupon or promotion code is created or simulated.
+          {publicSimulationMode
+            ? t("Every value below comes from the canonical sample catalog. The yearly discount is the catalog’s explicit annual price—no Stripe Coupon or promotion code is created or simulated.")
+            : t("Every value below comes from the same catalog the billing server enforces. The yearly discount is the catalog’s explicit annual price—no Stripe Coupon or promotion code is created or simulated.")}
         </p>
-        <p className="table-scroll-hint">Scroll sideways to compare every plan.</p>
+        <p className="table-scroll-hint">{t("Scroll sideways to compare every plan.")}</p>
         <div className="comparison-table-wrap">
           <table className="comparison-table">
-            <caption>Plan price and entitlement comparison</caption>
+            <caption>{t("Plan price and entitlement comparison")}</caption>
             <thead>
               <tr>
-                <th scope="col">What you get</th>
+                <th scope="col">{t("What you get")}</th>
                 {sortedPlans.map((plan) => (
                   <th key={plan.key} scope="col">
                     {plan.name}
@@ -501,31 +541,33 @@ export function PricingScreen({
             </thead>
             <tbody>
               <tr>
-                <th scope="row">Monthly price</th>
+                <th scope="row">{t("Monthly price")}</th>
                 {sortedPlans.map((plan) => (
                   <td key={plan.key}>
                     {formatMoney(
                       plan.prices.month.unit_amount,
                       plan.prices.month.currency,
+                      numberLocale,
                     )}
-                    /mo
+                    {t("/mo")}
                   </td>
                 ))}
               </tr>
               <tr>
-                <th scope="row">Yearly price</th>
+                <th scope="row">{t("Yearly price")}</th>
                 {sortedPlans.map((plan) => (
                   <td key={plan.key}>
                     {formatMoney(
                       plan.prices.year.unit_amount,
                       plan.prices.year.currency,
+                      numberLocale,
                     )}
-                    /yr
+                    {t("/yr")}
                   </td>
                 ))}
               </tr>
               <tr>
-                <th scope="row">Yearly savings vs monthly</th>
+                <th scope="row">{t("Yearly savings vs monthly")}</th>
                 {sortedPlans.map((plan) => {
                   const planSavings = annualSavings(plan);
                   const percent = annualSavingsPercent(plan);
@@ -533,7 +575,7 @@ export function PricingScreen({
                     <td key={plan.key}>
                       {planSavings === null || percent === null
                         ? "—"
-                        : `${formatMoney(planSavings, plan.prices.year.currency)} (${percent}%)`}
+                        : `${formatMoney(planSavings, plan.prices.year.currency, numberLocale)} (${percent}%)`}
                     </td>
                   );
                 })}
@@ -557,8 +599,8 @@ export function PricingScreen({
         </div>
         <p className="pricing-footnote">
           {publicSimulationMode
-            ? "Choosing a plan changes only browser-local sample state after a simulated projection delay. It never creates Checkout or contacts Stripe."
-            : "Choosing a plan starts Checkout or a server-calculated change preview; entitlements change only after webhook-verified account state, never from the redirect alone."}
+            ? t("Choosing a plan changes only browser-local sample state after a simulated projection delay. It never creates Checkout or contacts Stripe.")
+            : t("Choosing a plan starts Checkout or a server-calculated change preview; entitlements change only after webhook-verified account state, never from the redirect alone.")}
         </p>
       </section>
 
@@ -593,30 +635,35 @@ export function PricingScreen({
 }
 
 function IncludedMark({ included }: { included: boolean }) {
+  const { t } = useLocale();
   return included ? (
     <span className="pricing-included">
       <span aria-hidden="true">✓</span>
-      <span className="pricing-sr">Included</span>
+      <span className="pricing-sr">{t("Included")}</span>
     </span>
   ) : (
     <span className="pricing-excluded">
       <span aria-hidden="true">—</span>
-      <span className="pricing-sr">Not included</span>
+      <span className="pricing-sr">{t("Not included")}</span>
     </span>
   );
 }
 
-function entitlementLine(entitlement: Entitlement): string {
-  if (entitlement.value === true) return entitlement.label;
+function entitlementLine(
+  entitlement: Entitlement,
+  t: Translate,
+  numberLocale: string,
+): string {
+  if (entitlement.value === true) return t(entitlement.label);
   const value =
     entitlement.key === "monthly_credits"
       ? formatCreditDecimal(creditAmountFromEntitlement(entitlement).decimal)
       : typeof entitlement.value === "number"
-      ? entitlement.value.toLocaleString("en-US")
+      ? entitlement.value.toLocaleString(numberLocale)
       : String(entitlement.value);
   return entitlement.unit
-    ? `${entitlement.label}: ${value} ${entitlement.unit}`
-    : `${entitlement.label}: ${value}`;
+    ? `${t(entitlement.label)}: ${value} ${t(entitlement.unit)}`
+    : `${t(entitlement.label)}: ${value}`;
 }
 
 /** Entitlements that are new or changed relative to the previous tier. */
@@ -645,7 +692,11 @@ interface ComparisonRow {
   cells: (string | boolean | null)[];
 }
 
-function comparisonRows(plans: CatalogPlan[]): ComparisonRow[] {
+function comparisonRows(
+  plans: CatalogPlan[],
+  t: Translate,
+  numberLocale: string,
+): ComparisonRow[] {
   const orderedKeys: string[] = [];
   const meta = new Map<string, { label: string; unit?: string }>();
   for (const plan of plans) {
@@ -663,7 +714,7 @@ function comparisonRows(plans: CatalogPlan[]): ComparisonRow[] {
     const shared = meta.get(key);
     return {
       key,
-      label: shared?.label ?? key,
+      label: t(shared?.label ?? key),
       cells: plans.map((plan) => {
         const found = plan.entitlements.find(
           (entitlement) => entitlement.key === key,
@@ -674,9 +725,9 @@ function comparisonRows(plans: CatalogPlan[]): ComparisonRow[] {
           found.key === "monthly_credits"
             ? formatCreditDecimal(creditAmountFromEntitlement(found).decimal)
             : typeof found.value === "number"
-            ? found.value.toLocaleString("en-US")
+            ? found.value.toLocaleString(numberLocale)
             : String(found.value);
-        return found.unit ? `${value} ${found.unit}` : value;
+        return found.unit ? `${value} ${t(found.unit)}` : value;
       }),
     };
   });

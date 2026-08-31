@@ -1,3 +1,6 @@
+"use client";
+
+import { useLocale } from "@/components/LocaleProvider";
 import { referencePlans } from "@/lib/reference-catalog";
 import {
   creditAmountFromEntitlement,
@@ -20,6 +23,7 @@ interface MatrixState {
   interval: BillingInterval;
   rank: number;
   monthlyCredits: string;
+  planName: string;
   planAbbr: string;
   intervalAbbr: string;
   label: string;
@@ -49,6 +53,7 @@ function buildStates(): MatrixState[] {
         interval,
         rank: plan.display_order,
         monthlyCredits: creditAmountFromEntitlement(credits).decimal,
+        planName: plan.name,
         planAbbr: plan.name.slice(0, 3),
         intervalAbbr: interval === "month" ? "mo" : "yr",
         label: `${plan.name} ${interval === "month" ? "Monthly" : "Yearly"}`,
@@ -72,6 +77,7 @@ function transitionKind(from: MatrixState, to: MatrixState): TransitionKind {
 }
 
 export function UpgradeMatrix() {
+  const { t } = useLocale();
   const states = buildStates();
   const highlightFrom = states.at(0);
   const highlightTo = states.at(1);
@@ -87,23 +93,20 @@ export function UpgradeMatrix() {
   return (
     <div className="upgrade-matrix-layout">
       <p className="table-scroll-hint">
-        Scroll sideways for the yearly target columns.
+        {t("Scroll sideways for the yearly target columns.")}
       </p>
       <div
-        aria-label="Scrollable plan transition matrix"
+        aria-label={t("Scrollable plan transition matrix")}
         className="upgrade-matrix-wrap"
         role="region"
         tabIndex={0}
       >
         <table className="upgrade-matrix">
-          <caption>
-            Outcome of every plan change under the prorated_delta template,
-            from the row state to the column state
-          </caption>
+          <caption>{t("Outcome of every plan change under the prorated_delta template, from the row state to the column state")}</caption>
           <thead>
             <tr>
               <th scope="col">
-                <span aria-hidden="true">from \ to</span>
+                <span aria-hidden="true">{t("from \\ to")}</span>
               </th>
               {states.map((state) => (
                 <th key={`${state.planKey}-${state.interval}`} scope="col">
@@ -111,7 +114,9 @@ export function UpgradeMatrix() {
                     <span>{state.planAbbr}</span>
                     <span>{state.intervalAbbr}</span>
                   </span>
-                  <span className="sr-only">{state.label}</span>
+                  <span className="sr-only">
+                    {state.planName} {t(state.interval === "month" ? "Monthly" : "Yearly")}
+                  </span>
                 </th>
               ))}
             </tr>
@@ -120,9 +125,11 @@ export function UpgradeMatrix() {
             {states.map((from) => (
               <tr key={`${from.planKey}-${from.interval}`}>
                 <th scope="row">
-                  <span className="sr-only">{from.label}</span>
+                  <span className="sr-only">
+                    {from.planName} {t(from.interval === "month" ? "Monthly" : "Yearly")}
+                  </span>
                   <span aria-hidden="true" className="matrix-row-label">
-                    {from.label}
+                    {from.planName} {t(from.interval === "month" ? "Monthly" : "Yearly")}
                   </span>
                   <span aria-hidden="true" className="matrix-row-code">
                     {from.planAbbr}·{from.intervalAbbr}
@@ -142,12 +149,12 @@ export function UpgradeMatrix() {
                         aria-hidden="true"
                         className={`matrix-dot ${kind}`}
                       />
-                      <span className="sr-only">{KIND_COPY[kind]}</span>
+                      <span className="sr-only">{t(KIND_COPY[kind])}</span>
                       {highlighted ? (
                         <span className="matrix-tooltip">
-                          prorated_delta · paid two-line Invoice · +
-                          {formattedCreditDelta}
-                          {" credits · period preserved"}
+                          {t("prorated_delta · paid two-line Invoice · +{{credits}} credits · period preserved", {
+                            credits: formattedCreditDelta,
+                          })}
                         </span>
                       ) : null}
                     </td>
@@ -161,29 +168,28 @@ export function UpgradeMatrix() {
       <div className="matrix-aside">
         <p className="matrix-callout">
           <span className="matrix-callout-path">
-            Starter → Pro · monthly (highlighted cell)
+            {t("Starter → Pro · monthly (highlighted cell)")}
           </span>
-          prorated_delta settles it immediately: a paid two-line Invoice, +
-          {formattedCreditDelta} credits, and the current period preserved.
+          {t("prorated_delta settles it immediately: a paid two-line Invoice, +{{credits}} credits, and the current period preserved.", {
+            credits: formattedCreditDelta,
+          })}
         </p>
         <ul className="matrix-legend">
           <li>
             <span aria-hidden="true" className="matrix-dot immediate" />
-            Immediate prorated settlement
+            {t("Immediate prorated settlement")}
           </li>
           <li>
             <span aria-hidden="true" className="matrix-dot period-end" />
-            Scheduled at period end
+            {t("Scheduled at period end")}
           </li>
           <li>
             <span aria-hidden="true" className="matrix-dot noop" />
-            No-op
+            {t("No-op")}
           </li>
         </ul>
         <p className="matrix-footnote">
-          Shown: the prorated_delta template. The full_period_reset template
-          defines the same 36 cells and instead settles monthly-origin
-          upgrades immediately at the full target price.
+          {t("Shown: the prorated_delta template. The full_period_reset template defines the same 36 cells and instead settles monthly-origin upgrades immediately at the full target price.")}
         </p>
       </div>
     </div>

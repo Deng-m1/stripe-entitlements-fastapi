@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ErrorState, LoadingState } from "@/components/AsyncState";
+import { useLocale } from "@/components/LocaleProvider";
 import {
   creditAmountFromEntitlement,
   formatCreditDecimal,
@@ -35,6 +36,7 @@ export function AccountScreen({
   api = getBillingApi(),
   redirect = browserBillingRedirect,
 }: AccountScreenProps) {
+  const { numberLocale, t } = useLocale();
   const [account, setAccount] = useState<AccountResponse | null>(null);
   const [catalog, setCatalog] = useState<CatalogResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -122,7 +124,7 @@ export function AccountScreen({
 
   const currentName =
     catalog.plans.find((plan) => plan.key === account.plan_key)?.name ??
-    (account.plan_key === "free" ? "Free" : account.plan_key);
+    (account.plan_key === "free" ? t("Free") : account.plan_key);
   const pendingName = account.pending_change
     ? (catalog.plans.find(
         (plan) => plan.key === account.pending_change?.target_plan_key,
@@ -136,52 +138,60 @@ export function AccountScreen({
   return (
     <div
       aria-busy={loading}
+      className="app-page account-page"
       style={{ opacity: loading ? 0.7 : 1, transition: "opacity 160ms ease" }}
     >
-      <section className="hero compact">
-        <p className="eyebrow">
-          {publicSimulationMode
-            ? "Browser-local account simulation"
-            : "Webhook-authoritative account projection"}
-        </p>
-        <h1>Your billing account</h1>
-        <p>
-          {publicSimulationMode
-            ? "This view reports isolated sample plan, credit, and entitlement state stored only for this browser tab."
-            : "This view reports stored plan identity, interval, credits, and entitlements independently. A price is never used to guess the current tier."}
-        </p>
+      <section className="hero compact account-hero">
+        <div className="account-hero-copy">
+          <p className="eyebrow">
+            {publicSimulationMode
+              ? t("Browser-local account simulation")
+              : t("Webhook-authoritative account projection")}
+          </p>
+          <h1>{t("Your billing account")}</h1>
+          <p>
+            {publicSimulationMode
+              ? t("This view reports isolated sample plan, credit, and entitlement state stored only for this browser tab.")
+              : t("This view reports stored plan identity, interval, credits, and entitlements independently. A price is never used to guess the current tier.")}
+          </p>
+        </div>
+        <div aria-hidden="true" className="account-hero-status">
+          <span>{t("POSTGRESQL PROJECTION")}</span>
+          <strong>{publicSimulationMode ? t("browser-local") : t("AUTHORITATIVE")}</strong>
+          <small>{t("read model · no client grants")}</small>
+          <i>{account.subscription_status.toUpperCase()}</i>
+        </div>
       </section>
 
       {account.subscription_status === "past_due" ? (
         <section className="pending-banner" aria-labelledby="past-due-title">
-          <p className="eyebrow">Payment attention needed</p>
-          <h2 id="past-due-title">Your latest payment has not settled</h2>
+          <p className="eyebrow">{t("Payment attention needed")}</p>
+          <h2 id="past-due-title">{t("Your latest payment has not settled")}</h2>
           <p>
             {account.entitlements_enforceable
-              ? "Stripe reports this subscription as past due."
-              : "Product access is paused until Stripe reports the invoice as paid."}{" "}
-            Update the payment method in the Stripe Billing Portal below;
-            entitlements resume only after the paid webhook is processed.
+              ? t("Stripe reports this subscription as past due.")
+              : t("Product access is paused until Stripe reports the invoice as paid.")}{" "}
+            {t("Update the payment method in the Stripe Billing Portal below; entitlements resume only after the paid webhook is processed.")}
           </p>
         </section>
       ) : null}
 
       {account.pending_change ? (
         <section className="pending-banner" aria-labelledby="pending-title">
-          <p className="eyebrow">Pending billing change</p>
+          <p className="eyebrow">{t("Pending billing change")}</p>
           <h2 id="pending-title">
             {pendingName} · {account.pending_change.target_interval}
           </h2>
           <p>
             {account.pending_change.timing === "period_end"
-              ? `Your current benefits remain active until ${formatDate(
-                  account.pending_change.effective_at,
-                )}. No immediate entitlement switch is shown.`
-              : `The change is awaiting billing/webhook completion from ${formatDate(
-                  account.pending_change.effective_at,
-                )}.`}
+              ? t("Your current benefits remain active until {{date}}. No immediate entitlement switch is shown.", {
+                  date: formatDate(account.pending_change.effective_at, numberLocale),
+                })
+              : t("The change is awaiting billing/webhook completion from {{date}}.", {
+                  date: formatDate(account.pending_change.effective_at, numberLocale),
+                })}
             {account.pending_change.status === "requires_action"
-              ? " Stripe needs one more payment step before this change can settle."
+              ? ` ${t("Stripe needs one more payment step before this change can settle.")}`
               : ""}
           </p>
           {pendingPaymentUrl ? (
@@ -191,7 +201,7 @@ export function AccountScreen({
                 onClick={() => openPendingPayment(pendingPaymentUrl)}
                 type="button"
               >
-                Continue payment on Stripe
+                {t("Continue payment on Stripe")}
               </button>
             </div>
           ) : null}
@@ -203,13 +213,12 @@ export function AccountScreen({
           className="pending-banner"
           aria-labelledby="cancellation-title"
         >
-          <p className="eyebrow">Cancellation scheduled</p>
-          <h2 id="cancellation-title">Current plan → Free</h2>
+          <p className="eyebrow">{t("Cancellation scheduled")}</p>
+          <h2 id="cancellation-title">{t("Current plan → Free")}</h2>
           <p>
-            Your current benefits remain active until{" "}
-            {formatDate(account.pending_cancellation.effective_at)}. Plan
-            changes are paused while cancellation is pending; use the Stripe
-            Billing Portal to resume the subscription first.
+            {t("Your current benefits remain active until {{date}}. Plan changes are paused while cancellation is pending; use the Stripe Billing Portal to resume the subscription first.", {
+              date: formatDate(account.pending_cancellation.effective_at, numberLocale),
+            })}
           </p>
         </section>
       ) : null}
@@ -222,33 +231,33 @@ export function AccountScreen({
             onClick={() => setError(null)}
             type="button"
           >
-            Dismiss
+            {t("Dismiss")}
           </button>
         </p>
       ) : null}
 
       <div className="account-grid">
         <section className="account-card">
-          <p className="eyebrow">Subscription</p>
+          <p className="eyebrow">{t("Subscription")}</p>
           <h2>{currentName}</h2>
           {!hasSubscription ? (
             <p>
               {publicSimulationMode
-                ? "No sample subscription is active. Use “Review plan changes” below to simulate one without contacting Stripe."
-                : "No Stripe subscription is active for this account. Use “Review plan changes” below to start one — access is granted only after the paid webhook is processed, never by the redirect back to this app."}
+                ? t("No sample subscription is active. Use “Review plan changes” below to simulate one without contacting Stripe.")
+                : t("No Stripe subscription is active for this account. Use “Review plan changes” below to start one — access is granted only after the paid webhook is processed, never by the redirect back to this app.")}
             </p>
           ) : null}
           <dl className="fact-list">
             <div>
-              <dt>Plan key</dt>
+              <dt>{t("Plan key")}</dt>
               <dd>{account.plan_key}</dd>
             </div>
             <div>
-              <dt>Billing interval</dt>
-              <dd>{account.plan_interval ?? "None"}</dd>
+              <dt>{t("Billing interval")}</dt>
+              <dd>{account.plan_interval ?? t("None")}</dd>
             </div>
             <div>
-              <dt>Status</dt>
+              <dt>{t("Status")}</dt>
               <dd>
                 <span
                   className={`status status-${account.subscription_status}`}
@@ -258,73 +267,74 @@ export function AccountScreen({
               </dd>
             </div>
             <div>
-              <dt>Upgrade settlement</dt>
+              <dt>{t("Upgrade settlement")}</dt>
               <dd>{account.transition_policy.replaceAll("_", " ")}</dd>
             </div>
             <div>
-              <dt>Product access</dt>
+              <dt>{t("Product access")}</dt>
               <dd>
-                {account.entitlements_enforceable ? "Enforceable" : "Paused"}
+                {account.entitlements_enforceable ? t("Enforceable") : t("Paused")}
               </dd>
             </div>
             <div>
-              <dt>Current period ends</dt>
-              <dd>{formatDate(account.current_period_end)}</dd>
+              <dt>{t("Current period ends")}</dt>
+              <dd>{formatDate(account.current_period_end, numberLocale)}</dd>
             </div>
           </dl>
         </section>
 
         <section className="account-card">
-          <p className="eyebrow">Credits</p>
+          <p className="eyebrow">{t("Credits")}</p>
           <p className="credit-balance">
             {formatCreditDecimal(account.credits.balance)}
           </p>
-          <p>available credits</p>
+          <p>{t("available credits")}</p>
           {isZeroCreditDecimal(account.credits.balance) &&
           !account.credits.next_grant_at ? (
             <p>
-              No grant is scheduled. Credit grants start with a paid
-              subscription period and are recorded with database-enforced
-              idempotency.
+              {t("No grant is scheduled. Credit grants start with a paid subscription period and are recorded with database-enforced idempotency.")}
             </p>
           ) : null}
           <dl className="fact-list">
             <div>
-              <dt>Subscription balance</dt>
+              <dt>{t("Subscription balance")}</dt>
               <dd>
                 {formatCreditDecimal(account.credits.subscription_balance)}
               </dd>
             </div>
             <div>
-              <dt>Purchased balance</dt>
+              <dt>{t("Purchased balance")}</dt>
               <dd>{formatCreditDecimal(account.credits.purchased_balance)}</dd>
             </div>
             <div>
-              <dt>Grant amount</dt>
+              <dt>{t("Grant amount")}</dt>
               <dd>{formatCreditDecimal(account.credits.grant_amount)}</dd>
             </div>
             <div>
-              <dt>Next grant</dt>
-              <dd>{formatDate(account.credits.next_grant_at)}</dd>
+              <dt>{t("Next grant")}</dt>
+              <dd>{formatDate(account.credits.next_grant_at, numberLocale)}</dd>
             </div>
           </dl>
           {account.credits.credit_packs.length > 0 ? (
             <div className="credit-lot-list">
-              <h3>Active credit-pack lots</h3>
+              <h3>{t("Active credit-pack lots")}</h3>
               <ul>
                 {account.credits.credit_packs.map((lot) => (
                   <li key={lot.lot_id}>
                     <span>{lot.pack_key}</span>
                     <strong>
-                      {formatCreditDecimal(lot.remaining)} credits
+                      {t("{{amount}} credits", {
+                        amount: formatCreditDecimal(lot.remaining),
+                      })}
                     </strong>
-                    <small>expires {formatDate(lot.expires_at)}</small>
+                    <small>{t("expires {{date}}", {
+                      date: formatDate(lot.expires_at, numberLocale),
+                    })}</small>
                   </li>
                 ))}
               </ul>
               <p>
-                Packs add spendable credits only. They do not change this
-                account&apos;s plan features, limits, or subscription status.
+                {t("Packs add spendable credits only. They do not change this account’s plan features, limits, or subscription status.")}
               </p>
             </div>
           ) : null}
@@ -333,18 +343,18 @@ export function AccountScreen({
 
       <section className="entitlements-section">
         <div>
-          <p className="eyebrow">Structured entitlements</p>
-          <h2>What the product may enforce</h2>
+          <p className="eyebrow">{t("Structured entitlements")}</p>
+          <h2>{t("What the product may enforce")}</h2>
         </div>
         {account.entitlements.length === 0 ? (
           <div className="entitlement-grid">
             <article className="entitlement-card">
-              <p>No entitlements granted</p>
-              <strong>Nothing enforceable yet</strong>
+              <p>{t("No entitlements granted")}</p>
+              <strong>{t("Nothing enforceable yet")}</strong>
               <span>
                 {publicSimulationMode
-                  ? "Sample entitlements appear after the browser-local projection. Nothing here is a payment or production entitlement."
-                  : "Structured entitlements appear here after a subscription webhook projects them. The product enforces exactly what is listed — nothing is inferred from prices or redirects."}
+                  ? t("Sample entitlements appear after the browser-local projection. Nothing here is a payment or production entitlement.")
+                  : t("Structured entitlements appear here after a subscription webhook projects them. The product enforces exactly what is listed — nothing is inferred from prices or redirects.")}
               </span>
             </article>
           </div>
@@ -365,19 +375,22 @@ export function AccountScreen({
         className="account-card"
         style={{ marginTop: 18 }}
       >
-        <p className="eyebrow">Manage</p>
-        <h2 id="manage-title">Plan changes and billing management</h2>
+        <p className="eyebrow">{t("Manage")}</p>
+        <h2 id="manage-title">{t("Plan changes and billing management")}</h2>
         <p>
           {publicSimulationMode
-            ? "Plan changes and the Portal return are simulated inside this browser tab. No server, payment method, invoice, or cancellation is changed."
-            : "Plan and interval changes stay in this app so the server can enforce the safe transition matrix. The Stripe Billing Portal handles payment methods, invoices, and cancellation."}
+            ? t("Plan changes and the Portal return are simulated inside this browser tab. No server, payment method, invoice, or cancellation is changed.")
+            : t("Plan and interval changes stay in this app so the server can enforce the safe transition matrix. The Stripe Billing Portal handles payment methods, invoices, and cancellation.")}
         </p>
         {loadedAt ? (
           <p>
-            Projection loaded {formatDate(loadedAt)}. Refreshing{" "}
             {publicSimulationMode
-              ? "re-reads browser-local sample state."
-              : "re-reads the webhook-backed account API and never mutates billing state."}
+              ? t("Projection loaded {{date}}. Refreshing re-reads browser-local sample state.", {
+                  date: formatDate(loadedAt, numberLocale),
+                })
+              : t("Projection loaded {{date}}. Refreshing re-reads the webhook-backed account API and never mutates billing state.", {
+                  date: formatDate(loadedAt, numberLocale),
+                })}
           </p>
         ) : null}
         <div className="account-actions">
@@ -389,10 +402,10 @@ export function AccountScreen({
             type="button"
           >
             {loading
-              ? "Refreshing…"
+              ? t("Refreshing…")
               : publicSimulationMode
-                ? "Refresh simulation"
-                : "Refresh projection"}
+                ? t("Refresh simulation")
+                : t("Refresh projection")}
           </button>
           <button
             aria-busy={portalBusy}
@@ -402,13 +415,13 @@ export function AccountScreen({
             type="button"
           >
             {portalBusy
-              ? "Opening Portal…"
+              ? t("Opening Portal…")
               : publicSimulationMode
-                ? "Open simulated Portal"
-                : "Open Stripe Billing Portal"}
+                ? t("Open simulated Portal")
+                : t("Open Stripe Billing Portal")}
           </button>
           <Link className="button primary" href="/pricing">
-            Review plan changes
+            {t("Review plan changes")}
           </Link>
         </div>
       </section>
@@ -417,25 +430,26 @@ export function AccountScreen({
 }
 
 function EntitlementCard({ entitlement }: { entitlement: Entitlement }) {
+  const { numberLocale, t } = useLocale();
   return (
     <article className="entitlement-card">
-      <p>{entitlement.label}</p>
+      <p>{t(entitlement.label)}</p>
       <strong>
         {typeof entitlement.value === "boolean"
           ? entitlement.value
-            ? "Included"
-            : "Not included"
+            ? t("Included")
+            : t("Not included")
           : entitlement.key === "monthly_credits"
             ? formatCreditDecimal(
                 creditAmountFromEntitlement(entitlement).decimal,
               )
             : typeof entitlement.value === "number"
-              ? entitlement.value.toLocaleString("en-US")
+              ? entitlement.value.toLocaleString(numberLocale)
               : String(entitlement.value)}{" "}
-        {entitlement.unit ?? ""}
+        {entitlement.unit ? t(entitlement.unit) : ""}
       </strong>
       <small>{entitlement.key}</small>
-      {entitlement.description ? <span>{entitlement.description}</span> : null}
+      {entitlement.description ? <span>{t(entitlement.description)}</span> : null}
     </article>
   );
 }

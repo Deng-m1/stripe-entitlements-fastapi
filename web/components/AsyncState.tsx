@@ -1,8 +1,13 @@
+"use client";
+
+import { useLocale } from "@/components/LocaleProvider";
+
 export function LoadingState({ label = "Loading billing data…" }: { label?: string }) {
+  const { t } = useLocale();
   return (
-    <div className="state-card" role="status">
+    <div className="app-page state-page state-card" role="status">
       <span className="spinner" aria-hidden="true" />
-      <p>{label}</p>
+      <p>{t(label)}</p>
     </div>
   );
 }
@@ -18,15 +23,17 @@ export function ErrorState({
   retrying?: boolean;
   title?: string;
 }) {
+  const { t } = useLocale();
   return (
-    <div className="state-card error-card" role="alert">
+    <div className="app-page state-page state-card error-card" role="alert">
       <div>
-        <p className="eyebrow">Billing request failed</p>
-        <h2>{title}</h2>
+        <p className="eyebrow">{t("Billing request failed")}</p>
+        <h2>{t(title)}</h2>
         <p>{error}</p>
         <p>
-          This failure changed nothing: billing state is rendered only from the
-          server’s webhook-backed projection, never inferred client-side.
+          {t(
+            "This failure changed nothing: billing state is rendered only from the server’s webhook-backed projection, never inferred client-side.",
+          )}
         </p>
       </div>
       {retry ? (
@@ -37,7 +44,7 @@ export function ErrorState({
           onClick={retry}
           type="button"
         >
-          {retrying ? "Retrying…" : "Try again"}
+          {retrying ? t("Retrying…") : t("Try again")}
         </button>
       ) : null}
     </div>
