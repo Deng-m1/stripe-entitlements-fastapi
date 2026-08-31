@@ -23,14 +23,16 @@ class PostgresTeamMembershipRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
 
-    async def membership_for(self, user_id: UUID, tenant_id: UUID) -> TeamMembership | None:
+    async def membership_for(
+        self, user_id: UUID | str, tenant_id: UUID | str
+    ) -> TeamMembership | None:
         async with self._database.require_pool().acquire() as connection:
             row = await connection.fetchrow(
                 """select user_id, tenant_id, billing_role
                      from app_team_memberships
                     where user_id=$1 and tenant_id=$2 and revoked_at is null""",
-                user_id,
-                tenant_id,
+                str(user_id),
+                str(tenant_id),
             )
         if row is None:
             return None
@@ -39,8 +41,11 @@ class PostgresTeamMembershipRepository:
         except ValueError as exc:
             raise RuntimeError("membership row has an invalid billing role") from exc
         return TeamMembership(
-            user_id=UUID(str(row["user_id"])),
-            tenant_id=UUID(str(row["tenant_id"])),
+            # Return the exact verified principal type. The row proves that its
+            # string representation is an active member; converting either ID
+            # would make opaque and canonical provider values behave differently.
+            user_id=user_id,
+            tenant_id=tenant_id,
             role=role,
         )
 

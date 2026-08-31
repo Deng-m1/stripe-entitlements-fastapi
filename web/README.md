@@ -61,6 +61,11 @@ empty base URL is rejected. It does not supply identity: production still needs 
 host's real `AuthAdapter`, and a missing token fails before any request is sent. See the
 [Vercel deployment guide](../docs/VERCEL.md).
 
+Initial Hosted Checkout and Customer Portal redirects do not need a publishable key.
+The complete reference UI does need `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` for Stripe.js
+confirmation during supported plan-change/SCA recovery; it must be the test publishable
+key matching the server's Stripe test account.
+
 `NEXT_PUBLIC_DEMO_BEARER_TOKEN` is only a replaceable local adapter. It is exposed
 to browser JavaScript and is not production authentication. Production integration
 must replace the composition in `lib/runtime.ts` with the host application's real
@@ -91,8 +96,11 @@ NEXT_PUBLIC_ALLOW_INDEXING=true
 The site URL must be an HTTPS origin without a path, credentials, query, or fragment.
 `/account` and `/billing/*` always remain `noindex`. The bundled server-rendered catalog
 comes from `reference-catalog.json` through `lib/reference-catalog.ts`; keep the JSON
-synchronized with `../plans.toml` when changing example prices or entitlements. The
-backend suite enforces that equality. See the [SEO runbook](../docs/SEO.md) for the route
+synchronized after changing `plans.toml`: a Python/FastAPI source workflow runs
+`uv run python scripts/sync_reference_catalog.py` from the repository root, while a
+native TypeScript source workflow runs `npm run sync:catalog` from `typescript/`. Do not
+hand-edit the generated JSON. Both implementations have a no-write `--check` mode, and
+the test suite enforces equality. See the [SEO runbook](../docs/SEO.md) for the route
 policy and deployment checks.
 
 ## API contract
@@ -348,8 +356,9 @@ preserves current benefits until `effective_at`.
 
 Policy note: every non-noop change from a yearly plan is period-end under both
 templates. The delta template also defers every interval change and downgrade; only a
-higher monthly tier remaining monthly is eligible. Unsupported tax, discount, credit
-note, customer balance, and Invoice line shapes fail closed. The backend returns that
+higher monthly tier with a positive credit difference remaining monthly is eligible.
+Unsupported tax, discount, credit note, customer balance, and Invoice line shapes fail
+closed. The backend returns that
 decision explicitly; the browser never reconstructs it from tier order or price.
 
 ### `POST /api/billing/change/confirm`

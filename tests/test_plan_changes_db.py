@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
 
 from stripe_entitlements.catalog import PlanCatalog
+from stripe_entitlements.credit_amount import CreditAmount
 from stripe_entitlements.plan_changes import (
     PlanChangeBusyError,
     PlanChangeConflictError,
@@ -726,6 +728,55 @@ async def test_prorated_delta_preview_and_confirm_persist_one_settlement_contrac
     assert row["expected_source_invoice_id"] == f"in_seed_{account_id}"
     assert row["expected_credit_delta"] == PRO_CREDITS - STARTER_CREDITS
     assert row["proration_date"] == gateway.preview_proration_date
+
+
+@pytest.mark.parametrize("target_atoms", [STARTER_CREDITS, STARTER_CREDITS - 1])
+async def test_prorated_delta_nonpositive_catalog_difference_schedules_without_immediate_io(
+    target_atoms: int,
+    pool: asyncpg.Pool,
+    catalog: PlanCatalog,
+    make_account,
+) -> None:
+    plans = dict(catalog.plans)
+    plans["pro"] = replace(
+        plans["pro"],
+        monthly_credits=CreditAmount.from_atoms(target_atoms),
+    )
+    flexible_catalog = PlanCatalog(
+        plans,
+        catalog.lookup_prefix,
+        credit_packs=dict(catalog.credit_packs),
+    )
+    account_id = await _seed_paid_account(pool, make_account)
+    gateway = FakePlanGateway()
+    service = PlanChangeCoordinator(
+        pool,
+        flexible_catalog,
+        gateway,
+        transition_policy="prorated_delta",
+    )
+
+    preview = await service.preview_remote(
+        account_id,
+        "pro",
+        "month",
+        f"delta-nonpositive-{target_atoms}",
+    )
+    confirmed = await service.confirm(account_id, preview.change_id)
+
+    assert preview.decision.timing == "period_end"
+    assert confirmed.status == "scheduled"
+    assert gateway.preview_calls == 0
+    assert gateway.apply_calls == []
+    assert len(gateway.schedule_calls) == 1
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """select effective_mode,status,expected_credit_delta,proration_date
+                 from billing_plan_changes where id=$1::uuid""",
+            preview.change_id,
+        )
+    assert row is not None
+    assert tuple(row) == ("period_end", "scheduled", None, None)
 
 
 async def test_prorated_delta_tax_or_discount_preview_defers_to_period_end(

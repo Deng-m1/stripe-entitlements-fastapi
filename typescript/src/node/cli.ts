@@ -1,7 +1,11 @@
-import { loadDatabaseSettings } from "../config.js";
+import { ConfigurationError, loadDatabaseSettings } from "../config.js";
 import { Database, databasePoolOptions } from "../database.js";
 import { createBillingRuntimeFromEnvironment } from "../deployment.js";
-import { runDoctor, TYPESCRIPT_PACKAGE_VERSION } from "../doctor.js";
+import {
+  runDoctor,
+  TYPESCRIPT_PACKAGE_VERSION,
+  type DoctorProfile,
+} from "../doctor.js";
 import {
   runStripeBootstrap,
   type StripeBootstrapNetworkFactory,
@@ -16,6 +20,7 @@ export type NodeBillingCommand =
       readonly name: "doctor";
       readonly json: boolean;
       readonly stripeNetwork: boolean;
+      readonly profile: DoctorProfile;
     }
   | {
       readonly name: "bootstrap";
@@ -80,6 +85,38 @@ function parseBootstrapCommand(argv: readonly string[]): NodeBillingCommand {
   };
 }
 
+function parseDoctorCommand(argv: readonly string[]): NodeBillingCommand {
+  const booleans = new Set<string>();
+  let profile: DoctorProfile = "core";
+  let profileSelected = false;
+  for (let index = 0; index < argv.length; index += 1) {
+    const flag = argv[index];
+    if (flag === "--profile") {
+      const value = argv[index + 1];
+      if (profileSelected || (value !== "core" && value !== "portal")) {
+        throw new TypeError("invalid doctor profile");
+      }
+      profile = value;
+      profileSelected = true;
+      index += 1;
+      continue;
+    }
+    if (flag !== "--json" && flag !== "--stripe-network") {
+      throw new TypeError("invalid doctor flag");
+    }
+    if (booleans.has(flag)) {
+      throw new TypeError("duplicate doctor flag");
+    }
+    booleans.add(flag);
+  }
+  return {
+    name: "doctor",
+    json: booleans.has("--json"),
+    stripeNetwork: booleans.has("--stripe-network"),
+    profile,
+  };
+}
+
 export function parseNodeBillingCommand(
   argv: readonly string[],
 ): NodeBillingCommand {
@@ -102,20 +139,13 @@ export function parseNodeBillingCommand(
     }
   }
   if (argv[0] === "doctor") {
-    const flags = argv.slice(1);
-    if (
-      flags.some((flag) => flag !== "--json" && flag !== "--stripe-network") ||
-      new Set(flags).size !== flags.length
-    ) {
+    try {
+      return parseDoctorCommand(argv.slice(1));
+    } catch {
       throw new TypeError(
-        "usage: stripe-entitlements doctor [--json] [--stripe-network]",
+        "usage: stripe-entitlements doctor [--json] [--stripe-network] [--profile core|portal]",
       );
     }
-    return {
-      name: "doctor",
-      json: flags.includes("--json"),
-      stripeNetwork: flags.includes("--stripe-network"),
-    };
   }
   if (
     argv.length === 2 &&
@@ -131,7 +161,16 @@ export function parseNodeBillingCommand(
 
 function sanitizedFailure(error: unknown): string {
   const kind = error instanceof Error ? error.constructor.name : "UnknownError";
-  return JSON.stringify({ ok: false, error: kind });
+  const missingSetting =
+    error instanceof ConfigurationError &&
+    /^[A-Z][A-Z0-9_]+ is required$/u.test(error.message)
+      ? error.message
+      : undefined;
+  return JSON.stringify({
+    ok: false,
+    error: kind,
+    ...(missingSetting === undefined ? {} : { detail: missingSetting }),
+  });
 }
 
 export async function runNodeBillingCommand(
@@ -188,6 +227,7 @@ export async function runNodeBillingCommand(
       const report = await runDoctor({
         environment,
         stripeNetwork: command.stripeNetwork,
+        profile: command.profile,
       });
       if (command.json) {
         io.out(JSON.stringify(report.asObject()));

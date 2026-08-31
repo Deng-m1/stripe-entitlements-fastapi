@@ -327,8 +327,12 @@ export function PricingScreen({
           const selectedPrice = priceFor(plan, interval);
           const savings = annualSavings(plan);
           const previous = index > 0 ? sortedPlans[index - 1] : null;
+          const inheritsPrevious =
+            previous !== null && planInheritsEntitlements(plan, previous);
           const cardEntitlements = (
-            previous ? entitlementUpgrades(plan, previous) : plan.entitlements
+            inheritsPrevious && previous
+              ? entitlementUpgrades(plan, previous)
+              : plan.entitlements
           ).filter(
             (entitlement) =>
               entitlement.value !== false &&
@@ -406,7 +410,7 @@ export function PricingScreen({
                 )}
               </div>
               <p className="pricing-inherits">
-                {previous
+                {inheritsPrevious && previous
                   ? t("Everything in {{name}}, plus:", { name: previous.name })
                   : t("Includes:")}
               </p>
@@ -452,71 +456,81 @@ export function PricingScreen({
         })}
       </div>
 
-      <section aria-labelledby="credit-pack-heading" className="credit-pack-section">
-        <div className="credit-pack-intro">
-          <p className="eyebrow">{t("One-time credit packs")}</p>
-          <h2 id="credit-pack-heading">{t("Add burst capacity without changing your plan")}</h2>
-          <p>
+      {catalog.credit_packs.length > 0 ? (
+        <section aria-labelledby="credit-pack-heading" className="credit-pack-section">
+          <div className="credit-pack-intro">
+            <p className="eyebrow">{t("One-time credit packs")}</p>
+            <h2 id="credit-pack-heading">
+              {t("Add burst capacity without changing your plan")}
+            </h2>
+            <p>
+              {publicSimulationMode
+                ? t(
+                    "Sample packs add browser-local credits without changing plan features or limits. No payment is created.",
+                  )
+                : t(
+                    "Packs are one-time Stripe payments, not subscriptions. They add only product credits, never plan features or higher limits, and remain separate from monthly grant resets.",
+                  )}
+            </p>
+          </div>
+          <div className="credit-pack-grid">
+            {[...catalog.credit_packs]
+              .sort((left, right) => left.display_order - right.display_order)
+              .map((pack) => {
+                const packBusyKey = `pack:${pack.key}`;
+                return (
+                  <article className="credit-pack-card" key={pack.key}>
+                    <p className="eyebrow">
+                      {t("Pack key: {{key}}", { key: pack.key })}
+                    </p>
+                    <h3>{pack.name}</h3>
+                    <p>{t(pack.description)}</p>
+                    <p className="credit-pack-amount">
+                      {formatCreditDecimal(pack.credits)} <span>{t("credits")}</span>
+                    </p>
+                    <p>
+                      {t("{{amount}} one time · expires {{days}} days after {{event}}", {
+                        amount: formatMoney(
+                          pack.price.unit_amount,
+                          pack.price.currency,
+                          numberLocale,
+                        ),
+                        days: pack.expires_days,
+                        event: publicSimulationMode
+                          ? t("the simulated purchase")
+                          : t("payment"),
+                      })}
+                    </p>
+                    <button
+                      aria-busy={busyKey === packBusyKey}
+                      className="button ghost full"
+                      disabled={!account || busyKey !== null}
+                      onClick={() => void buyCreditPack(pack)}
+                      type="button"
+                    >
+                      {!account
+                        ? t("Loading account…")
+                        : busyKey === packBusyKey
+                          ? publicSimulationMode
+                            ? t("Preparing simulation…")
+                            : t("Preparing Stripe Checkout…")
+                          : t("Buy {{name}}", { name: pack.name })}
+                    </button>
+                  </article>
+                );
+              })}
+          </div>
+          <p className="pricing-footnote">
             {publicSimulationMode
-              ? t("Sample packs add browser-local credits without changing plan features or limits. No payment is created.")
-              : t("Packs are one-time Stripe payments, not subscriptions. They add only product credits, never plan features or higher limits, and remain separate from monthly grant resets.")}
+              ? t(
+                  "The simulation delays its browser-local projection so the return page does not grant sample credits synchronously.",
+                )
+              : t(
+                  "The return page does not grant credits. The balance changes only after a signed payment_intent.succeeded webhook is committed.",
+                )}
           </p>
-        </div>
-        <div className="credit-pack-grid">
-          {[...catalog.credit_packs]
-            .sort((left, right) => left.display_order - right.display_order)
-            .map((pack) => {
-              const packBusyKey = `pack:${pack.key}`;
-              return (
-                <article className="credit-pack-card" key={pack.key}>
-                  <p className="eyebrow">{t("Pack key: {{key}}", { key: pack.key })}</p>
-                  <h3>{pack.name}</h3>
-                  <p>{t(pack.description)}</p>
-                  <p className="credit-pack-amount">
-                    {formatCreditDecimal(pack.credits)} <span>{t("credits")}</span>
-                  </p>
-                  <p>
-                    {t("{{amount}} one time · expires {{days}} days after {{event}}", {
-                      amount: formatMoney(
-                        pack.price.unit_amount,
-                        pack.price.currency,
-                        numberLocale,
-                      ),
-                      days: pack.expires_days,
-                      event: publicSimulationMode
-                        ? t("the simulated purchase")
-                        : t("payment"),
-                    })}
-                  </p>
-                  <button
-                    aria-busy={busyKey === packBusyKey}
-                    className="button ghost full"
-                    disabled={!account || busyKey !== null}
-                    onClick={() => void buyCreditPack(pack)}
-                    type="button"
-                  >
-                    {!account
-                      ? t("Loading account…")
-                      : busyKey === packBusyKey
-                        ? publicSimulationMode
-                          ? t("Preparing simulation…")
-                          : t("Preparing Stripe Checkout…")
-                        : t("Buy {{name}}", { name: pack.name })}
-                  </button>
-                </article>
-              );
-            })}
-        </div>
-        <p className="pricing-footnote">
-          {publicSimulationMode ? (
-            t("The simulation delays its browser-local projection so the return page does not grant sample credits synchronously.")
-          ) : (
-            <>
-              {t("The return page does not grant credits. The balance changes only after a signed payment_intent.succeeded webhook is committed.")}
-            </>
-          )}
-        </p>
-      </section>
+        </section>
+      ) : null}
 
       <section aria-labelledby="plan-comparison-heading" className="pricing-compare">
         <h2 id="plan-comparison-heading">{t("Compare plans")}</h2>
@@ -664,6 +678,35 @@ function entitlementLine(
   return entitlement.unit
     ? `${t(entitlement.label)}: ${value} ${t(entitlement.unit)}`
     : `${t(entitlement.label)}: ${value}`;
+}
+
+function planInheritsEntitlements(
+  plan: CatalogPlan,
+  previous: CatalogPlan,
+): boolean {
+  const currentByKey = new Map(
+    plan.entitlements.map((entitlement) => [entitlement.key, entitlement]),
+  );
+  return previous.entitlements.every((before) => {
+    const current = currentByKey.get(before.key);
+    if (!current || current.unit !== before.unit) return false;
+    if (before.key === "monthly_credits") {
+      return (
+        BigInt(creditAmountFromEntitlement(current).atoms) >=
+        BigInt(creditAmountFromEntitlement(before).atoms)
+      );
+    }
+    if (typeof before.value === "boolean") {
+      return before.value !== true || current.value === true;
+    }
+    if (
+      typeof before.value === "number" &&
+      typeof current.value === "number"
+    ) {
+      return current.value >= before.value;
+    }
+    return current.value === before.value;
+  });
 }
 
 /** Entitlements that are new or changed relative to the previous tier. */

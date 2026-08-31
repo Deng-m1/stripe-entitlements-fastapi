@@ -15,6 +15,13 @@ Stripe, a real identity provider, explicit migrations, and scheduler/incident
 operations. The simulation configuration must contain none of them and is never payment
 evidence.
 
+Configuration selection is explicit: running Vercel without `-A` reads the checked-in
+`vercel.json` and selects FastAPI. A whole-repository native TypeScript fork must use
+`-A vercel.typescript.json` consistently (or intentionally copy it to that fork's
+`vercel.json`). A standalone root-level Next.js project must not copy either monorepo
+Services file unchanged; use its normal Next.js configuration plus the native Route
+Handlers, output tracing, and Cron-only fragment below.
+
 The split Python topology builds the existing Next.js reference UI and billing core as
 two services in one Vercel project:
 
@@ -91,18 +98,25 @@ one Vercel deployment and domain
               └── managed PostgreSQL primary
 ```
 
-This topology does not start or forward to FastAPI. The npm package uses the canonical
+This topology does not start or forward to FastAPI. The TypeScript package uses the canonical
 root schema and catalog and implements the projector, plan changes, credits, packs,
 authentication, and workers natively. Route files export `runtime = "nodejs"`, disable
 caching, and set a bounded duration. Stripe and `pg` are not supported on Edge.
 
 This monorepo uses `@tosea/stripe-entitlements: file:../typescript` so Vercel builds and
-tests the same source tree. A downstream repository should instead pin the published
-runtime and retain the three explicit Route Handler modules shown in the
-[TypeScript guide](../typescript/README.md#use-the-native-nextjs-backend):
+tests the same source tree. Because `0.4.0` is not published to npm yet, the shortest
+current Vercel/v0 path is to fork the whole repository and preserve that local
+dependency. A separate downstream repository can pin the repository as a Git
+submodule/local `file:` dependency or install a tarball packed from the reviewed source,
+then retain the three explicit Route Handler modules shown in the
+[TypeScript guide](../typescript/README.md#use-the-native-nextjs-backend). Neither path
+depends on a published npm package; see the exact
+[vendor tree](ADOPTION.md#consume-a-pinned-git-source-or-vendored-copy).
+
+The tarball option is:
 
 ```bash
-npm install --save-exact @tosea/stripe-entitlements@0.4.0
+npm install --save-exact ./vendor/tosea-stripe-entitlements-0.4.0.tgz
 ```
 
 Also copy the package guide's `outputFileTracingIncludes` entries for `dist/plans.toml`
@@ -111,15 +125,36 @@ JavaScript bundle without those runtime resources is not deployable. If you set
 `PLAN_CATALOG_PATH`, include and deploy that host-owned catalog in the trace as well;
 do not use a build-machine-only absolute path.
 
-Use the same environment matrix below. Migrate with the TypeScript CLI before traffic:
+When this whole-repository native TypeScript fork changes `plans.toml`, regenerate and
+check the reference UI snapshot with Node only:
 
 ```bash
-npx stripe-entitlements migrate
-npx stripe-entitlements doctor --stripe-network
+cd typescript
+npm run sync:catalog
+npm run sync:catalog -- --check
 ```
 
-The explicit package build is required only for a source checkout; an npm release already
-contains the generated CLI.
+The tarball does not contain the reference UI or this source-maintenance command; a
+standalone consumer owns its own presentation catalog.
+
+Use the same environment matrix below. In this source monorepo, build and invoke the
+TypeScript CLI from its package directory before traffic:
+
+```bash
+cd typescript
+npm ci
+npm run build
+set -a
+. ./.env
+set +a
+npx --no-install stripe-entitlements migrate
+npx --no-install stripe-entitlements doctor --profile portal --stripe-network
+```
+
+Running those `npx` commands from the monorepo root would try to resolve an unpublished
+registry package instead of the checked-in local package. In a separate tarball consumer,
+run them from that consumer's root after exporting its `.env.local`. The package guide
+shows both paths; the tarball already contains the generated CLI.
 
 `vercel.typescript.json` is the monorepo configuration: its service root is deliberately
 `web/`, so do not copy it unchanged into a normal root-level v0 project. Let Vercel
@@ -184,14 +219,15 @@ uv sync --frozen --extra auth
 uv run --env-file .env stripe-entitlements migrate
 uv run --env-file .env python scripts/bootstrap_stripe.py
 uv run --env-file .env python scripts/bootstrap_stripe.py --verify-only
-uv run --env-file .env stripe-entitlements doctor --stripe-network
+uv run --env-file .env stripe-entitlements doctor --profile portal --stripe-network
 ```
 
-A fresh 0.4.0 database applies 001 and 002; an existing v0.3 database applies only 002
-after the remote-mutation writers are quiesced. A v0.2.x migration history still requires
-the documented 0.3 lineage reset. Do not make application startup apply migrations:
-concurrent Functions are not a schema-deployment mechanism. Run the least-privilege
-migration command explicitly before traffic and before deploying code that requires it.
+A fresh PostgreSQL 17 or 18 database initializes this application's schema by applying
+001 and 002. That command does not upgrade the PostgreSQL server between major versions.
+Only an existing v0.3 application database applies 002 alone and needs the documented
+writer cutover; see [Operations](OPERATIONS.md). Do not make concurrent Functions perform
+schema deployment at request time: run the least-privilege migration command explicitly
+before traffic and before code that requires it.
 
 ## 2. Configure production authentication
 
@@ -199,8 +235,8 @@ The Vercel entrypoint defaults to `RejectAllAuthAdapter`. A deployment can start
 health and receive signed webhooks, but every browser billing API remains unauthorized
 until authentication is configured. Same-origin routing is not authentication.
 
-For a personal-user SaaS whose identity provider emits asymmetric JWTs with UUID `sub`
-claims, set:
+For a personal-user SaaS whose identity provider emits asymmetric JWTs with stable string
+`sub` claims, set:
 
 ```dotenv
 BILLING_AUTH_MODE=personal_jwt
@@ -210,9 +246,11 @@ BILLING_JWKS_URL=https://identity.example.com/.well-known/jwks.json
 BILLING_JWT_ALGORITHMS=RS256
 ```
 
-The issuer, exact audience, signature, algorithm, `kid`, `exp`, `nbf`, and canonical UUID
-subject are verified by the existing JWT starter. Partial JWT configuration fails at app
-construction instead of falling back to a weaker identity.
+The existing JWT starter verifies issuer, exact audience, signature, algorithm, `kid`,
+required integer `exp`, and a bounded, non-empty `sub`. UUID and opaque provider subjects
+are both accepted without normalization. `nbf` is optional; when present it must be an
+integer and is enforced. Partial JWT configuration fails at app construction instead of
+falling back to a weaker identity.
 
 The browser still needs the matching identity-provider integration to supply its access
 token through the [`AuthAdapter`](../web/lib/auth.ts). The reference deliberately does
@@ -223,8 +261,9 @@ billing API.
 
 Team billing requires live membership and billing-role checks owned by the product.
 Construct `TeamJwtAuthAdapter` with the product's `TeamMembershipRepository` and pass it
-to `create_vercel_app(auth_adapter=...)` in a product-specific entrypoint. A signed tenant
-claim by itself is never authorization.
+to `create_vercel_app(auth_adapter=...)` in a product-specific entrypoint. Its bounded
+tenant selector supports UUID and opaque organization IDs, but a signed tenant claim by
+itself is never authorization.
 
 ## 3. Add Vercel environment variables
 

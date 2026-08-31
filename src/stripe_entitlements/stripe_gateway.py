@@ -21,7 +21,10 @@ from .plan_changes import (
     PlanChangeEstimate,
     RemotePlanChange,
 )
-from .portal_policy import portal_configuration_is_safe
+from .portal_policy import (
+    portal_configuration_id_is_usable,
+    portal_configuration_is_safe,
+)
 from .price_policy import catalog_one_time_price_matches, catalog_price_matches
 from .transitions import BillingInterval, TransitionPolicy
 from .types import SubscriptionSnapshot
@@ -29,6 +32,10 @@ from .types import SubscriptionSnapshot
 
 class _UnsupportedStripeShape(RuntimeError):
     pass
+
+
+class PortalConfigurationUnavailableError(RuntimeError):
+    """Raised before Stripe I/O when the optional Portal capability is unusable."""
 
 
 _SUBSCRIPTION_STATUSES = {
@@ -814,9 +821,12 @@ class StripeGateway:
     async def create_portal_session(
         self, *, customer_id: str, idempotency_key: str
     ) -> tuple[str, str]:
-        if not self.portal_configuration_id:
-            raise RuntimeError("a dedicated safe Portal configuration is required")
+        if not portal_configuration_id_is_usable(self.portal_configuration_id):
+            raise PortalConfigurationUnavailableError(
+                "Stripe Portal configuration is missing or invalid"
+            )
         configuration_id = self.portal_configuration_id
+        assert configuration_id is not None
         config = await asyncio.to_thread(
             stripe.billing_portal.Configuration.retrieve,
             configuration_id,

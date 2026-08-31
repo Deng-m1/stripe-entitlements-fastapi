@@ -7,7 +7,10 @@ import {
   publicHttpUrlIsStructurallySafe,
 } from "./config.js";
 import { hasUnsupportedInvoiceAdjustments } from "./invoice-policy.js";
-import { portalConfigurationIsSafe } from "./portal-policy.js";
+import {
+  portalConfigurationIdIsUsable,
+  portalConfigurationIsSafe,
+} from "./portal-policy.js";
 import {
   buildCreditPackCheckoutRequestSnapshot,
   buildSubscriptionCheckoutRequestSnapshot,
@@ -51,6 +54,8 @@ const SUBSCRIPTION_STATUSES = new Set([
 ]);
 
 class UnsupportedStripeShapeError extends Error {}
+
+export class PortalConfigurationUnavailableError extends Error {}
 
 function stripeObject(value: unknown): Record<string, unknown> {
   if (!isPlainRecord(value)) {
@@ -1214,8 +1219,10 @@ export class StripeGateway {
     readonly idempotencyKey: string;
   }): Promise<readonly [sessionId: string, sessionUrl: string]> {
     const configurationId = this.#portalConfigurationId;
-    if (configurationId === null) {
-      throw new Error("a dedicated safe Portal configuration is required");
+    if (!portalConfigurationIdIsUsable(configurationId)) {
+      throw new PortalConfigurationUnavailableError(
+        "Stripe Portal configuration is missing or invalid",
+      );
     }
     const config = stripeObject(
       await this.#stripe.billingPortal.configurations.retrieve(configurationId),

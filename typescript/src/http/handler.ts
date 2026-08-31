@@ -1,3 +1,4 @@
+import { AuthenticationError } from "../auth.js";
 import type { AuthenticatedIdentity } from "../auth.js";
 import {
   IdentityProviderUnavailable,
@@ -9,6 +10,7 @@ import type {
   BillingFetchHandler,
   BillingFetchHandlerOptions,
   BillingHttpResult,
+  BillingHttpOperation,
   BillingRequestContext,
 } from "./contracts.js";
 import {
@@ -19,18 +21,9 @@ import {
 } from "./security.js";
 import { readStripeWebhook } from "./webhook-body.js";
 
-type AuthenticatedOperation =
-  | "catalog"
-  | "account"
-  | "checkout"
-  | "creditPackCheckout"
-  | "portal"
-  | "previewPlanChange"
-  | "confirmPlanChange";
-
 interface RouteDefinition {
   readonly kind: "health" | "authenticated" | "webhook" | "cron";
-  readonly operation?: AuthenticatedOperation;
+  readonly operation?: BillingHttpOperation;
   readonly job?: "annual-grants" | "reconcile";
 }
 
@@ -223,7 +216,7 @@ function preflightResponse(
 }
 
 async function invokeAuthenticated(
-  operation: AuthenticatedOperation,
+  operation: BillingHttpOperation,
   context: BillingRequestContext,
   services: BillingFetchHandlerOptions["services"],
 ): Promise<BillingHttpResult> {
@@ -242,6 +235,17 @@ async function invokeAuthenticated(
       return services.previewPlanChange(context);
     case "confirmPlanChange":
       return services.confirmPlanChange(context);
+  }
+}
+
+async function reportError(
+  options: BillingFetchHandlerOptions,
+  context: Parameters<NonNullable<BillingFetchHandlerOptions["onError"]>>[0],
+): Promise<void> {
+  try {
+    await options.onError?.(context);
+  } catch {
+    // Diagnostics must never replace the original sanitized HTTP behavior.
   }
 }
 
@@ -278,7 +282,8 @@ export function createBillingFetchHandler(
     if (route.kind === "health") {
       try {
         return serviceResponse(await options.services.health(request));
-      } catch {
+      } catch (error) {
+        await reportError(options, { phase: "health", request, error });
         return errorResponse(503, "billing service is unavailable", "detail");
       }
     }
@@ -296,7 +301,12 @@ export function createBillingFetchHandler(
             stripeSignature: payload.stripeSignature,
           }),
         );
-      } catch {
+      } catch (error) {
+        await reportError(options, {
+          phase: "stripe_webhook",
+          request,
+          error,
+        });
         return errorResponse(
           500,
           "processing failed; Stripe should retry",
@@ -331,7 +341,13 @@ export function createBillingFetchHandler(
       }
       try {
         return serviceResponse(await options.services.runCron(job, request));
-      } catch {
+      } catch (error) {
+        await reportError(options, {
+          phase: "scheduled_worker",
+          request,
+          error,
+          cronJob: job,
+        });
         return errorResponse(
           503,
           "scheduled worker failed and should be retried",
@@ -356,6 +372,11 @@ export function createBillingFetchHandler(
         );
       }
       if (error instanceof IdentityProviderUnavailable) {
+        await reportError(options, {
+          phase: "authentication",
+          request,
+          error,
+        });
         return withCors(
           hardenedResponse(
             503,
@@ -366,17 +387,29 @@ export function createBillingFetchHandler(
           origins,
         );
       }
+      if (error instanceof AuthenticationError) {
+        return withCors(
+          errorResponse(401, "authentication failed", "detail"),
+          request,
+          origins,
+        );
+      }
+      await reportError(options, {
+        phase: "authentication",
+        request,
+        error,
+      });
       return withCors(
         errorResponse(401, "authentication failed", "detail"),
         request,
         origins,
       );
     }
+    const operation = route.operation;
+    if (operation === undefined) {
+      return errorResponse(500, "billing route is not configured", "detail");
+    }
     try {
-      const operation = route.operation;
-      if (operation === undefined) {
-        return errorResponse(500, "billing route is not configured", "detail");
-      }
       const response = serviceResponse(
         await invokeAuthenticated(
           operation,
@@ -385,7 +418,13 @@ export function createBillingFetchHandler(
         ),
       );
       return withCors(response, request, origins);
-    } catch {
+    } catch (error) {
+      await reportError(options, {
+        phase: "billing_operation",
+        request,
+        error,
+        operation,
+      });
       return withCors(
         errorResponse(500, "billing request failed", "detail"),
         request,

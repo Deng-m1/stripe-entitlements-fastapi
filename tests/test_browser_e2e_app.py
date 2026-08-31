@@ -9,7 +9,7 @@ import pytest
 from scripts import browser_e2e_app, e2e_stripe
 from stripe_entitlements.auth_starters import PersonalJwtAuthAdapter
 
-PERSONAL_SUBJECT = "7e4a3d62-e503-4f07-8f23-980056172964"
+PERSONAL_SUBJECT = "auth0|browser-e2e-user"
 WORKLOAD_SUBJECT = "bcd6b1ab-0185-4b2f-8a58-85b28c12bbb3"
 ISSUER = "https://127.0.0.1:8000/e2e/issuer"
 

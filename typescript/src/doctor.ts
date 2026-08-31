@@ -7,9 +7,12 @@ import Stripe from "stripe";
 
 import { PlanCatalog } from "./catalog.js";
 import type { Settings } from "./config.js";
-import { loadSettings } from "./config.js";
+import { ConfigurationError, loadSettings } from "./config.js";
 import { Database, databasePoolOptions } from "./database.js";
-import { portalConfigurationIsSafe } from "./portal-policy.js";
+import {
+  portalConfigurationIdIsUsable,
+  portalConfigurationIsSafe,
+} from "./portal-policy.js";
 import {
   catalogOneTimePriceMatches,
   catalogPriceMatches,
@@ -20,6 +23,7 @@ import { isPlainRecord } from "./validation.js";
 export const TYPESCRIPT_PACKAGE_VERSION = "0.4.0";
 
 export type DoctorStatus = "pass" | "warning" | "fail" | "skipped";
+export type DoctorProfile = "core" | "portal";
 
 export class DoctorCheck {
   public readonly name: string;
@@ -79,6 +83,7 @@ export interface RunDoctorOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly database?: Database;
   readonly stripeNetwork?: boolean;
+  readonly profile?: DoctorProfile;
   readonly network?: DoctorStripeNetwork;
   readonly migrationDirectory?: string;
 }
@@ -94,6 +99,7 @@ const PLACEHOLDER_MARKERS = [
   "your_secret",
 ] as const;
 const VERSION = /^\d{4}-\d{2}-\d{2}\.[a-z][a-z0-9_]*$/u;
+const DOCTOR_PROFILES = new Set<DoctorProfile>(["core", "portal"]);
 
 function isPlaceholder(value: string | null): boolean {
   if (value === null) {
@@ -105,6 +111,14 @@ function isPlaceholder(value: string | null): boolean {
 
 function exceptionKind(error: unknown): string {
   return error instanceof Error ? error.constructor.name : "UnknownError";
+}
+
+function configurationExceptionSummary(error: unknown): string {
+  const kind = exceptionKind(error);
+  return error instanceof ConfigurationError &&
+    /^[A-Z][A-Z0-9_]+ is required$/u.test(error.message)
+    ? `${kind}: ${error.message}`
+    : kind;
 }
 
 function check(
@@ -179,7 +193,10 @@ function safePublicUrl(value: string, allowQuery: boolean): boolean {
   );
 }
 
-function configurationChecks(settings: Settings): DoctorCheck[] {
+function configurationChecks(
+  settings: Settings,
+  portalRequired: boolean,
+): DoctorCheck[] {
   const checks: DoctorCheck[] = [];
   const sensitive: readonly [string, string | null][] = [
     ["STRIPE_SECRET_KEY", settings.stripeSecretKey],
@@ -224,16 +241,30 @@ function configurationChecks(settings: Settings): DoctorCheck[] {
     checks.push(
       check(
         "stripe.portal_configuration",
-        "fail",
-        "STRIPE_PORTAL_CONFIGURATION_ID is required for Portal sessions",
+        portalRequired ? "fail" : "skipped",
+        portalRequired
+          ? "STRIPE_PORTAL_CONFIGURATION_ID is required by the selected doctor profile"
+          : "not configured; core billing can run, but Portal sessions remain unavailable",
       ),
     );
   } else if (isPlaceholder(portal)) {
     checks.push(
       check(
         "stripe.portal_configuration",
-        "fail",
-        "Portal configuration ID is still a placeholder",
+        portalRequired ? "fail" : "warning",
+        portalRequired
+          ? "Portal configuration ID is still a placeholder and is required by the selected doctor profile"
+          : "Portal configuration ID is a placeholder; core billing is unaffected, but Portal sessions remain unavailable",
+      ),
+    );
+  } else if (!portalConfigurationIdIsUsable(portal)) {
+    checks.push(
+      check(
+        "stripe.portal_configuration",
+        portalRequired ? "fail" : "warning",
+        portalRequired
+          ? "Portal configuration ID format is invalid for the selected doctor profile"
+          : "Portal configuration ID format is invalid; core billing is unaffected",
       ),
     );
   } else {
@@ -359,6 +390,7 @@ async function stripeChecks(
   catalog: PlanCatalog | undefined,
   enabled: boolean,
   network: DoctorStripeNetwork | undefined,
+  portalRequired: boolean,
 ): Promise<DoctorCheck[]> {
   if (!enabled) {
     return [
@@ -488,12 +520,14 @@ async function stripeChecks(
   }
 
   const portalId = settings.stripePortalConfigurationId;
-  if (portalId === null || isPlaceholder(portalId)) {
+  if (!portalConfigurationIdIsUsable(portalId)) {
     checks.push(
       check(
         "stripe.network.portal",
-        "skipped",
-        "Portal retrieval requires a non-placeholder configuration ID",
+        portalRequired ? "fail" : "skipped",
+        portalRequired
+          ? "required Portal retrieval cannot run without a usable configuration ID"
+          : "Portal is not required by the core profile and no usable configuration ID was supplied",
       ),
     );
   } else {
@@ -510,17 +544,17 @@ async function stripeChecks(
       checks.push(
         check(
           "stripe.network.portal",
-          safe ? "pass" : "fail",
+          safe ? "pass" : portalRequired ? "fail" : "warning",
           safe
-            ? "Portal identity and mode match; updates are disabled and cancellation is period-end only"
-            : "Portal identity or safety policy drifted from the server contract",
+            ? "Portal identity and mode match; updates are disabled and cancellation is disabled or period-end only"
+            : "Portal identity or safety policy drifted from the server contract; updates must be disabled and cancellation must be disabled or period-end only",
         ),
       );
     } catch (error) {
       checks.push(
         check(
           "stripe.network.portal",
-          "fail",
+          portalRequired ? "fail" : "warning",
           `read-only Portal retrieval failed (${exceptionKind(error)})`,
         ),
       );
@@ -554,6 +588,11 @@ interface MigrationHistoryRow extends QueryResultRow {
 export async function runDoctor(
   options: RunDoctorOptions = {},
 ): Promise<DoctorReport> {
+  const profile = options.profile ?? "core";
+  if (!DOCTOR_PROFILES.has(profile)) {
+    throw new TypeError("doctor profile must be core or portal");
+  }
+  const portalRequired = profile === "portal";
   const checks: DoctorCheck[] = [
     check(
       "package.version",
@@ -592,7 +631,7 @@ export async function runDoctor(
       check(
         "config.load",
         "fail",
-        `configuration validation failed (${exceptionKind(error)})`,
+        `configuration validation failed (${configurationExceptionSummary(error)})`,
       ),
       check("catalog.load", "skipped", "configuration is unavailable"),
       check("database.connection", "skipped", "configuration is unavailable"),
@@ -612,7 +651,7 @@ export async function runDoctor(
     return new DoctorReport(TYPESCRIPT_PACKAGE_VERSION, checks);
   }
   checks.push(check("config.load", "pass", "typed configuration loaded"));
-  checks.push(...configurationChecks(settings));
+  checks.push(...configurationChecks(settings, portalRequired));
 
   let catalog: PlanCatalog | undefined;
   try {
@@ -750,6 +789,7 @@ export async function runDoctor(
       catalog,
       options.stripeNetwork === true,
       options.network,
+      portalRequired,
     )),
   );
   return new DoctorReport(TYPESCRIPT_PACKAGE_VERSION, checks);

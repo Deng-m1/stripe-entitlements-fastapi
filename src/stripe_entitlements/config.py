@@ -120,12 +120,9 @@ class Settings(DatabaseSettings):
     @field_validator("stripe_portal_configuration_id")
     @classmethod
     def _portal_configuration(cls, value: str | None) -> str | None:
-        if value is None:
+        if value is None or value == "":
             return None
-        value = _visible(value, field="STRIPE_PORTAL_CONFIGURATION_ID", max_bytes=255)
-        if not value.startswith("bpc_"):
-            raise ValueError("STRIPE_PORTAL_CONFIGURATION_ID must start with bpc_")
-        return value
+        return _visible(value, field="STRIPE_PORTAL_CONFIGURATION_ID", max_bytes=255)
 
     @field_validator("product_line")
     @classmethod

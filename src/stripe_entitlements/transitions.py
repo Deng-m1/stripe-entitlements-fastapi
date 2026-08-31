@@ -46,6 +46,13 @@ def decide_transition(
     elif policy == "prorated_delta" and (target_interval != "month" or current_interval != "month"):
         timing = "period_end"
         reason = "prorated delta is bounded to same-interval monthly changes"
+    elif (
+        policy == "prorated_delta"
+        and target.rank > current.rank
+        and target.monthly_credits <= current.monthly_credits
+    ):
+        timing = "period_end"
+        reason = "prorated delta requires a positive credit difference"
     elif target.rank > current.rank:
         timing = "immediate"
         reason = (

@@ -6,6 +6,7 @@ export const MAX_CREDIT_ATOMS = POSTGRES_BIGINT_MAX;
 export const MAX_WHOLE_CREDITS = MAX_CREDIT_ATOMS / CREDIT_SCALE;
 
 const PLAIN_DECIMAL = /^(0|[1-9][0-9]*)(?:\.([0-9]{1,6}))?$/u;
+const CREDIT_AMOUNT_INSTANCES = new WeakSet<object>();
 
 export type CreditInput = string | number | bigint;
 
@@ -106,6 +107,15 @@ export class CreditAmount {
       throw new RangeError("credit atoms must be a non-negative bigint");
     }
     this.atoms = atoms;
+    CREDIT_AMOUNT_INSTANCES.add(this);
+  }
+
+  public static isCreditAmount(value: unknown): value is CreditAmount {
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      CREDIT_AMOUNT_INSTANCES.has(value)
+    );
   }
 
   public static parse(

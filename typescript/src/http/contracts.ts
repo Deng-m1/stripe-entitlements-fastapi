@@ -3,6 +3,38 @@ import type { JsonValue } from "../types.js";
 
 export type BillingCronJob = "annual-grants" | "reconcile";
 
+export type BillingHttpOperation =
+  | "catalog"
+  | "account"
+  | "checkout"
+  | "creditPackCheckout"
+  | "portal"
+  | "previewPlanChange"
+  | "confirmPlanChange";
+
+export type BillingHttpErrorPhase =
+  | "health"
+  | "stripe_webhook"
+  | "scheduled_worker"
+  | "authentication"
+  | "billing_operation";
+
+/**
+ * Server-only diagnostic context. The HTTP response remains sanitized; adopters can
+ * send the original exception to their own structured logger or error tracker.
+ */
+export interface BillingHttpErrorContext {
+  readonly phase: BillingHttpErrorPhase;
+  readonly request: Request;
+  readonly error: unknown;
+  readonly operation?: BillingHttpOperation;
+  readonly cronJob?: BillingCronJob;
+}
+
+export type BillingHttpErrorReporter = (
+  context: BillingHttpErrorContext,
+) => void | Promise<void>;
+
 export interface BillingHttpResult {
   readonly status: number;
   readonly body: JsonValue;
@@ -56,6 +88,8 @@ export interface BillingFetchHandlerOptions {
    */
   readonly csrfMode?: BillingCsrfMode;
   readonly cronSecret?: string;
+  /** Called only on the server. Reporter failures never replace the billing response. */
+  readonly onError?: BillingHttpErrorReporter;
 }
 
 export type BillingFetchHandler = (request: Request) => Promise<Response>;

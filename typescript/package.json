@@ -63,6 +63,7 @@
     "build": "tsc -p tsconfig.build.json",
     "postbuild": "node dist/build/copy-resources.js",
     "prepack": "npm run build",
+    "sync:catalog": "npm run build && node dist/build/sync-reference-catalog.js",
     "format:check": "prettier --check .",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",

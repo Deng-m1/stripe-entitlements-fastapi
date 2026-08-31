@@ -36,6 +36,7 @@ import {
   PlanChangeUnavailableError,
 } from "./plan-changes.js";
 import { runAnnualGrantBatch, runReconciliationBatch } from "./scheduled.js";
+import { PortalConfigurationUnavailableError } from "./stripe-gateway.js";
 import {
   rfc3339Timestamp,
   spendableSubscriptionAtoms,
@@ -728,6 +729,12 @@ export class DefaultBillingHttpServices implements BillingHttpServices {
     } catch (error) {
       if (error instanceof RequestContractError) {
         return errorResult(400, error.message);
+      }
+      if (error instanceof PortalConfigurationUnavailableError) {
+        return errorResult(
+          503,
+          "Stripe Portal configuration is missing or invalid",
+        );
       }
       if (error instanceof PlanChangeUnavailableError) {
         return errorResult(409, error.message);

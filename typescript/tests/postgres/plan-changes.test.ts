@@ -5,6 +5,7 @@ import type { QueryResultRow } from "pg";
 import { beforeAll, describe, expect, test } from "vitest";
 
 import { PlanCatalog } from "../../src/catalog.js";
+import { CreditAmount } from "../../src/credit-amount.js";
 import type { Database } from "../../src/database.js";
 import {
   PlanChangeBusyError,
@@ -543,6 +544,71 @@ describe("prorated-delta policy", () => {
       settlement_invoice_id: "in_fake_plan_change",
     });
   });
+
+  test.each([300_000_000n, 299_999_999n])(
+    "schedules a %s-atom higher rank without immediate Stripe I/O",
+    async (targetAtoms) => {
+      const starter = catalog.require("starter");
+      const pro = catalog.require("pro");
+      const flexibleCatalog = new PlanCatalog(
+        new Map([
+          [starter.key, starter],
+          [
+            pro.key,
+            {
+              ...pro,
+              monthlyCredits: CreditAmount.fromAtoms(targetAtoms),
+            },
+          ],
+        ]),
+        catalog.lookupPrefix,
+        catalog.creditPacks,
+      );
+      const accountId = await seedPaidAccount(database, flexibleCatalog);
+      const gateway = new FakePlanGateway();
+      const service = new PlanChangeCoordinator(
+        database,
+        flexibleCatalog,
+        gateway,
+        { transitionPolicy: "prorated_delta" },
+      );
+
+      const preview = await service.previewRemote(
+        accountId,
+        "pro",
+        "month",
+        `delta-nonpositive-${targetAtoms.toString()}`,
+      );
+      const confirmed = await service.confirm(accountId, preview.changeId);
+
+      expect(preview.decision).toMatchObject({
+        timing: "period_end",
+        policy: "prorated_delta",
+      });
+      expect(confirmed.status).toBe("scheduled");
+      expect(gateway.previewCalls).toBe(0);
+      expect(gateway.applyCalls).toEqual([]);
+      expect(gateway.scheduleCalls).toHaveLength(1);
+      const state = await database.query<
+        {
+          readonly effective_mode: string;
+          readonly status: string;
+          readonly expected_credit_delta: string | null;
+          readonly proration_date: string | null;
+        } & QueryResultRow
+      >(
+        `select effective_mode,status,expected_credit_delta,proration_date
+           from billing_plan_changes where id=$1::uuid`,
+        [preview.changeId],
+      );
+      expect(state.rows[0]).toEqual({
+        effective_mode: "period_end",
+        status: "scheduled",
+        expected_credit_delta: null,
+        proration_date: null,
+      });
+    },
+  );
 
   test.each([
     { label: "tax", taxAmount: 1n },

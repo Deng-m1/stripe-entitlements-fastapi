@@ -1,6 +1,16 @@
 const STRIPE_ACCOUNT_SELECTOR = /^(?:acct|cus|sub)_[A-Za-z0-9_]+$/u;
-const UUID =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const UUID_HEX = /^[0-9a-f]{32}$/iu;
+
+function isUuidSelector(value: string): boolean {
+  let candidate = value;
+  if (candidate.toLowerCase().startsWith("urn:uuid:")) {
+    candidate = candidate.slice("urn:uuid:".length);
+  }
+  if (candidate.startsWith("{") && candidate.endsWith("}")) {
+    candidate = candidate.slice(1, -1);
+  }
+  return UUID_HEX.test(candidate.replaceAll("-", ""));
+}
 
 export class InvalidOwnerReferenceError extends Error {}
 
@@ -19,7 +29,7 @@ export function validateOwnerExternalRef(value: string): string {
       "owner_external_ref cannot be a Stripe identifier",
     );
   }
-  if (UUID.test(value)) {
+  if (isUuidSelector(value)) {
     throw new InvalidOwnerReferenceError(
       "owner_external_ref cannot be an internal account ID",
     );

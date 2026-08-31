@@ -55,6 +55,30 @@ describe("TypeScript runtime configuration", () => {
     });
   });
 
+  it("keeps an optional invalid Portal ID for capability-level validation", () => {
+    const settings = loadSettings({
+      ...environment(),
+      STRIPE_PORTAL_CONFIGURATION_ID: "pc_invalid_optional",
+    });
+
+    expect(settings.stripePortalConfigurationId).toBe("pc_invalid_optional");
+  });
+
+  it("normalizes an empty optional Portal ID but rejects whitespace", () => {
+    expect(
+      loadSettings({
+        ...environment(),
+        STRIPE_PORTAL_CONFIGURATION_ID: "",
+      }).stripePortalConfigurationId,
+    ).toBeNull();
+    expect(() =>
+      loadSettings({
+        ...environment(),
+        STRIPE_PORTAL_CONFIGURATION_ID: "   ",
+      }),
+    ).toThrow("STRIPE_PORTAL_CONFIGURATION_ID");
+  });
+
   it.each([
     ["DATABASE_POOL_MIN", "-1"],
     ["DATABASE_POOL_MAX", "0"],

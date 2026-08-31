@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from stripe_entitlements.catalog import PlanCatalog
@@ -53,6 +55,20 @@ def test_complete_month_year_tier_transition_matrix(
         expected = "period_end"
     assert decision.timing == expected
     assert decision.policy == policy
+
+
+def test_prorated_delta_defers_a_rank_upgrade_without_positive_credit_delta(
+    catalog: PlanCatalog,
+) -> None:
+    starter = catalog.require("starter")
+    pro = replace(catalog.require("pro"), monthly_credits=starter.monthly_credits)
+
+    reset = decide_transition(starter, "month", pro, "month", "full_period_reset")
+    delta = decide_transition(starter, "month", pro, "month", "prorated_delta")
+
+    assert reset.timing == "immediate"
+    assert delta.timing == "period_end"
+    assert delta.reason == "prorated delta requires a positive credit difference"
 
 
 @pytest.mark.parametrize(

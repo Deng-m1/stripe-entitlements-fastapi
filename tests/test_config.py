@@ -27,7 +27,6 @@ def _valid(**overrides: object) -> dict[str, object]:
         ("stripe_webhook_secret", "secret", "whsec_"),
         ("stripe_api_version", "latest", "YYYY-MM-DD"),
         ("stripe_webhook_api_version", "2026-06-24", "YYYY-MM-DD"),
-        ("stripe_portal_configuration_id", "pc_wrong", "bpc_"),
         ("product_line", "Upper_Product", "lowercase slug"),
         ("lookup_prefix", "bad_prefix", "without underscores"),
         ("log_level", "info", "Input should be"),
@@ -61,6 +60,23 @@ def test_settings_accept_explicit_test_and_live_secret_modes(secret_key: str) ->
     assert settings.stripe_secret_key == secret_key
     assert settings.product_line == "example-entitlements"
     assert settings.log_level == "INFO"
+
+
+def test_settings_keeps_optional_invalid_portal_id_for_capability_level_validation() -> None:
+    settings = Settings(**_valid(stripe_portal_configuration_id="pc_invalid_optional"))  # type: ignore[arg-type]
+
+    assert settings.stripe_portal_configuration_id == "pc_invalid_optional"
+
+
+def test_settings_normalizes_an_empty_optional_portal_id_to_none() -> None:
+    settings = Settings(**_valid(stripe_portal_configuration_id=""))  # type: ignore[arg-type]
+
+    assert settings.stripe_portal_configuration_id is None
+
+
+def test_settings_rejects_a_whitespace_only_optional_portal_id() -> None:
+    with pytest.raises(ValidationError, match="visible string"):
+        Settings(**_valid(stripe_portal_configuration_id="   "))  # type: ignore[arg-type]
 
 
 def test_settings_load_bounded_database_pool_configuration() -> None:

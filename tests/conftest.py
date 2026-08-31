@@ -59,6 +59,8 @@ def postgres_container() -> Iterator[None]:
             f"POSTGRES_PASSWORD={PG_PASSWORD}",
             "-e",
             f"POSTGRES_DB={PG_DATABASE}",
+            "-e",
+            "PGDATA=/var/lib/postgresql/data",
             "-p",
             f"127.0.0.1:{PG_PORT}:5432",
             _postgres_image(),

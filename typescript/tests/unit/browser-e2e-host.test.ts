@@ -5,7 +5,7 @@ import {
   createBrowserE2eApiHandler,
 } from "../e2e/browser-host.js";
 
-const PERSONAL_SUBJECT = "7e4a3d62-e503-4f07-8f23-980056172964";
+const PERSONAL_SUBJECT = "auth0|browser-e2e-user";
 const WORKLOAD_SUBJECT = "bcd6b1ab-0185-4b2f-8a58-85b28c12bbb3";
 const FRONTEND_ORIGIN = "https://127.0.0.1:3002";
 const BACKEND_ORIGIN = "https://127.0.0.1:8443";

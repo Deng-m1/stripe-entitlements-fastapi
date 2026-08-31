@@ -10,6 +10,12 @@ import tomllib
 from pathlib import Path
 
 _STABLE_VERSION = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
+_UNRELEASED_CHANGELOG_HEADING = re.compile(
+    rf"## \[Unreleased (?P<version>{_STABLE_VERSION.pattern})\]"
+)
+_RELEASED_CHANGELOG_HEADING = re.compile(
+    rf"## (?P<version>{_STABLE_VERSION.pattern}) - [0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}"
+)
 
 
 def _read_json(path: Path) -> dict[str, object]:
@@ -30,6 +36,24 @@ def _match_version(path: Path, pattern: str) -> str:
     if match is None:
         raise RuntimeError(f"cannot find release version in {path}")
     return match.group(1)
+
+
+def _changelog_heading(path: Path) -> tuple[str, bool]:
+    """Return the first changelog version and whether its heading is released."""
+
+    heading = next(
+        (line for line in path.read_text(encoding="utf-8").splitlines() if line.startswith("## ")),
+        None,
+    )
+    if heading is None:
+        raise RuntimeError(f"cannot find release version in {path}")
+    unreleased = _UNRELEASED_CHANGELOG_HEADING.fullmatch(heading)
+    if unreleased is not None:
+        return unreleased.group("version"), False
+    released = _RELEASED_CHANGELOG_HEADING.fullmatch(heading)
+    if released is not None:
+        return released.group("version"), True
+    raise RuntimeError(f"first release heading in {path} has an invalid shape")
 
 
 def collect_versions(root: Path) -> dict[str, str]:
@@ -94,10 +118,10 @@ def collect_versions(root: Path) -> dict[str, str]:
         ),
         "typescript/src/doctor.ts": r'TYPESCRIPT_PACKAGE_VERSION = "([^"]+)"',
         "CITATION.cff": r"(?m)^version: ([^\s]+)$",
-        "CHANGELOG.md": r"(?m)^## ([0-9]+\.[0-9]+\.[0-9]+) - [0-9]{4}-[0-9]{2}-[0-9]{2}$",
     }
     for filename, pattern in text_versions.items():
         versions[filename] = _match_version(root / filename, pattern)
+    versions["CHANGELOG.md"] = _changelog_heading(root / "CHANGELOG.md")[0]
     return versions
 
 
@@ -116,6 +140,13 @@ def main() -> int:
     expected = args.expected or versions["pyproject.toml"]
     if _STABLE_VERSION.fullmatch(expected) is None:
         raise SystemExit(f"release version must be canonical stable SemVer: {expected!r}")
+    if args.expected is not None:
+        changelog_version, released = _changelog_heading(root / "CHANGELOG.md")
+        if not released or changelog_version != expected:
+            raise SystemExit(
+                "tag release requires the first changelog heading to be "
+                f"'## {expected} - YYYY-MM-DD'"
+            )
     mismatches = {name: value for name, value in versions.items() if value != expected}
     if mismatches:
         raise SystemExit(

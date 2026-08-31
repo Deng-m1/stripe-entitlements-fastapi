@@ -36,6 +36,13 @@ export function decideTransition(
   ) {
     timing = "period_end";
     reason = "prorated delta is bounded to same-interval monthly changes";
+  } else if (
+    policy === "prorated_delta" &&
+    target.rank > current.rank &&
+    target.monthlyCredits.atoms <= current.monthlyCredits.atoms
+  ) {
+    timing = "period_end";
+    reason = "prorated delta requires a positive credit difference";
   } else if (target.rank > current.rank) {
     timing = "immediate";
     reason =

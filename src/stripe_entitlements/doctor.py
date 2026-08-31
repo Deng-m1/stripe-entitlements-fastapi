@@ -22,11 +22,17 @@ from .config import (
     public_http_url_is_structurally_safe,
 )
 from .database import Database
-from .portal_policy import portal_configuration_is_safe
+from .portal_policy import (
+    portal_configuration_id_is_usable,
+    portal_configuration_is_safe,
+)
 from .price_policy import catalog_one_time_price_matches, catalog_price_matches
 from .resources import default_migration_directory
 
 DoctorStatus = Literal["pass", "warning", "fail", "skipped"]
+DoctorProfile = Literal["core", "portal"]
+
+_DOCTOR_PROFILES = frozenset({"core", "portal"})
 
 _PLACEHOLDER_MARKERS = (
     "replace_me",
@@ -92,7 +98,11 @@ def _origin(value: str) -> tuple[str, str] | None:
     return parsed.scheme, parsed.netloc.casefold()
 
 
-def _configuration_checks(settings: Settings) -> list[DoctorCheck]:
+def _configuration_checks(
+    settings: Settings,
+    *,
+    portal_required: bool = False,
+) -> list[DoctorCheck]:
     checks: list[DoctorCheck] = []
     sensitive_values = {
         "STRIPE_SECRET_KEY": settings.stripe_secret_key,
@@ -135,22 +145,39 @@ def _configuration_checks(settings: Settings) -> list[DoctorCheck]:
         checks.append(
             DoctorCheck(
                 "stripe.portal_configuration",
-                "fail",
-                "STRIPE_PORTAL_CONFIGURATION_ID is required for Portal sessions",
+                "fail" if portal_required else "skipped",
+                (
+                    "STRIPE_PORTAL_CONFIGURATION_ID is required by the selected doctor profile"
+                    if portal_required
+                    else "not configured; core billing can run, but Portal sessions "
+                    "remain unavailable"
+                ),
             )
         )
     elif _is_placeholder(portal_id):
         checks.append(
             DoctorCheck(
                 "stripe.portal_configuration",
-                "fail",
-                "Portal configuration ID is still a placeholder",
+                "fail" if portal_required else "warning",
+                (
+                    "Portal configuration ID is still a placeholder and is required by "
+                    "the selected doctor profile"
+                    if portal_required
+                    else "Portal configuration ID is a placeholder; core billing is "
+                    "unaffected, but Portal sessions remain unavailable"
+                ),
             )
         )
-    elif not portal_id.startswith("bpc_"):
+    elif not portal_configuration_id_is_usable(portal_id):
         checks.append(
             DoctorCheck(
-                "stripe.portal_configuration", "fail", "Portal configuration ID format is invalid"
+                "stripe.portal_configuration",
+                "fail" if portal_required else "warning",
+                (
+                    "Portal configuration ID format is invalid for the selected doctor profile"
+                    if portal_required
+                    else "Portal configuration ID format is invalid; core billing is unaffected"
+                ),
             )
         )
     else:
@@ -256,6 +283,7 @@ async def _stripe_network_checks(
     catalog: PlanCatalog | None,
     *,
     enabled: bool,
+    portal_required: bool = False,
 ) -> list[DoctorCheck]:
     if not enabled:
         return [
@@ -407,15 +435,21 @@ async def _stripe_network_checks(
             )
 
     portal_id = settings.stripe_portal_configuration_id
-    if portal_id is None or _is_placeholder(portal_id):
+    if not portal_configuration_id_is_usable(portal_id):
         checks.append(
             DoctorCheck(
                 "stripe.network.portal",
-                "skipped",
-                "Portal retrieval requires a non-placeholder configuration ID",
+                "fail" if portal_required else "skipped",
+                (
+                    "required Portal retrieval cannot run without a usable configuration ID"
+                    if portal_required
+                    else "Portal is not required by the core profile and no usable "
+                    "configuration ID was supplied"
+                ),
             )
         )
     else:
+        assert portal_id is not None
 
         def retrieve_portal() -> Any:
             return stripe.billing_portal.Configuration.retrieve(
@@ -440,7 +474,7 @@ async def _stripe_network_checks(
             checks.append(
                 DoctorCheck(
                     "stripe.network.portal",
-                    "fail",
+                    "fail" if portal_required else "warning",
                     f"read-only Portal retrieval failed ({type(exc).__name__})",
                 )
             )
@@ -448,13 +482,14 @@ async def _stripe_network_checks(
             checks.append(
                 DoctorCheck(
                     "stripe.network.portal",
-                    "pass" if valid else "fail",
+                    "pass" if valid else ("fail" if portal_required else "warning"),
                     (
                         "Portal identity and mode match; subscription updates are disabled "
-                        "and cancellation is limited to period end"
+                        "and cancellation is disabled or limited to period end"
                         if valid
                         else "Portal identity or safety policy does not match; subscription "
-                        "updates must be disabled and cancellation must be limited to period end"
+                        "updates must be disabled and cancellation must be disabled or limited "
+                        "to period end"
                     ),
                 )
             )
@@ -473,12 +508,20 @@ async def run_doctor(
     settings: Settings | None = None,
     *,
     stripe_network: bool = False,
+    profile: DoctorProfile = "core",
 ) -> DoctorReport:
     """Run read-only local, PostgreSQL and optionally Stripe GET-only checks.
+
+    ``core`` treats Customer Portal as optional. ``portal`` requires a usable Portal
+    configuration without making Stripe network access implicit.
 
     Error messages deliberately expose only exception class names. Configuration values,
     DSNs, Stripe identifiers and SDK exception messages are never rendered.
     """
+
+    if profile not in _DOCTOR_PROFILES:
+        raise ValueError("doctor profile must be core or portal")
+    portal_required = profile == "portal"
 
     checks: list[DoctorCheck] = []
     try:
@@ -560,7 +603,7 @@ async def run_doctor(
             return DoctorReport(__version__, tuple(checks))
 
     checks.append(DoctorCheck("config.load", "pass", "typed configuration loaded"))
-    checks.extend(_configuration_checks(settings))
+    checks.extend(_configuration_checks(settings, portal_required=portal_required))
 
     catalog: PlanCatalog | None = None
     try:
@@ -678,5 +721,12 @@ async def run_doctor(
     if connected:
         await database.close()
 
-    checks.extend(await _stripe_network_checks(settings, catalog, enabled=stripe_network))
+    checks.extend(
+        await _stripe_network_checks(
+            settings,
+            catalog,
+            enabled=stripe_network,
+            portal_required=portal_required,
+        )
+    )
     return DoctorReport(__version__, tuple(checks))

@@ -1,0 +1,18 @@
+[plans.starter]
+name = "Starter"
+description = "Starter plan"
+currency = "usd"
+rank = 10
+monthly_credits = 300
+month_usd = 19
+year_usd = 137
+
+[credit_packs.boost]
+name = "Boost"
+description = "One-time credits"
+currency = "usd"
+rank = 10
+credits = 100
+price_usd = 9
+expires_days = 365
+expires_day = 365

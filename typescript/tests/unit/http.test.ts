@@ -386,6 +386,7 @@ describe("framework-neutral billing HTTP handler", () => {
   });
 
   it("returns retryable webhook and Cron errors without reflecting exceptions", async () => {
+    const onError = vi.fn();
     const handler = createBillingFetchHandler({
       services: services({
         stripeWebhook: vi.fn(async () => {
@@ -398,6 +399,7 @@ describe("framework-neutral billing HTTP handler", () => {
       auth: authenticated(),
       allowedOrigins: [],
       cronSecret: "cron-secret-at-least-sixteen",
+      onError,
     });
     const webhook = await handler(
       postRequest("/webhooks/stripe", {
@@ -414,6 +416,49 @@ describe("framework-neutral billing HTTP handler", () => {
     expect(await webhook.text()).not.toContain("sk_test");
     expect(cron.status).toBe(503);
     expect(await cron.text()).not.toContain("database identifier");
+    expect(onError).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ phase: "stripe_webhook" }),
+    );
+    expect(onError).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        phase: "scheduled_worker",
+        cronJob: "reconcile",
+      }),
+    );
+  });
+
+  it("reports server errors while keeping responses sanitized and ignores reporter failure", async () => {
+    const accountError = new Error("private database row detail");
+    const onError = vi.fn(async () => {
+      throw new Error("logger transport detail");
+    });
+    const handler = createBillingFetchHandler({
+      services: services({
+        account: vi.fn(async () => {
+          throw accountError;
+        }),
+      }),
+      auth: authenticated(),
+      allowedOrigins: [],
+      onError,
+    });
+    const request = new Request("https://billing.example/api/account");
+
+    const response = await handler(request);
+    const body = await response.text();
+
+    expect(response.status).toBe(500);
+    expect(body).not.toContain("private database row");
+    expect(body).not.toContain("logger transport");
+    expect(onError).toHaveBeenCalledWith({
+      phase: "billing_operation",
+      request,
+      error: accountError,
+      operation: "account",
+    });
   });
 
   it("authorizes Cron with an exact bearer value and fails closed when unconfigured", async () => {

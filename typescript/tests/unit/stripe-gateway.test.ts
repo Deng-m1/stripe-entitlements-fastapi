@@ -1026,7 +1026,7 @@ describe("dedicated safe Billing Portal", () => {
         customerId: "cus_test",
         idempotencyKey: "key",
       }),
-    ).rejects.toThrow(/dedicated/u);
+    ).rejects.toThrow(/configuration is missing or invalid/u);
     const unsafe = safePortal();
     record(record(unsafe["features"])["subscription_update"])["enabled"] = true;
     client.billingPortal.configurations.retrieve.mockResolvedValue(unsafe);
@@ -1040,6 +1040,28 @@ describe("dedicated safe Billing Portal", () => {
     ).rejects.toThrow(/drifted/u);
     expect(client.billingPortal.sessions.create).not.toHaveBeenCalled();
   });
+
+  it.each([
+    null,
+    "pc_invalid_private_value",
+    "bpc_",
+    "bpc_replace_me_private_value",
+  ])(
+    "rejects unusable Portal configuration %s before any Stripe request",
+    async (portalConfigurationId) => {
+      const client = mockStripe();
+      await expect(
+        gateway(client, { portalConfigurationId }).createPortalSession({
+          customerId: "cus_test",
+          idempotencyKey: "key",
+        }),
+      ).rejects.toThrow(/configuration is missing or invalid/u);
+      expect(
+        client.billingPortal.configurations.retrieve,
+      ).not.toHaveBeenCalled();
+      expect(client.billingPortal.sessions.create).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     { id: "not_bps" },

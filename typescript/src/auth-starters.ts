@@ -30,8 +30,9 @@ const MAX_BEARER_BYTES = 16_384;
 const MAX_CLAIM_BYTES = 512;
 const MAX_JWKS_BYTES = 1_048_576;
 const MAX_JWKS_KEYS = 128;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
-const NIL_UUID = "00000000-0000-0000-0000-000000000000";
+const MAX_OWNER_REFERENCE_BYTES = 512;
+const USER_OWNER_PREFIX = "v1:user:";
+const TENANT_OWNER_PREFIX = "v1:tenant:";
 
 function boundedInteger(
   value: unknown,
@@ -77,17 +78,35 @@ function httpsUrl(value: unknown, field: string, maximum: number): string {
   return normalized;
 }
 
-function canonicalUuid(value: unknown, field: string): string {
-  let normalized: string;
+function stableIdentityClaim(
+  value: unknown,
+  field: string,
+  maximum = MAX_CLAIM_BYTES,
+): string {
   try {
-    normalized = requiredVisibleString(value, field, MAX_CLAIM_BYTES);
+    // Provider-owned user and tenant IDs are opaque, case-sensitive strings.
+    // UUID-looking non-canonical values receive the same exact-match semantics
+    // as every other opaque value; internal billing UUIDs are validated elsewhere.
+    return requiredVisibleString(value, field, maximum);
   } catch (error) {
     throw new AuthenticationError("invalid bearer token", { cause: error });
   }
-  if (!UUID.test(normalized) || normalized === NIL_UUID) {
-    throw new AuthenticationError("invalid bearer token");
+}
+
+function stableSubject(value: unknown): string {
+  return stableIdentityClaim(value, "sub");
+}
+
+function ownerReference(prefix: string, identifier: string): string {
+  try {
+    return requiredVisibleString(
+      `${prefix}${identifier}`,
+      "owner reference",
+      MAX_OWNER_REFERENCE_BYTES,
+    );
+  } catch (error) {
+    throw new AuthenticationError("invalid bearer token", { cause: error });
   }
-  return normalized;
 }
 
 function verifiedEmail(
@@ -774,7 +793,7 @@ export class JwtVerifier {
         issuer: this.#config.issuer,
         audience: this.#config.audience,
         clockTolerance: this.#config.leewaySeconds,
-        requiredClaims: ["exp", "nbf", "sub"],
+        requiredClaims: ["exp", "sub"],
       });
       payload = verified.payload;
     } catch (error) {
@@ -783,11 +802,11 @@ export class JwtVerifier {
     if (
       payload.aud !== this.#config.audience ||
       !Number.isSafeInteger(payload.exp) ||
-      !Number.isSafeInteger(payload.nbf)
+      (payload.nbf !== undefined && !Number.isSafeInteger(payload.nbf))
     ) {
       throw new AuthenticationError("invalid bearer token");
     }
-    const userId = canonicalUuid(payload.sub, "sub");
+    const userId = stableSubject(payload.sub);
     const claims = Object.freeze({ ...payload }) as Readonly<
       Record<string, unknown>
     >;
@@ -796,7 +815,7 @@ export class JwtVerifier {
   }
 }
 
-/** Map one verified host user UUID to one personal billing owner. */
+/** Map one verified stable host subject to one personal billing owner. */
 export class PersonalJwtAuthAdapter implements AuthAccountAdapter {
   readonly #verifier: JwtVerifier;
 
@@ -807,9 +826,9 @@ export class PersonalJwtAuthAdapter implements AuthAccountAdapter {
   public async authenticate(request: Request): Promise<AuthenticatedIdentity> {
     const principal = await this.#verifier.verifyRequest(request);
     return principal.email === undefined
-      ? { externalRef: `v1:user:${principal.userId}` }
+      ? { externalRef: ownerReference(USER_OWNER_PREFIX, principal.userId) }
       : {
-          externalRef: `v1:user:${principal.userId}`,
+          externalRef: ownerReference(USER_OWNER_PREFIX, principal.userId),
           email: principal.email,
         };
   }
@@ -967,9 +986,10 @@ export class TeamJwtAuthAdapter implements AuthAccountAdapter {
 
   public async authenticate(request: Request): Promise<AuthenticatedIdentity> {
     const principal = await this.#verifier.verifyRequest(request);
-    const tenantId = canonicalUuid(
+    const tenantId = stableIdentityClaim(
       principal.claims[this.#tenantClaim],
       this.#tenantClaim,
+      MAX_OWNER_REFERENCE_BYTES - TENANT_OWNER_PREFIX.length,
     );
     const membership = await this.#memberships.membershipFor(
       principal.userId,
@@ -990,7 +1010,10 @@ export class TeamJwtAuthAdapter implements AuthAccountAdapter {
       this.#authorization.capabilityFor(request),
     );
     return principal.email === undefined
-      ? { externalRef: `v1:tenant:${tenantId}` }
-      : { externalRef: `v1:tenant:${tenantId}`, email: principal.email };
+      ? { externalRef: ownerReference(TENANT_OWNER_PREFIX, tenantId) }
+      : {
+          externalRef: ownerReference(TENANT_OWNER_PREFIX, tenantId),
+          email: principal.email,
+        };
   }
 }

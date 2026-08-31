@@ -32,7 +32,7 @@ from .plan_changes import (
     PlanChangeResult,
     PlanChangeUnavailableError,
 )
-from .stripe_gateway import StripeGateway
+from .stripe_gateway import PortalConfigurationUnavailableError, StripeGateway
 from .subscription_state import (
     spendable_subscription_atoms,
     subscription_credits_are_spendable,
@@ -556,6 +556,8 @@ def create_billing_router(
                 customer_id=str(account["stripe_customer_id"]),
                 idempotency_key=f"portal:{account['id']}:{request_key}",
             )
+        except PortalConfigurationUnavailableError as exc:
+            raise HTTPException(503, "Stripe Portal configuration is missing or invalid") from exc
         except Exception as exc:
             raise HTTPException(502, "Stripe Portal is temporarily unavailable") from exc
         return {"session_id": session_id, "url": url}

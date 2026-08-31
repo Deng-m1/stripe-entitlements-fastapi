@@ -23,6 +23,34 @@ function isSupportedRecord(
   }
 }
 
+const PORTAL_PLACEHOLDER_MARKERS = [
+  "replace_me",
+  "replace-with",
+  "replace_with",
+  "changeme",
+  "change_me",
+  "dummy",
+  "your_key",
+  "your_secret",
+] as const;
+const PORTAL_CONFIGURATION_ID = /^bpc_[A-Za-z0-9]+$/u;
+
+/** Return whether an ID is safe to send to the Stripe Portal API. */
+export function portalConfigurationIdIsUsable(
+  configurationId: string | null,
+): configurationId is string {
+  if (
+    configurationId === null ||
+    !PORTAL_CONFIGURATION_ID.test(configurationId)
+  ) {
+    return false;
+  }
+  const normalized = configurationId.toLowerCase().replaceAll(" ", "_");
+  return !PORTAL_PLACEHOLDER_MARKERS.some((marker) =>
+    normalized.includes(marker),
+  );
+}
+
 export interface PortalConfigurationExpectation {
   readonly expectedLivemode: boolean;
   readonly expectedProductLine: string;
@@ -50,6 +78,10 @@ export function portalConfigurationIsSafe(
   if (!isSupportedRecord(cancel) || !isSupportedRecord(update)) {
     return false;
   }
+  const cancelEnabled = cancel["enabled"];
+  const cancellationIsSafe =
+    cancelEnabled === false ||
+    (cancelEnabled === true && cancel["mode"] === "at_period_end");
 
   // Other Portal capabilities and future feature keys are deliberately benign.
   return (
@@ -57,7 +89,6 @@ export function portalConfigurationIsSafe(
     config["livemode"] === expected.expectedLivemode &&
     metadata["product_line"] === expected.expectedProductLine &&
     update["enabled"] === false &&
-    cancel["enabled"] === true &&
-    cancel["mode"] === "at_period_end"
+    cancellationIsSafe
   );
 }

@@ -68,7 +68,8 @@ indexing is not enabled, `robots.txt` disallows the entire site and root metadat
 The public landing and initial server-rendered pricing HTML use
 `web/reference-catalog.json` through `web/lib/reference-catalog.ts`. The interactive UI
 replaces it with the authenticated backend catalog after hydration. When adapting the
-bundled example, update `plans.toml` and `web/reference-catalog.json` together. A backend
+bundled example, update `plans.toml`, then run
+`uv run python scripts/sync_reference_catalog.py`; do not hand-edit the generated JSON. A backend
 test fails if their names, descriptions, prices, features, limits, or plan order drift.
 Never let static SEO content advertise a price or entitlement that the billing catalog
 does not enforce.

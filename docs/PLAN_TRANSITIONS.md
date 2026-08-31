@@ -13,8 +13,11 @@ It is also copied into every durable `billing_plan_changes` row, so changing an
 environment variable cannot reinterpret an in-flight intent.
 
 Plan direction comes from the unique positive rank in `plans.toml`, never from price.
-The six states are Starter Monthly/Yearly (`SM`, `SY`), Pro Monthly/Yearly (`PM`,
-`PY`), and Ultra Monthly/Yearly (`UM`, `UY`).
+The matrices below use the bundled cumulative catalog's six states: Starter
+Monthly/Yearly (`SM`, `SY`), Pro Monthly/Yearly (`PM`, `PY`), and Ultra Monthly/Yearly
+(`UM`, `UY`). A custom higher-rank plan may trade entitlements; under
+`prorated_delta`, a non-positive credit difference changes the corresponding immediate
+cell to period end.
 
 ## Template 1: full-period reset
 
@@ -62,8 +65,9 @@ application adds the fixed entitlement difference.
 | **UY** | period end | period end | period end | period end | period end | noop |
 
 All 36 cells are deliberate. Immediate delta is bounded to a higher-rank monthly plan
-while retaining the monthly interval. Downgrades, month/year conversions, and every
-annual-origin change wait until period end. This avoids claiming that a two-line
+with a positive monthly-credit difference while retaining the monthly interval.
+Downgrades, month/year conversions, and every annual-origin change wait until period
+end. This avoids claiming that a two-line
 monthly proration reducer also solves annual multi-slot funding.
 
 Preview fixes one `proration_date`; confirm reuses that exact value:

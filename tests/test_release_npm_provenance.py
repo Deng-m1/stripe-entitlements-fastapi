@@ -78,7 +78,10 @@ def test_release_jobs_have_minimum_and_separated_permissions() -> None:
         "id-token": "write",
         "packages": "write",
     }
-    assert jobs["finalize-release"]["permissions"] == {"contents": "write"}
+    assert jobs["finalize-release"]["permissions"] == {
+        "contents": "write",
+        "packages": "write",
+    }
 
     assert jobs["npm-identity"]["environment"] == "npm-publish"
     assert jobs["npm-bootstrap"]["environment"] == "npm-publish"
@@ -137,6 +140,31 @@ def test_npm_publication_uses_candidate_tag_and_correct_provenance_mode() -> Non
     assert '--environment "npm-publish"' in generation
     assert '--run-id "$GITHUB_RUN_ID"' in generation
     assert '--run-attempt "$GITHUB_RUN_ATTEMPT"' in generation
+
+
+def test_brand_new_package_publish_can_resume_an_exact_unknown_result() -> None:
+    step = _step(
+        _jobs()["npm-bootstrap"],
+        "Publish the first package with the pre-generated provenance",
+    )
+    script = step["run"]
+    assert step["env"]["EXPECTED_INTEGRITY"] == (
+        "${{ needs.build-and-verify.outputs.npm_integrity }}"
+    )
+    assert 'package_spec="${package_name}@${RELEASE_VERSION}"' in script
+    assert 'existing_integrity="$(npm --userconfig=/dev/null view' in script
+    assert '[ "$existing_integrity" != "$EXPECTED_INTEGRITY" ]' in script
+    assert '"dist-tags.$PUBLISH_TAG"' in script
+    assert 'test "$existing_candidate" = "$RELEASE_VERSION"' in script
+    assert "already contains the exact bootstrap artifact" in script
+    assert script.index("existing_integrity=") < script.index('node "$npm_cli" publish')
+    assert script.index("could not re-confirm brand-new npm package vacancy") < script.index(
+        "brand-new npm package requires the environment NPM_TOKEN secret"
+    )
+    assert script.index(
+        "brand-new npm package requires the environment NPM_TOKEN secret"
+    ) < script.index('node "$npm_cli" publish')
+    assert "refusing token fallback" not in script
 
 
 def test_registry_verification_binds_signature_to_environment_and_run() -> None:
@@ -229,14 +257,83 @@ def test_final_promotion_is_downstream_of_every_verification_gate() -> None:
     )
     assert final_names.index(
         "Revalidate every remote candidate before channel promotion"
-    ) < final_names.index("Promote the verified npm candidate to latest")
+    ) < final_names.index("Determine moving-channel release policy")
+    assert final_names.index("Determine moving-channel release policy") < (
+        final_names.index("Promote and anonymously verify eligible OCI channels")
+    )
+    assert final_names.index(
+        "Promote and anonymously verify eligible OCI channels"
+    ) < final_names.index("Remove GHCR credentials before npm authority")
+    assert final_names.index("Remove GHCR credentials before npm authority") < (
+        final_names.index("Promote the verified npm candidate to latest")
+    )
     assert final_names.index("Promote the verified npm candidate to latest") < (
         final_names.index("Publish the fully verified GitHub Release")
     )
     promotion = _step(final, "Promote the verified npm candidate to latest")
-    assert promotion["if"] == ("needs.container-publish.outputs.promote_latest == 'true'")
+    credential_cleanup = _step(final, "Remove GHCR credentials before npm authority")
+    assert "docker logout ghcr.io" in credential_cleanup["run"]
+    assert "GHCR credential remains after logout" in credential_cleanup["run"]
+    assert "secrets.NPM_TOKEN" not in _serialized(credential_cleanup)
+    assert promotion["if"] == "steps.channel_policy.outputs.latest == 'true'"
     assert "secrets.NPM_TOKEN" in _serialized(promotion)
     assert "dist-tag add" in promotion["run"]
+
+
+def test_oci_immutable_tags_are_retry_safe_and_channels_wait_for_attestation() -> None:
+    jobs = _jobs()
+    publication = jobs["container-publish"]
+    publication_text = _serialized(publication)
+    push = _step(publication, "Publish or resume immutable OCI tags")["run"]
+
+    assert set(publication["outputs"]) == {"digest"}
+    assert ":latest" not in push
+    assert "${RELEASE_VERSION%.*}" not in push
+    assert "candidate_image_id" in push
+    assert "local registry" not in push
+    assert "127.0.0.1:5000" not in push
+    assert "release candidate must be one image manifest, not an index" in push
+    assert "published candidate differs from the tested image" in push
+    assert 'config.get("digest") != expected_config_digest' in push
+    assert "--format '{{.Os}}/{{.Architecture}}'" in push
+    assert '[ "$existing_digest" != "$candidate_digest" ]' in push
+    assert "immutable OCI tags disagree" in push
+    assert "refusing immutable OCI tag with a different digest" in push
+    assert "already identifies the exact immutable candidate" in push
+    assert "imagetools create --prefer-index=false" in push
+    assert '"${CONTAINER_IMAGE}@${candidate_digest}"' in push
+    assert 'if output="$(docker buildx imagetools inspect "$tag")"' in push
+    assert 'DOCKER_CONFIG="$anonymous_config"' in push
+    assert 'done < "$immutable_tags_file"' in push
+    assert "moving-container-tags.txt" not in publication_text
+
+    attestation = _step(jobs["container-attest"], "Attest the published container provenance")
+    assert attestation["with"] == {
+        "subject-name": "${{ needs.build-and-verify.outputs.container_image }}",
+        "subject-digest": "${{ needs.container-publish.outputs.digest }}",
+        "push-to-registry": True,
+    }
+
+    final = jobs["finalize-release"]
+    policy = _step(final, "Determine moving-channel release policy")["run"]
+    promotion = _step(final, "Promote and anonymously verify eligible OCI channels")["run"]
+    verification = _step(final, "Revalidate every remote candidate before channel promotion")["run"]
+    assert '"ls-remote"' in policy
+    assert "https://github.com/Deng-m1/stripe-entitlements-fastapi.git" in policy
+    assert "current >= max(released" in policy
+    assert "version[:2] == current[:2]" in policy
+    assert '"npm", "view", "@tosea/stripe-entitlements", "dist-tags"' in policy
+    assert "workflow-wide concurrency group serializes every channel writer" in policy
+    assert "inspect_channel_version" not in policy
+    assert "GITHUB_OUTPUT" in policy
+    assert policy.index("npm_latest") < policy.index("output.write")
+    assert "imagetools create --prefer-index=false" in promotion
+    assert '"${CONTAINER_IMAGE}@${CONTAINER_DIGEST}"' in promotion
+    assert 'DOCKER_CONFIG="$anonymous_config"' in promotion
+    assert 'if output="$(DOCKER_CONFIG="$anonymous_config"' in promotion
+    assert ":latest" not in verification
+    assert "${RELEASE_VERSION%.*}" not in verification
+    assert "container-attest" in final["needs"]
 
 
 def test_every_publication_boundary_revalidates_the_annotated_tag() -> None:

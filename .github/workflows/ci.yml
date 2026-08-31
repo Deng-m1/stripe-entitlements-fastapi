@@ -29,6 +29,7 @@ jobs:
       - name: Lint
         run: |
           uv run python scripts/check_release_versions.py
+          uv run python scripts/sync_reference_catalog.py --check
           uv run ruff format --check .
           uv run ruff check .
           while IFS= read -r -d '' script; do
@@ -105,6 +106,7 @@ jobs:
               "migrations/002_stripe_request_snapshots.sql",
               "scripts/bootstrap_stripe.py",
               "scripts/build_distributions.sh",
+              "scripts/sync_reference_catalog.py",
               "scripts/check_release_versions.py",
               "scripts/verify_python_distributions.py",
               "typescript/.env.example",
@@ -274,6 +276,55 @@ jobs:
           trap - EXIT
       - name: Check whitespace
         run: git diff --check
+
+  postgres-18:
+    name: PostgreSQL 18 compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TEST_POSTGRES_IMAGE: postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: typescript/package-lock.json
+      - name: Install locked dependencies
+        run: |
+          uv sync --frozen
+          npm ci --prefix typescript
+      - name: Verify the pinned PostgreSQL major
+        run: |
+          case "$(docker run --rm "$TEST_POSTGRES_IMAGE" postgres --version)" in
+            "postgres (PostgreSQL) 18."*) ;;
+            *) echo "the compatibility image is not PostgreSQL 18" >&2; exit 1 ;;
+          esac
+      - name: Python migrations and Event transaction races
+        run: |
+          uv run pytest -q \
+            tests/test_migrations_db.py \
+            tests/test_races_db.py \
+            tests/test_processor_db.py::test_processing_exception_rolls_back_event_claim
+      - name: TypeScript and mixed-runtime transaction races
+        working-directory: typescript
+        run: |
+          ./node_modules/.bin/vitest run --project postgres \
+            tests/postgres/migrations.test.ts \
+            tests/postgres/database.test.ts \
+            tests/postgres/cross-runtime-credits.test.ts
+      - name: Fresh migrate the clean npm artifact twice
+        working-directory: typescript
+        run: |
+          expected_version="$(node -p "require('./package.json').version")"
+          archive_name="$(npm pack --pack-destination "$RUNNER_TEMP" --silent)"
+          ../scripts/verify_npm_migration_smoke.sh \
+            "$RUNNER_TEMP/$archive_name" "$expected_version"
 
   typescript:
     name: TypeScript billing core
@@ -547,6 +598,12 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Install locked dependencies
         run: npm ci
+      - name: Verify the workspace file-dependency CLI
+        run: |
+          npm --prefix ../typescript run build
+          test -x ../typescript/dist/node/bin.js
+          test "$(npm exec --offline --no -- stripe-entitlements --version)" = \
+            "stripe-entitlements 0.4.0"
       - name: Audit dependencies
         run: |
           npm audit --omit=dev
