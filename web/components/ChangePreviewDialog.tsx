@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useLocale } from "@/components/LocaleProvider";
 import {
   formatCreditDecimal,
   parseExactCreditAmount,
@@ -60,6 +61,7 @@ export function ChangePreviewDialog({
   onConfirm,
   onOpenPayment,
 }: ChangePreviewDialogProps) {
+  const { numberLocale, t } = useLocale();
   const [acknowledged, setAcknowledged] = useState(false);
   const immediate = preview.timing === "immediate";
   const proratedDelta =
@@ -141,21 +143,21 @@ export function ChangePreviewDialog({
       >
         <p className="eyebrow">
           {publicSimulationMode
-            ? "Browser-local change preview"
-            : "Server-calculated change preview"}
+            ? t("Browser-local change preview")
+            : t("Server-calculated change preview")}
         </p>
         <h2 id="change-preview-title">
           {publicSimulationMode
             ? immediate
-              ? "This simulated change applies immediately"
-              : "This simulated change starts at period end"
+              ? t("This simulated change applies immediately")
+              : t("This simulated change starts at period end")
             : paymentUrl
-            ? "Payment required — your current plan remains active"
+            ? t("Payment required — your current plan remains active")
             : proratedDelta
-              ? "Pay the prorated difference for this period"
+              ? t("Pay the prorated difference for this period")
               : immediate
-                ? "This change requires immediate settlement"
-                : "This change starts at period end"}
+                ? t("This change requires immediate settlement")
+                : t("This change starts at period end")}
         </h2>
         <p className="dialog-summary" id="change-preview-description">
           <style>{previewRouteStyles}</style>
@@ -172,58 +174,55 @@ export function ChangePreviewDialog({
 
         {publicSimulationMode ? (
           <div className={immediate ? "timing-panel timing-immediate" : "timing-panel"}>
-            <strong>{immediate ? "Immediate sample projection" : "No sample change today"}</strong>
+            <strong>{immediate ? t("Immediate sample projection") : t("No sample change today")}</strong>
             <p>
-              This changes only versioned browser-local simulation state. It creates no
-              Stripe invoice, payment, webhook, database row, or real entitlement.
+              {t("This changes only versioned browser-local simulation state. It creates no Stripe invoice, payment, webhook, database row, or real entitlement.")}
             </p>
           </div>
         ) : paymentUrl ? (
           <div className="timing-panel timing-immediate">
-            <strong>The Stripe invoice is still open</strong>
+            <strong>{t("The Stripe invoice is still open")}</strong>
             <p>
-              The requested target is not active. Continue to Stripe to pay or
-              authenticate the invoice. After payment, this app still waits for the
-              webhook-projected account before showing the new entitlements.
+              {t("The requested target is not active. Continue to Stripe to pay or authenticate the invoice. After payment, this app still waits for the webhook-projected account before showing the new entitlements.")}
             </p>
           </div>
         ) : proratedDelta ? (
           <div className="timing-panel timing-immediate">
-            <strong>
-              Prorated amount due: {" "}
-              {formatMoney(preview.amount_due_now, preview.currency)}
-            </strong>
+            <strong>{t("Prorated amount due: {{amount}}", {
+              amount: formatMoney(
+                preview.amount_due_now,
+                preview.currency,
+                numberLocale,
+              ),
+            })}</strong>
             <p>
-              Your current billing-period end stays unchanged. Stripe credits the
-              unused source tier and charges the target tier for the same remaining
-              time. After the paid Invoice is verified, the server adds exactly {" "}
-              {exactCreditDelta
-                ? formatCreditDecimal(exactCreditDelta.decimal)
-                : "—"}{" "}
-              credits—the
-              catalog entitlement difference, not a credit amount inferred from cash.
+              {t("Your current billing-period end stays unchanged. Stripe credits the unused source tier and charges the target tier for the same remaining time. After the paid Invoice is verified, the server adds exactly {{credits}} credits—the catalog entitlement difference, not a credit amount inferred from cash.", {
+                credits: exactCreditDelta
+                  ? formatCreditDecimal(exactCreditDelta.decimal)
+                  : "—",
+              })}
             </p>
           </div>
         ) : immediate ? (
           <div className="timing-panel timing-immediate">
-            <strong>
-              Immediate amount due:{" "}
-              {formatMoney(preview.amount_due_now, preview.currency)}
-            </strong>
+            <strong>{t("Immediate amount due: {{amount}}", {
+              amount: formatMoney(
+                preview.amount_due_now,
+                preview.currency,
+                numberLocale,
+              ),
+            })}</strong>
             <p>
-              The server accepted this as an independently funded target invoice:
-              cross-invoice proration and customer-balance credit are both zero.
-              Stripe may charge the payment method or require authentication.
-              Entitlements change only after the bill is paid and webhook state is
-              applied.
+              {t("The server accepted this as an independently funded target invoice: cross-invoice proration and customer-balance credit are both zero. Stripe may charge the payment method or require authentication. Entitlements change only after the bill is paid and webhook state is applied.")}
             </p>
           </div>
         ) : (
           <div className="timing-panel">
-            <strong>No charge today</strong>
+            <strong>{t("No charge today")}</strong>
             <p>
-              Your current plan remains active until {formatDate(preview.effective_at)}.
-              The new plan and interval begin at that period boundary.
+              {t("Your current plan remains active until {{date}}. The new plan and interval begin at that period boundary.", {
+                date: formatDate(preview.effective_at, numberLocale),
+              })}
             </p>
           </div>
         )}
@@ -231,17 +230,17 @@ export function ChangePreviewDialog({
         <dl className="preview-facts">
           {proratedDelta ? (
             <div>
-              <dt>Unused-plan credit</dt>
-              <dd>{formatMoney(preview.credit_applied, preview.currency)}</dd>
+              <dt>{t("Unused-plan credit")}</dt>
+              <dd>{formatMoney(preview.credit_applied, preview.currency, numberLocale)}</dd>
             </div>
           ) : null}
           <div>
-            <dt>Next invoice</dt>
-            <dd>{formatMoney(preview.next_invoice_amount, preview.currency)}</dd>
+            <dt>{t("Next invoice")}</dt>
+            <dd>{formatMoney(preview.next_invoice_amount, preview.currency, numberLocale)}</dd>
           </div>
           <div>
-            <dt>Effective</dt>
-            <dd>{formatDate(preview.effective_at)}</dd>
+            <dt>{t("Effective")}</dt>
+            <dd>{formatDate(preview.effective_at, numberLocale)}</dd>
           </div>
         </dl>
 
@@ -254,12 +253,12 @@ export function ChangePreviewDialog({
             />
             <span>
               {publicSimulationMode
-                ? "I understand this changes only browser-local sample state and does not charge or contact Stripe."
+                ? t("I understand this changes only browser-local sample state and does not charge or contact Stripe.")
                 : immediate
                 ? proratedDelta
-                  ? "I understand that Stripe will charge the prorated difference and the upgrade still requires webhook confirmation."
-                  : "I understand that immediate settlement may charge me and still requires webhook confirmation."
-                : "I understand that the current plan remains active until period end."}
+                  ? t("I understand that Stripe will charge the prorated difference and the upgrade still requires webhook confirmation.")
+                  : t("I understand that immediate settlement may charge me and still requires webhook confirmation.")
+                : t("I understand that the current plan remains active until period end.")}
             </span>
           </label>
         ) : null}
@@ -274,7 +273,7 @@ export function ChangePreviewDialog({
             onClick={onCancel}
             type="button"
           >
-            Cancel
+            {t("Cancel")}
           </button>
           {paymentUrl ? (
             <button
@@ -284,7 +283,7 @@ export function ChangePreviewDialog({
               onClick={onOpenPayment}
               type="button"
             >
-              Open Stripe invoice
+              {t("Open Stripe invoice")}
             </button>
           ) : (
             <button
@@ -295,10 +294,10 @@ export function ChangePreviewDialog({
               type="button"
             >
               {busy
-                ? "Confirming…"
+                ? t("Confirming…")
                 : publicSimulationMode
-                  ? "Confirm simulated change"
-                  : "Confirm billing change"}
+                  ? t("Confirm simulated change")
+                  : t("Confirm billing change")}
             </button>
           )}
         </div>

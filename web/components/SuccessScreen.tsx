@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { useLocale } from "@/components/LocaleProvider";
 import { completeIdempotentIntent } from "@/lib/idempotency";
 import { formatCreditDecimal } from "@/lib/credit-amount";
 import { getBillingApi, publicSimulationMode } from "@/lib/runtime";
@@ -26,6 +27,7 @@ export function SuccessScreen({
   pollIntervalMs = 1500,
   maxAttempts = 12,
 }: SuccessScreenProps) {
+  const { t } = useLocale();
   const [state, setState] = useState<
     "validating" | "polling" | "confirmed" | "timed_out" | "invalid"
   >("validating");
@@ -164,119 +166,117 @@ export function SuccessScreen({
   const heading =
     state === "confirmed"
       ? publicSimulationMode
-        ? "Simulated account state is ready"
-        : "Webhook-backed account state is ready"
+        ? t("Simulated account state is ready")
+        : t("Webhook-backed account state is ready")
       : state === "invalid"
-        ? "This billing return cannot be verified"
+        ? t("This billing return cannot be verified")
         : state === "timed_out"
-          ? "Payment may still be processing"
+          ? t("Payment may still be processing")
           : publicSimulationMode
-            ? "Waiting for simulated projection"
-            : "Waiting for webhook confirmation";
+            ? t("Waiting for simulated projection")
+            : t("Waiting for webhook confirmation");
 
   return (
     <section
       aria-busy={state === "validating" || state === "polling"}
       aria-live="polite"
-      className="success-card"
+      className="app-page billing-result success-card"
     >
       <style>{successLocalStyles}</style>
       <div className={`success-mark ${state}`} aria-hidden="true">
         {state === "confirmed" ? "✓" : state === "timed_out" ? "!" : "↻"}
       </div>
       <p className="eyebrow">
-        {publicSimulationMode ? "Simulation returned" : "Checkout returned"}
+        {publicSimulationMode ? t("Simulation returned") : t("Checkout returned")}
       </p>
       <h1>{heading}</h1>
       {state !== "invalid" ? (
         <ol className="success-steps">
           <li className="done">
-            {publicSimulationMode ? "Simulated redirect returned" : "Returned from checkout"}
+            {publicSimulationMode ? t("Simulated redirect returned") : t("Returned from checkout")}
           </li>
           <li
             aria-current={state === "confirmed" ? undefined : "step"}
             className={state === "confirmed" ? "done" : "active"}
           >
             {publicSimulationMode
-              ? "Browser-local projection applied"
-              : "Webhook projection applied"}
+              ? t("Browser-local projection applied")
+              : t("Webhook projection applied")}
           </li>
           <li className={state === "confirmed" ? "done" : ""}>
             {expectedCreditPack
               ? publicSimulationMode
-                ? "Sample credits available"
-                : "Purchased credits available"
+                ? t("Sample credits available")
+                : t("Purchased credits available")
               : publicSimulationMode
-                ? "Sample entitlements active"
-                : "Entitlements enforceable"}
+                ? t("Sample entitlements active")
+                : t("Entitlements enforceable")}
           </li>
         </ol>
       ) : null}
       {state === "confirmed" ? (
         publicSimulationMode ? (
-          <p>
-            Browser-local sample state now shows the requested {expectedCreditPack
-              ? `${expectedCreditPack} credit pack`
-              : `${account?.plan_key}/${account?.plan_interval} plan`}. No Checkout,
-            payment, webhook, or server account was created.
-          </p>
+          <p>{t("Browser-local sample state now shows the requested {{target}}. No Checkout, payment, webhook, or server account was created.", {
+            target: expectedCreditPack
+              ? t("{{pack}} credit pack", { pack: expectedCreditPack })
+              : t("{{plan}} plan", {
+                  plan: `${account?.plan_key}/${account?.plan_interval}`,
+                }),
+          })}</p>
         ) : expectedCreditPack ? (
-          <p>
-            The account API now reports the {expectedCreditPack} funding lot for this
-            exact Checkout Session. The return redirect itself was not treated as proof
-            of payment.
-          </p>
+          <p>{t("The account API now reports the {{pack}} funding lot for this exact Checkout Session. The return redirect itself was not treated as proof of payment.", {
+            pack: expectedCreditPack,
+          })}</p>
         ) : (
-          <p>
-            The account API now reports {account?.plan_key}/{account?.plan_interval} as
-            active. The success redirect itself was not treated as proof of entitlement.
-          </p>
+          <p>{t("The account API now reports {{plan}} as active. The success redirect itself was not treated as proof of entitlement.", {
+            plan: `${account?.plan_key}/${account?.plan_interval}`,
+          })}</p>
         )
       ) : state === "invalid" ? (
-        <p>
-          The return URL must identify exactly one valid catalog plan/interval or one
-          credit pack and Checkout Session. Review the account state directly; this page
-          will not infer a successful purchase.
-        </p>
+        <p>{t("The return URL must identify exactly one valid catalog plan/interval or one credit pack and Checkout Session. Review the account state directly; this page will not infer a successful purchase.")}</p>
       ) : state === "timed_out" ? (
-        <p>
-          {maxAttempts} polls finished without a {publicSimulationMode
-            ? "simulated"
-            : "webhook-projected"}{" "}
-          {expectedCreditPack ?? `${expectedPlan}/${expectedInterval}`} result. No
-          entitlement or purchased balance. {publicSimulationMode
-            ? "Resetting the public simulation is safe."
-            : "Stripe may still be processing. Checking again is safe and repeatable."}
-        </p>
+        <p>{t("{{attempts}} polls finished without a {{projection}} {{target}} result. No entitlement or purchased balance. {{guidance}}", {
+          attempts: maxAttempts,
+          projection: publicSimulationMode ? t("simulated") : t("webhook-projected"),
+          target: expectedCreditPack ?? `${expectedPlan}/${expectedInterval}`,
+          guidance: publicSimulationMode
+            ? t("Resetting the public simulation is safe.")
+            : t("Stripe may still be processing. Checking again is safe and repeatable."),
+        })}</p>
       ) : (
-        <p>
-          Poll {attempt} of {maxAttempts}. Entitlements are granted only after the
-          {publicSimulationMode
-            ? "browser-local simulation applies its delayed sample projection"
-            : "backend processes Stripe state"}; refreshing this page is safe.
-        </p>
+        <p>{t("Poll {{attempt}} of {{max}}. Entitlements are granted only after the {{source}}; refreshing this page is safe.", {
+          attempt,
+          max: maxAttempts,
+          source: publicSimulationMode
+            ? t("browser-local simulation applies its delayed sample projection")
+            : t("backend processes Stripe state"),
+        })}</p>
       )}
       {state === "confirmed" && account ? (
         <dl className="success-facts">
           <div>
-            <dt>Plan</dt>
+            <dt>{t("Plan")}</dt>
             <dd>
               {account.plan_key} · {account.plan_interval}
             </dd>
           </div>
           <div>
-            <dt>Subscription</dt>
+            <dt>{t("Subscription")}</dt>
             <dd>{account.subscription_status}</dd>
           </div>
           <div>
-            <dt>Credit balance</dt>
-            <dd>{formatCreditDecimal(account.credits.balance)} credits</dd>
+            <dt>{t("Credit balance")}</dt>
+            <dd>{t("{{amount}} credits", {
+              amount: formatCreditDecimal(account.credits.balance),
+            })}</dd>
           </div>
           {expectedCreditPack ? (
             <div>
-              <dt>Purchased balance</dt>
+              <dt>{t("Purchased balance")}</dt>
               <dd>
-                {formatCreditDecimal(account.credits.purchased_balance)} credits
+                {t("{{amount}} credits", {
+                  amount: formatCreditDecimal(account.credits.purchased_balance),
+                })}
               </dd>
             </div>
           ) : null}
@@ -290,14 +290,14 @@ export function SuccessScreen({
             onClick={restartPolling}
             type="button"
           >
-            Check account state again
+            {t("Check account state again")}
           </button>
         ) : null}
         <Link className="button primary" href="/account">
-          View account
+          {t("View account")}
         </Link>
         <Link className="button ghost" href="/pricing">
-          Back to pricing
+          {t("Back to pricing")}
         </Link>
       </div>
     </section>

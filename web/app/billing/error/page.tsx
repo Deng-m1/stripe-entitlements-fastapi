@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import Link from "next/link";
+import { BillingErrorScreen } from "@/components/BillingErrorScreen";
 
 export const metadata: Metadata = {
   title: "Billing error",
@@ -13,64 +13,16 @@ interface BillingErrorPageProps {
   }>;
 }
 
-interface BillingErrorCopy {
-  title: string;
-  detail: string;
-  guidance: string;
-}
-
-const errorCopy: Record<string, BillingErrorCopy> = {
-  payment_failed: {
-    title: "The payment did not complete",
-    detail:
-      "Stripe could not complete the payment, so no plan or credit change was recorded.",
-    guidance:
-      "Check the payment method through the Stripe Billing Portal on your account page, then retry the change from pricing.",
-  },
-  payment_canceled: {
-    title: "The payment flow was canceled",
-    detail:
-      "You left the Stripe payment flow before it finished. Your existing account state remains unchanged.",
-    guidance:
-      "Restart the same change from the pricing page whenever you are ready; a retried intent reuses its original idempotency key.",
-  },
-  authentication_failed: {
-    title: "Payment authentication did not complete",
-    detail:
-      "The additional authentication step Stripe requested was not completed, so the payment did not settle.",
-    guidance:
-      "Retry the change and finish the authentication prompt, or update the payment method in the Billing Portal first.",
-  },
-};
-
-const fallbackCopy: BillingErrorCopy = {
-  title: "The billing operation could not be completed",
-  detail: "The billing operation stopped before it finished.",
-  guidance: "Review your account state before retrying.",
-};
-
 export default async function BillingErrorPage({
   searchParams,
 }: BillingErrorPageProps) {
   const query = await searchParams;
-  const knownCode = query.code && errorCopy[query.code] ? query.code : null;
-  const copy = knownCode ? errorCopy[knownCode] : fallbackCopy;
-  return (
-    <section className="success-card error-card" role="alert">
-      <div className="success-mark timed_out" aria-hidden="true">!</div>
-      <p className="eyebrow">Billing action stopped</p>
-      <h1>{copy.title}</h1>
-      <p>{copy.detail}</p>
-      <p>
-        Nothing was assumed about your entitlement state: plans and credits change
-        only after the backend verifies the matching Stripe webhook.
-      </p>
-      <p>{copy.guidance}</p>
-      {knownCode ? <code>Error code: {knownCode}</code> : null}
-      <div className="account-actions">
-        <Link className="button primary" href="/account">Review account</Link>
-        <Link className="button ghost" href="/pricing">Back to pricing</Link>
-      </div>
-    </section>
-  );
+  const knownCode =
+    query.code &&
+    ["payment_failed", "payment_canceled", "authentication_failed"].includes(
+      query.code,
+    )
+      ? query.code
+      : null;
+  return <BillingErrorScreen code={knownCode} />;
 }
