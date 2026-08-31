@@ -128,8 +128,8 @@ the exact class as an integration boundary.
 
 The equivalent TypeScript integration surface is:
 
-- package-root `BillingKernel`, `createBillingRuntime`, and
-  `createBillingFetchHandler`;
+- package-root `BillingKernel` and `createBillingRuntime`;
+- `@tosea/stripe-entitlements/http` for `createBillingFetchHandler`;
 - `@tosea/stripe-entitlements/node` for the standalone server/CLI adapter;
 - `@tosea/stripe-entitlements/next` for App Router Route Handlers;
 - `AuthAccountAdapter` plus personal/team JWT starter classes;

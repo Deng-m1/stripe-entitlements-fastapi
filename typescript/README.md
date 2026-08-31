@@ -60,7 +60,16 @@ For a new Node or Next.js project, install the exact reviewed release:
 ```bash
 npm install --save-exact @tosea/stripe-entitlements@0.4.0
 npx stripe-entitlements --version
+cp node_modules/@tosea/stripe-entitlements/.env.example .env
+chmod 600 .env
 ```
+
+In a Next.js App Router/SSR application, Route Handlers are the backend, so you do
+not need a separate FastAPI, Railway, or long-running Node service. Real Stripe
+billing still requires one writable PostgreSQL 17 primary for webhook idempotency,
+entitlement and credit state, plan-change intent, workers, reconciliation, and
+incidents. Only the browser-local simulation can run without PostgreSQL, and it is
+not a real Stripe integration.
 
 The installed package already contains compiled JavaScript, declarations, the CLI,
 `plans.toml`, migrations 001/002, the environment example, and licenses. It does not
@@ -69,6 +78,12 @@ scripts. Copy application files from the matching
 [v0.4.0 source tag](https://github.com/Deng-m1/stripe-entitlements-fastapi/tree/v0.4.0)
 only when you need those examples; do not mix another branch or version with the npm
 runtime.
+
+Next.js may use a project `.env.local` for Route Handlers, but the standalone
+`stripe-entitlements` CLI does not load Next.js dotenv files. Before `migrate`,
+`bootstrap`, or `doctor`, export the same private server configuration into the shell
+as shown below (source `.env.local` instead if that is the file you chose). Never place
+Stripe or database credentials in a `NEXT_PUBLIC_*` variable.
 
 For contributors working from this source checkout instead:
 

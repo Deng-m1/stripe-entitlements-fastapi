@@ -47,7 +47,25 @@ fi
 
 scratch_root="$(mktemp -d -t stripe-entitlements-npm-next.XXXXXXXX)"
 project_root="$scratch_root/consumer"
+postgres_suffix="${scratch_root##*.}"
+postgres_container="stripe-entitlements-npm-next-pg-${postgres_suffix}-$$"
+postgres_started=0
+next_pid=""
 cleanup() {
+  if [ -n "$next_pid" ]; then
+    kill "$next_pid" >/dev/null 2>&1 || true
+    for ((attempt = 0; attempt < 50; attempt += 1)); do
+      if ! kill -0 "$next_pid" >/dev/null 2>&1; then
+        break
+      fi
+      sleep 0.1
+    done
+    kill -KILL "$next_pid" >/dev/null 2>&1 || true
+    wait "$next_pid" >/dev/null 2>&1 || true
+  fi
+  if [ "$postgres_started" -eq 1 ]; then
+    docker rm --force "$postgres_container" >/dev/null 2>&1 || true
+  fi
   rm -rf -- "$scratch_root"
 }
 trap cleanup EXIT
@@ -143,6 +161,11 @@ const packageJson = JSON.parse(
 if (packageJson.name !== "@tosea/stripe-entitlements") {
   throw new Error("installed npm archive exposes an unexpected package name");
 }
+if (packageJson.dependencies?.["@types/pg"] !== "8.23.1") {
+  throw new Error(
+    "installed npm archive omits its exact public pg declaration dependency",
+  );
+}
 
 const nextModulePath = await realpath(
   fileURLToPath(import.meta.resolve("@tosea/stripe-entitlements/next")),
@@ -164,11 +187,20 @@ if (typeof nextAdapter.environmentNextBillingRouteHandler !== "function") {
 JS
 )
 
-# An allowlisted environment proves the build cannot accidentally depend on local
-# billing, Stripe, auth, scheduler, demo, or npm-registry credentials. npm supplies
-# only its normal lifecycle variables to the child build; telemetry remains disabled.
+# An allowlisted environment proves the strict package declaration check and build
+# cannot accidentally depend on local billing, Stripe, auth, scheduler, demo, or
+# npm-registry credentials. npm supplies only its normal lifecycle variables to the
+# child processes; telemetry remains disabled.
 (
   cd -- "$project_root"
+  env -i \
+    PATH="$PATH" \
+    CI=1 \
+    NEXT_TELEMETRY_DISABLED=1 \
+    npm_config_cache="$scratch_root/npm-cache" \
+    npm_config_update_notifier=false \
+    npm_config_userconfig=/dev/null \
+    npm run typecheck:package
   env -i \
     PATH="$PATH" \
     CI=1 \
@@ -282,7 +314,200 @@ if (
 }
 
 console.log(
-  `npm-next-consumer-contract=clean-install production-build routes=3 resources=${runtimeResources.length}`,
+  `npm-next-consumer-contract=clean-install declarations=strict production-build routes=3 resources=${runtimeResources.length}`,
 );
 JS
 )
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "clean Next.js runtime verification requires Docker" >&2
+  exit 1
+fi
+if ! command -v curl >/dev/null 2>&1; then
+  echo "clean Next.js runtime verification requires curl" >&2
+  exit 1
+fi
+
+installed_cli="$project_root/node_modules/.bin/stripe-entitlements"
+if [ ! -x "$installed_cli" ]; then
+  echo "clean Next.js consumer did not install the packaged CLI" >&2
+  exit 1
+fi
+
+postgres_image="${TEST_POSTGRES_IMAGE:-postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73}"
+postgres_database="npm_next_consumer_ci"
+postgres_password="npm-next-consumer-ci-only"
+docker run \
+  --detach \
+  --name "$postgres_container" \
+  --env "POSTGRES_DB=$postgres_database" \
+  --env "POSTGRES_PASSWORD=$postgres_password" \
+  --publish 127.0.0.1::5432 \
+  --tmpfs /var/lib/postgresql/data:rw,nosuid,nodev,size=256m \
+  "$postgres_image" >/dev/null
+postgres_started=1
+
+postgres_ready=0
+for ((attempt = 0; attempt < 240; attempt += 1)); do
+  if docker exec "$postgres_container" \
+    pg_isready -h 127.0.0.1 -U postgres -d "$postgres_database" \
+    >/dev/null 2>&1; then
+    postgres_ready=1
+    break
+  fi
+  sleep 0.25
+done
+if [ "$postgres_ready" -ne 1 ]; then
+  echo "disposable PostgreSQL 17 did not become ready" >&2
+  exit 1
+fi
+
+postgres_version_num="$(
+  docker exec "$postgres_container" \
+    psql -X -A -t -U postgres -d "$postgres_database" \
+    -c 'show server_version_num'
+)"
+case "$postgres_version_num" in
+  17????) ;;
+  *)
+    echo "clean Next.js runtime verification requires PostgreSQL 17" >&2
+    exit 1
+    ;;
+esac
+
+postgres_binding="$(docker port "$postgres_container" 5432/tcp)"
+case "$postgres_binding" in
+  127.0.0.1:*) postgres_port="${postgres_binding##*:}" ;;
+  *)
+    echo "cannot resolve the loopback PostgreSQL port" >&2
+    exit 1
+    ;;
+esac
+case "$postgres_port" in
+  ''|*[!0-9]*)
+    echo "resolved PostgreSQL port is invalid" >&2
+    exit 1
+    ;;
+esac
+database_url="postgresql://postgres:${postgres_password}@127.0.0.1:${postgres_port}/${postgres_database}"
+
+# Run the binary installed from the supplied archive, from outside both the source
+# checkout and the clean consumer. Migrations are deliberately separate from startup.
+migration_output="$(
+  cd -- "$scratch_root"
+  env -i \
+    PATH="$PATH" \
+    DATABASE_URL="$database_url" \
+    DATABASE_POOL_MIN=0 \
+    DATABASE_POOL_MAX=2 \
+    "$installed_cli" migrate
+)"
+if [ "$migration_output" != '{"ok":true,"command":"migrate"}' ]; then
+  echo "installed npm package CLI returned an unexpected migration result" >&2
+  exit 1
+fi
+
+next_port="$(
+  env -i PATH="$PATH" node --input-type=module <<'JS'
+import { createServer } from "node:net";
+
+const server = createServer();
+server.unref();
+server.on("error", (error) => {
+  throw error;
+});
+server.listen({ host: "127.0.0.1", port: 0, exclusive: true }, () => {
+  const address = server.address();
+  if (typeof address !== "object" || address === null) {
+    throw new Error("cannot reserve a loopback Next.js port");
+  }
+  process.stdout.write(String(address.port));
+  server.close();
+});
+JS
+)"
+case "$next_port" in
+  ''|*[!0-9]*)
+    echo "resolved Next.js port is invalid" >&2
+    exit 1
+    ;;
+esac
+
+next_origin="http://127.0.0.1:${next_port}"
+next_log="$scratch_root/next-production.log"
+health_json="$scratch_root/health.json"
+
+# These syntactically valid values are explicit inert placeholders. The smoke calls
+# only /health, which performs no Stripe network operation. Constructing the prefixes
+# prevents credential-shaped literals from being committed or printed.
+stripe_secret_key="$(printf '%s%s' 'sk' '_test_clean_consumer_placeholder_never_sent')"
+stripe_webhook_secret="$(printf '%s%s' 'whsec' '_clean_consumer_placeholder_never_used')"
+
+(
+  cd -- "$project_root"
+  exec env -i \
+    PATH="$PATH" \
+    CI=1 \
+    NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    DATABASE_URL="$database_url" \
+    DATABASE_POOL_MIN=0 \
+    DATABASE_POOL_MAX=2 \
+    STRIPE_SECRET_KEY="$stripe_secret_key" \
+    STRIPE_WEBHOOK_SECRET="$stripe_webhook_secret" \
+    STRIPE_API_VERSION=2026-06-24.dahlia \
+    STRIPE_WEBHOOK_API_VERSION=2026-06-24.dahlia \
+    PRODUCT_LINE=clean-consumer-smoke \
+    LOOKUP_PREFIX=smoke \
+    CHECKOUT_SUCCESS_URL="$next_origin/billing/success" \
+    CHECKOUT_CANCEL_URL="$next_origin/pricing" \
+    PORTAL_RETURN_URL="$next_origin/account" \
+    FRONTEND_ORIGINS="$next_origin" \
+    BILLING_TRANSITION_POLICY=full_period_reset \
+    BILLING_AUTH_MODE=reject_all \
+    APP_ENV=production \
+    node ./node_modules/next/dist/bin/next start \
+      --hostname 127.0.0.1 \
+      --port "$next_port"
+) >"$next_log" 2>&1 &
+next_pid="$!"
+
+runtime_ready=0
+for ((attempt = 0; attempt < 240; attempt += 1)); do
+  if ! kill -0 "$next_pid" >/dev/null 2>&1; then
+    break
+  fi
+  if curl \
+    --fail \
+    --silent \
+    --show-error \
+    --connect-timeout 1 \
+    --max-time 2 \
+    --output "$health_json" \
+    "$next_origin/health" 2>/dev/null; then
+    runtime_ready=1
+    break
+  fi
+  sleep 0.25
+done
+if [ "$runtime_ready" -ne 1 ]; then
+  echo "clean production Next.js runtime did not become healthy" >&2
+  exit 1
+fi
+
+env -i PATH="$PATH" node --input-type=module - "$health_json" <<'JS'
+import { readFile } from "node:fs/promises";
+
+const payload = JSON.parse(await readFile(process.argv[2], "utf8"));
+if (
+  payload.ok !== true ||
+  payload.database !== true ||
+  payload.schema !== true ||
+  payload.stripe_mode !== "test" ||
+  payload.transition_policy !== "full_period_reset"
+) {
+  throw new Error("clean production Next.js health contract failed");
+}
+JS
+
+echo "npm-next-consumer-runtime=production-next installed-cli=true postgres=17 health-ok=true database=true schema=true"

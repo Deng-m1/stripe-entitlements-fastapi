@@ -878,6 +878,17 @@ Yes, when they share one PostgreSQL primary and identical configuration. Correct
 uses database locks, constraints, leases, and idempotency rather than process memory.
 PostgreSQL is still a stateful dependency that needs HA, backups, and tested restore.
 
+### Does a full-stack SSR Next.js app still need a database?
+
+Yes for real Stripe billing. A Next.js App Router deployment does not need a separate
+FastAPI, Railway, or long-running Node service—the server-side Route Handlers are the
+backend—but it still needs one writable PostgreSQL 17 primary. Stripe processes money;
+PostgreSQL owns webhook idempotency, subscription and entitlement projection, credit
+lots, plan-change intent, annual grants, reconciliation, and incidents. Use managed
+PostgreSQL such as Neon, Supabase, or another serverless-compatible provider. Only the
+explicit browser-local `simulation` demo can run without a database, and it is not a
+real Stripe integration.
+
 ### Can I install it into an existing FastAPI application?
 
 Yes. `BillingKernel` owns the validated dependency graph and `install_billing` adds a
