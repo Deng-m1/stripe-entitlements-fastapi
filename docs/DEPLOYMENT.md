@@ -77,7 +77,9 @@ commit, a pinned Git/local `file:` dependency, a complete vendor tree, or a loca
 packed `.tgz`. Do not write a nonexistent registry package into `package.json`.
 
 For a TypeScript source dependency, deployment must install its third-party dependencies
-and run its build before Next.js starts. Do not depend on an uncommitted developer-local
+and run its build before Next.js starts. The checked-in `web/` build also relinks the
+workspace package after generating `dist/`, so its CLI exists on a clean deployment
+rather than only on a developer machine. Do not depend on an uncommitted developer-local
 `dist/`. A verified `.tgz` already contains compiled JavaScript, `plans.toml`, and both
 migrations. Exact source and vendor layouts are in
 [Adoption](ADOPTION.md#consume-a-pinned-git-source-or-vendored-copy).

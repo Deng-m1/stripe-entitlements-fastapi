@@ -600,7 +600,7 @@ jobs:
         run: npm ci
       - name: Verify the workspace file-dependency CLI
         run: |
-          npm --prefix ../typescript run build
+          npm run billing:build
           test -x ../typescript/dist/node/bin.js
           test "$(npm exec --offline --no -- stripe-entitlements --version)" = \
             "stripe-entitlements 0.4.0"
