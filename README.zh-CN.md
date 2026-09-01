@@ -1,4 +1,4 @@
-# 适用于 TypeScript 与 FastAPI 的 Stripe 订阅、权益和积分包
+# Stripe 订阅、权益与积分包：可直接接入 TypeScript 或 FastAPI
 
 [English](README.md) | **简体中文**
 
@@ -7,206 +7,149 @@
 [![Python](https://img.shields.io/badge/python-3.12%2B-3776AB.svg)](pyproject.toml)
 [![Node](https://img.shields.io/badge/node-22%2B-339933.svg)](typescript/package.json)
 
-一个开源的 Stripe 计费、SaaS 权益和积分账本起步项目，同时提供两种原生后端：
-TypeScript/Node/Next.js 与 Python/FastAPI。两者都使用 PostgreSQL，并遵循同一套经过
-评审的记账契约。项目包含月付/年付订阅、精确小数积分、一次性积分包、两种可选升级
-策略、Hosted Checkout、退款、争议、SCA 恢复、Test Clock 续费，以及能应对重复、
-延迟、并发和乱序事件的 webhook 权威记账流程。
+这是一个面向 SaaS 产品的开源 Stripe 计费起步项目。它不只创建 Checkout，还把付款结果
+安全地转换成你的业务权益：套餐、功能开关、使用上限、订阅积分和一次性积分包。
 
-> 本项目是独立的社区项目，不是 Stripe 官方产品。它是一份参考实现，不是适用于所有
-> SaaS 的通用计费框架，也不构成财务、税务、会计或法律建议。
+你可以直接选择原生 **TypeScript/Node/Next.js** 或 **Python/FastAPI** 后端。两套实现
+都使用 PostgreSQL，并提供相同的套餐规则、月付/年付生命周期、升级/降级策略和
+webhook 记账边界。正常部署只需要选择其中一种后端。
 
-> **当前发布状态：** `main` 包含 `0.4.0` 候选版本，但 `v0.4.0` tag 和
-> `@tosea/stripe-entitlements@0.4.0` 尚未发布。在正式发布这些渠道之前，请使用经过
-> 评审并固定提交哈希的源码、Git/path 依赖、vendored 副本或本地构建的 tarball；
-> 不要把旧 tag 或旧包当作等价代码。本项目仍是 pre-1.0 的新参考实现，目前没有已
-> 记录的第三方生产使用者；自动化测试和 Stripe 测试模式证据不等于第三方生产验证。
+> **发布状态：** `main` 是 `0.4.0` 候选版本，但 `v0.4.0` tag 和
+> `@tosea/stripe-entitlements@0.4.0` npm 包尚未发布。目前请使用完整仓库源码、
+> Git/vendor 依赖或本地构建的 tarball，不要直接安装尚不存在的 npm 版本。
+
+> 本项目是独立社区参考实现，不是 Stripe 官方产品。它仍处于 pre-1.0 阶段，目前没有
+> 已记录的第三方生产使用者；测试模式验证不等于你的生产环境验证。
 
 <a id="start-here"></a>
 
 ## 从这里开始
 
-先按宿主应用选择路径，链接中的指南才是完整的配置和验证步骤：
-
-| 目标 | 从这里开始 |
+| 你的项目 | 推荐入口 |
 | --- | --- |
-| 使用原生 Next.js/TypeScript 计费 | [TypeScript 源码、Git vendor 或 tarball](typescript/README.md#requirements) |
-| 接入 Python/FastAPI 服务 | [快速开始](#quick-start)，再阅读[接入指南](docs/ADOPTION.md#compose-the-fastapi-application) |
-| 部署真实 Stripe 测试模式环境 | [首次真实部署](docs/DEPLOYMENT.md) |
-| 分享不连接 Stripe/数据库的 UI 链接 | [无凭据公开模拟](docs/AI_BUILDERS.md#publish-a-ui-only-simulation) |
+| Next.js、Node 或其他 TypeScript SSR 应用 | [TypeScript/Next.js 接入指南](typescript/README.md#requirements) |
+| 已有 Python 或 FastAPI 服务 | [快速开始](#quick-start)与[现有应用接入](docs/ADOPTION.md#compose-the-fastapi-application) |
+| 想部署一个可真实付款的 Stripe 测试站 | [首次部署指南](docs/DEPLOYMENT.md) |
+| 只想给 v0、Lovable 或客户看 UI | [无 Stripe/数据库的公开模拟](docs/AI_BUILDERS.md#publish-a-ui-only-simulation) |
 
-两种后端都不依赖 registry 已发布版本。[固定 Git 提交与最小 vendoring 指南](docs/ADOPTION.md#consume-a-pinned-git-source-or-vendored-copy)
-列出了 Python/TypeScript 源码、SQL、套餐目录、构建和升级边界。TypeScript 源码方式
-仍然要用 npm 或兼容的 JavaScript 包管理器安装第三方依赖并构建 `dist/`；它只是
-不从公共 registry 下载当前尚未发布的本项目 npm 包。
-
-不要根据仓库曾经的名称或根目录 Python manifest 判断项目技术栈。两个后端目录都
-包含完整的服务端计费代码，参考 Web 同时包含真正的 Node Route Handlers 与页面：
+四个目录分别承担清晰的职责，不要因为根目录的 Python 配置而把它误认为 Python-only
+项目：
 
 ```text
-src/stripe_entitlements/   Python/FastAPI 后端
-typescript/src/            独立的 TypeScript/Node 后端
+src/stripe_entitlements/   Python/FastAPI 计费后端
+typescript/src/            独立 TypeScript/Node 计费后端
 typescript/src/next/       Next.js App Router 适配层
-web/app/                   SSR UI、API、webhook、健康检查、metadata、robots 与 sitemap
+web/app/                   Next.js SSR 参考页面与服务端路由
 ```
-
-<a id="contents"></a>
 
 ## 目录
 
-- [已实现与未实现的范围](#implemented-scope)
-- [选择 Python 或 TypeScript](#choose-runtime)
-- [编码前选择订阅流程](#choose-subscription-flow)
-- [套餐目录与年付优惠](#plan-catalog)
+- [为什么能快速接入](#quick-adoption)
+- [选择 TypeScript 还是 Python](#choose-runtime)
+- [订阅与权益如何流转](#choose-subscription-flow)
+- [已经包含什么](#implemented-scope)
+- [套餐、年付与权益](#plan-catalog)
 - [一次性积分包](#credit-packs)
-- [两种套餐变更模板](#plan-transitions)
-- [正确性与分布式部署](#correctness-model)
-- [可选 Vercel 部署](#vercel-deployment)
-- [v0、Lovable 与公开模拟](#ai-builders)
-- [快速开始](#quick-start)
-- [接入现有应用](#adoption)
-- [演示录制](#demo-recording)
-- [测试证据边界](#verification)
-- [SQL 与生产切换](#migrations)
-- [仓库结构](#repository-map)
+- [两套完整的 6 × 6 套餐变更矩阵](#plan-transitions)
+- [五步接入](#quick-start)
+- [连接你的用户和业务实体](#adoption)
+- [为什么能应对重复、乱序和并发](#correctness-model)
+- [Vercel 与其他部署方式](#vercel-deployment)
+- [v0、Lovable 与 AI Builder](#ai-builders)
+- [验证证据与诚实边界](#verification)
+- [数据库初始化与升级](#migrations)
+- [进一步阅读](#repository-map)
 - [常见问题](#faq)
 
-<a id="why-this-project"></a>
+<a id="quick-adoption"></a>
 
-## 为什么需要这份 Stripe 计费参考实现
+## 为什么能快速接入
 
-很多 Stripe 示例到创建 Checkout 或验证 webhook 签名就结束了。真实 SaaS 计费还要
-经受重复与乱序事件、并发 worker、未知远端结果、年付积分重置、升级支付失败、退款，
-以及早于权益投影到达的浏览器返回。本仓库把这些状态变化显式化，并用 PostgreSQL
-约束和真实 Stripe 测试模式关口验证它们。
+普通 Stripe 示例往往在“创建 Checkout”或“验证 webhook 签名”处结束。这个项目已经把
+付款之后最容易出错的业务流程做成了可以复用的服务边界：
 
-它适合需要可评审参考、而不只是一段 Checkout 粘贴代码的 FastAPI Stripe 集成、
-TypeScript/Next.js 计费后端、订阅积分系统或 SaaS 套餐页。
+| 你只需决定或实现 | 项目已经提供 |
+| --- | --- |
+| 谁付费：个人用户还是团队 | 个人/团队认证 starter 与账户适配接口 |
+| 卖什么：套餐、权益、积分和价格 | 单一 `plans.toml` 套餐目录及校验 |
+| 选哪种升级体验 | 两套完整 6 × 6 月付/年付策略 |
+| 你的页面如何调用计费 | Checkout、Portal、套餐变更、账户与额度 facade |
+| 产品任务如何消耗额度 | 原子 check/charge/refund 服务与 Job + outbox 示例 |
+| 部署到哪里 | Next.js、FastAPI、Vercel、容器或普通 PaaS 接入方式 |
+
+它容易移植的关键不是“文件少”，而是边界已经分开：Stripe 管理支付页面和资金对象，
+本项目管理 PostgreSQL 中的权益与积分，宿主应用继续管理登录、团队成员和自己的业务
+实体。你不需要把参考页面原样搬走，也不需要同时运行 Python 与 Node。
 
 <a id="choose-runtime"></a>
 
-## 选择 Python 或 TypeScript
+## 选择 TypeScript 还是 Python
 
-仓库包含两个相互独立的服务端实现。TypeScript 不会把请求转发给 Python，Python
-也不会调用 Node：
-
-| 运行时 | 适用场景 | 入口 |
+| 选择 | 更适合 | 你会使用 |
 | --- | --- | --- |
-| Python 3.12+ / FastAPI | 现有 Python API、sidecar、容器或 Vercel Services 拆分部署 | `stripe_entitlements`、`create_app`、`install_billing`、Python CLI |
-| Node 22+ / TypeScript | Next.js App Router、独立 Node 计费服务或其他 Fetch 兼容宿主 | `@tosea/stripe-entitlements`、Node CLI、Fetch handler、Next Route Handler |
+| TypeScript/Node/Next.js | Next.js App Router、Vercel、Node API、全栈 SSR 产品 | 独立 Node 核心、Fetch handler、Next.js Route Handlers 与 Node CLI |
+| Python/FastAPI | AI/数据服务、已有 FastAPI API、sidecar 或容器后端 | 独立 FastAPI 应用、可组合 router、Python service 与 CLI |
 
-两种实现共享规范化的 [`plans.toml`](plans.toml)、PostgreSQL
-[`001_v3_baseline.sql`](migrations/001_v3_baseline.sql) 与追加式
-[`002_stripe_request_snapshots.sql`](migrations/002_stripe_request_snapshots.sql)、
-定点积分协议、状态转移矩阵、webhook 契约和文档化不变量。两个语言都会运行相同的
-golden policy vectors；Python/TypeScript 混合 PostgreSQL 测试还证明，同一个幂等键
-无法重复扣费或超额消费。
+两套后端共享相同的套餐目录、SQL migration、积分精度和业务决策。部署时选择一种即可；
+所有 API、webhook 和 worker 应保持同一套餐目录、数据库版本和变更策略。
 
-正常部署只选择一个后端运行时。不要把任意包版本混成可互换的副本：所有 API、
-webhook 和 worker 进程必须使用兼容的 migration 级别、一致的套餐目录、Stripe
-模式/版本契约、产品线和变更策略。详见 [TypeScript 指南](typescript/README.md)。
+详细用法见 [TypeScript 指南](typescript/README.md)和
+[FastAPI/现有应用接入指南](docs/ADOPTION.md)。
 
+<a id="business-flow"></a>
 <a id="choose-subscription-flow"></a>
 
-## 编码前先选择订阅流程
+## 订阅与权益如何流转
 
-先一次性回答这些问题：付费主体是个人还是团队、哪个运行时负责后端、有哪些套餐与
-权益、使用哪一种升级策略、是否需要年付、积分包、Portal 和调度器；同时确认真实
-身份提供方、PostgreSQL 17 或 18 数据库、稳定的测试域名，以及目标究竟是 UI 模拟、
-Stripe 测试环境还是获批的生产环境。
+浏览器跳回成功页不代表付款成功。项目只在经过签名验证、身份匹配的 Stripe webhook
+完成数据库投影后开放权益。
 
-实现中的生命周期不是靠一个笼统的 “subscription changed” 回调直接开通权限：
+| 用户动作 | Stripe 负责 | 本项目负责 |
+| --- | --- | --- |
+| 首次订阅 | Hosted Checkout 与收款 | paid Invoice 到达后开通套餐与积分 |
+| 升级 | 计算并收取全价或差价 | 预览、确认、失败恢复与权益切换 |
+| 降级或不支持的周期切换 | Subscription Schedule | 保持原权益，到周期末再切换 |
+| 取消 | Customer Portal | 到期前保留已付权益，到期后降级 |
+| 月付/年付续费 | Invoice 与支付状态 | 按已支付周期发放积分；年付按月释放 |
+| 购买积分包 | 一次性 Hosted Checkout | 创建独立积分来源并处理退款、争议与过期 |
 
-| 操作 | 已实现机制 |
-| --- | --- |
-| 首次订阅 | Stripe Hosted Checkout；只有签名验证通过的 `invoice.paid` 完成投影后才开通权益 |
-| 升级 | 应用内 preview/confirm；选择 `full_period_reset` 或 `prorated_delta` |
-| 降级、源自年付的变更或不支持的周期切换 | 使用 Subscription Schedule 在当前周期结束时生效 |
-| 取消 | 使用专门的 Portal 配置，在周期结束时取消 |
-| 续费 | 由已支付 Invoice 投影；年付套餐按月释放积分 |
-| 一次性积分 | Hosted Checkout 加上精确的 `payment_intent.succeeded` 投影 |
+Portal 中应禁用套餐价格变更，避免绕过应用选定的升级策略。首次配置 Stripe 产品、
+Portal、域名和 webhook 的职责清单见[首次部署指南](docs/DEPLOYMENT.md)。
 
-Portal 中禁用价格变更，避免绕开项目选定的升级策略。Stripe 管理支付对象与托管页面；
-本项目管理 PostgreSQL 中的权益投影；宿主应用仍须管理已验证登录/团队成员关系、业务
-实体和服务端权限执行。[首次部署指南](docs/DEPLOYMENT.md)包含完整职责表、Agent 应先
-询问的问题、域名/webhook 两阶段配置、环境边界和故障诊断。
-
+<a id="limitations"></a>
 <a id="implemented-scope"></a>
 
-## 已实现与未实现的范围
+## 已经包含什么
 
-项目完整实现了两个边界明确的套餐变更模板：
+当前范围适合常见的个人或团队 SaaS：
 
-- `full_period_reset`：立即按目标套餐全价开启一个新周期，不做按比例计费；
-- `prorated_delta`：保留当前月付周期，支付按比例计算的差价，并增加套餐目录中定义的
-  权益差额。
+- 月付和年付订阅，内置 Starter、Pro、Ultra，可替换为自己的套餐；
+- 两种升级方式：全价开启新周期，或月付套餐按剩余时间支付差价；
+- 周期末降级、取消、支付失败/SCA 恢复、退款和争议收敛；
+- 精确到 `0.000001` 的积分，以及可独立购买、过期和退款的积分包；
+- Hosted Checkout、Customer Portal、账户/权益查询和服务端额度校验；
+- 个人/团队认证 starter、产品 Job + outbox + fencing 示例；
+- PostgreSQL 下的幂等、并发协调和多实例部署。
 
-对内置的三个档位和月/年两种周期，两套完整的 6 × 6 矩阵由一个环境变量选择，并按
-每个 intent 持久化。共同范围包括：
+为了避免给采用者错误承诺，当前明确**不支持**多币种、席位计费、试用、优惠券、
+自动税费、通用计量计费、任意混合 Invoice item、收入确认和托管身份系统。产品代码
+仍需真正执行返回的 feature 与 limit；“页面展示某项权益”本身不是权限控制。
 
-- 一个订阅 item、一种货币（USD）；
-- 任意非空且 key 稳定的套餐集合，每个套餐都有月付和年付；内置 Starter、Pro、Ultra；
-- 零个或多个使用银行卡支付的一次性 USD 积分包，具有独立有效期和来源可追踪退款；
-  内置三个积分包；
-- 精确到 `0.000001` 的产品积分，以整数 atoms 存储而不是浮点数；
-- 年付 Invoice 最多为 12 个按月积分批次提供资金，而不是购买时一次发完；
-- 首次订阅 Checkout，以及需要认证的套餐、账户、Checkout、Portal、preview、confirm API；
-- FastAPI 的独立 `create_app()` 与可组合的 `BillingKernel` / `install_billing`；
-- 独立的 TypeScript `BillingKernel`、Fetch facade、Node server/CLI 与 Next.js App Router 集成；
-- 严格的个人/团队 JWT 身份 starter，含只可查看套餐的团队 viewer；
-- 进程内 `EntitlementService` 与可选的、受 owner 授权保护的内部 workload API；
-- 服务端控制的套餐变更、Stripe Invoice preview 与 Subscription Schedule；
-- 用于定价、账户状态、支付恢复和 webhook 成功轮询的 Next.js 参考 UI；
-- Next.js、FastAPI 和受保护定时任务共域名的 Vercel Services 部署，不依赖 Railway；
-- PostgreSQL 事件/业务幂等、行锁、持久套餐变更 intent、跨 Invoice 资金归属、
-  退款/争议收敛和 fail-closed incident；
-- 可运行的 Job + billing outbox + dispatch outbox + fencing 示例；
-- webhook 丢失后根据精确 Session、PaymentIntent 和 Charge 身份进行积分包对账。
-
-项目**没有**实现多币种、席位/数量、试用、优惠券、税费计算、计量计费、任意混合
-Invoice item、收入确认、会计或托管身份提供方。宿主应用必须提供已验证认证和产品侧
-权限执行。详见[架构](docs/ARCHITECTURE.md)、[不变量](docs/INVARIANTS.md)、
-[精确小数积分](docs/CREDIT_PRECISION.md)和[接入指南](docs/ADOPTION.md)。
+这些边界及后续扩展要求见[接入指南](docs/ADOPTION.md)、
+[套餐变更策略](docs/PLAN_TRANSITIONS.md)和[优惠码设计边界](docs/PROMOTION_CODES.md)。
 
 <a id="plan-catalog"></a>
 
-## 套餐目录与年付优惠
+## 套餐、年付与权益
 
-价格来自 [plans.toml](plans.toml)。档位身份和升降方向由稳定的套餐 key 与明确的 rank
-决定，绝不通过价格比较决定。
+价格和权益来自 [`plans.toml`](plans.toml)。套餐用稳定 key 和 rank 判断升降级，不根据
+价格高低猜测档位。下面是可直接替换的示例目录：
 
-修改规范化文件后，用宿主已经选择的运行时生成公开价格快照；任何一种路径都不要求
-安装另一种运行时：
-
-```bash
-# Python/FastAPI 源码流程，在仓库根目录运行
-uv run python scripts/sync_reference_catalog.py
-uv run python scripts/sync_reference_catalog.py --check
-
-# 原生 TypeScript/v0 源码流程
-cd typescript
-npm run sync:catalog
-npm run sync:catalog -- --check
-```
-
-两个命令都会校验 `plans.toml`，并确定性地产生相同的
-`web/reference-catalog.json`；`--check` 只检查漂移，不写文件。
-
-| 套餐 | 月付 | 年付总价 | 年付折算月价 | 年度节省 | 每月积分 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Starter | $19 | $137 | $11.42/月 | $91 | 300 |
-| Pro | $49 | $353 | $29.42/月 | $235 | 1,000 |
-| Ultra | $149 | $1,073 | $89.42/月 | $715 | 4,000 |
-
-年付节省额按 12 次月付与明确的年付总价比较。套餐目录允许年付总价低于、等于或高于
-月付总和，因为定价是产品决策。只有同币种且年付确实更便宜时，UI 才显示节省金额；
-年付相同或更贵时不宣称优惠。该展示计算永远不决定档位方向或变更时机。年付订阅的
-积分仍按月发放。
-
-内置年付价约比 12 次月付低 40%。这是明确的年价设计，不是 Stripe Coupon 或
-Promotion Code。优惠券、试用和限时活动不在当前实现范围内；Checkout Session 始终
-不设置 `allow_promotion_codes`，所以托管 Checkout 不会显示优惠码输入框。未来支持
-优惠码前必须满足的关口记录在[优惠码与优惠券](docs/PROMOTION_CODES.md)。
+| 套餐 | 月付 | 年付总价 | 年付折算月价 | 每月积分 |
+| --- | ---: | ---: | ---: | ---: |
+| Starter | $19 | $137 | $11.42/月 | 300 |
+| Pro | $49 | $353 | $29.42/月 | 1,000 |
+| Ultra | $149 | $1,073 | $89.42/月 | 4,000 |
 
 | 权益 | Starter | Pro | Ultra |
 | --- | ---: | ---: | ---: |
@@ -219,22 +162,14 @@ Promotion Code。优惠券、试用和限时活动不在当前实现范围内；
 | 并发任务 | 1 | 5 | 20 |
 | API key 数量 | 0 | 5 | 25 |
 
-API 会返回结构化权益，但产品代码仍要实际执行限制；展示权益不等于执行权益。
-
-内置档位是累积式的，但解析器不会强迫采用者使用这种产品设计。套餐可以没有 feature
-或数值 limit，更高 rank 也可以用一项权益交换另一项。只有 rank 定义升级/降级方向。
-在 `prorated_delta` 下，如果更高 rank 的月付变更没有正积分差额，会安全地安排在
-周期结束时，而不会尝试差价结算。
-
-`monthly_credits` 是从套餐顶层值合成的保留权益名，不能同时出现在 `features` 或
-`limits`。其他 feature 与数值 limit 共用一个全局命名空间：同一个 key 不能在某个
-套餐里是 feature、在另一个套餐里又是 limit，从而保证下游值类型稳定。
+只有年付总价确实低于 12 次月付时，参考 UI 才显示节省金额。年付价格是套餐设计，不是
+Stripe 优惠券；即使一次收取年费，订阅积分仍按月释放，避免提前透支全年权益。
 
 <a id="credit-packs"></a>
 
 ## 一次性积分包
 
-积分包只增加可消费的产品积分，不增加套餐 feature、不提高 limit，也不改变订阅档位。
+积分包适合用户临时补量，不改变订阅档位、功能开关或使用上限。
 
 | 积分包 | 价格 | 积分 | 默认有效期 |
 | --- | ---: | ---: | ---: |
@@ -242,566 +177,256 @@ API 会返回结构化权益，但产品代码仍要实际执行限制；展示�
 | Boost 500 | $59 | 500 | 365 天 |
 | Boost 2,000 | $199 | 2,000 | 365 天 |
 
-积分包通过 Stripe Hosted Checkout 的 `mode=payment` 购买，参考契约明确只允许银行卡，
-避免 Dashboard 自动支付方式静默增加未经测试的结算通道。只有通过签名验证且身份精确
-匹配的 `payment_intent.succeeded` 才创建资金 lot；浏览器返回和
-`checkout.session.completed` 都不会发积分。
-
-产品扣款使用 FEFO 分配到确切的订阅或积分包来源。部分现金退款、争议、过期、产品
-退款，以及从未来资金中偿还债务都保留可追踪性，并能在任意事件顺序下收敛。详见
-[积分包与多来源资金](docs/CREDIT_PACKS.md)。宿主产品代码只使用 Checkout/router/
-`EntitlementService` facade，不需要直接查询或协调内部四张积分包记账表。
+积分包使用 `mode=payment` 的 Hosted Checkout。系统会记录每批积分的资金来源，消费时
+优先使用最早到期的额度，并让部分退款、全额退款、争议、过期和产品退款最终落到正确
+余额。业务代码通过公开 service 使用它，不需要直接协调内部账本表。详见
+[积分包说明](docs/CREDIT_PACKS.md)。
 
 <a id="plan-transitions"></a>
 
-## 安全的套餐变更：全价新周期或按比例差价
+## 两套完整的 6 × 6 套餐变更矩阵
 
-缩写由套餐与周期组合：`SM` 表示 Starter Monthly，`SY` 表示 Starter Yearly，依此类推。
+这是用户最需要先决定的产品规则。`SM` 表示 Starter 月付，`SY` 表示 Starter 年付，
+Pro 和 Ultra 以此类推。
 
-API 启动前设置 `BILLING_TRANSITION_POLICY=full_period_reset` 或
-`prorated_delta`。健康检查、套餐、账户、preview 和 confirm 响应都会暴露当前模式，
-每个 intent 也会持久化该模式。
+读表方法：从左侧找到**当前套餐**，再沿这一行找到顶部的**目标套餐**。
 
-`full_period_reset`：月付来源升级到更高档位以及月转年可立即 preview；降级与所有
-年付来源变更在周期结束时生效。立即执行会使用 `billing_cycle_anchor=now` 与
-`proration_behavior=none`，目标 Invoice 支付后重置月度积分池。
+- **立即**：现在发起支付；只有付款完成后才切换权益。
+- **周期末**：当前周期保持不变，到期后再切换。
+- **—**：套餐没有变化。
 
-`prorated_delta`：只有保持月付、目标是更高档位且积分差额为正时立即结算。例如
-Starter Monthly → Pro Monthly 时，由 Stripe 收取剩余周期的净差价，并增加固定的
-`1,000 - 300 = 700` 积分，同时保留当前周期和未使用余额。月/年转换、降级和所有
-年付来源变更仍在周期结束时生效。
+### 模板 A：全价开启一个新周期（`full_period_reset`）
 
-差价 webhook 会读取 Invoice 的全部分页 line，要求同一比例下有一个来源负向 proration
-和一个目标正向 proration，并保存跨 Invoice 的资金分配。税费、折扣、Customer balance、
-credit note、未知/缺失 line 或不一致周期都会 fail closed。部分退款会按比例收回差额；
-关闭叶子升级会退回仍有资金支持的来源状态，关闭来源/中间 lineage 会撤销强制权益并
-等待修复。
+适合“升级后立即开始全新周期”的产品。用户支付目标套餐全价，旧周期未使用的时间
+不抵扣。
 
-两套完整 6 × 6 矩阵、Invoice 接受规则、退款语义和失败行为见
-[套餐变更策略](docs/PLAN_TRANSITIONS.md)。
+| 当前套餐 ↓ / 目标套餐 → | Starter<br>月付 (SM) | Starter<br>年付 (SY) | Pro<br>月付 (PM) | Pro<br>年付 (PY) | Ultra<br>月付 (UM) | Ultra<br>年付 (UY) |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Starter 月付 (SM)** | — | **立即**<br>目标全价 | **立即**<br>目标全价 | **立即**<br>目标全价 | **立即**<br>目标全价 | **立即**<br>目标全价 |
+| **Starter 年付 (SY)** | **周期末** | — | **周期末** | **周期末** | **周期末** | **周期末** |
+| **Pro 月付 (PM)** | **周期末** | **周期末** | — | **立即**<br>目标全价 | **立即**<br>目标全价 | **立即**<br>目标全价 |
+| **Pro 年付 (PY)** | **周期末** | **周期末** | **周期末** | — | **周期末** | **周期末** |
+| **Ultra 月付 (UM)** | **周期末** | **周期末** | **周期末** | **周期末** | — | **立即**<br>目标全价 |
+| **Ultra 年付 (UY)** | **周期末** | **周期末** | **周期末** | **周期末** | **周期末** | — |
 
-<a id="correctness-model"></a>
+月付套餐可以立即升到更高档位，也可以在同档位从月付转为年付；降级与所有年付来源
+变更都在周期末生效。立即升级付款成功后，目标套餐开启一个新的权益周期。
 
-## 正确性模型
+### 模板 B：只支付剩余周期差价（`prorated_delta`）
 
-- **至少一次投递、PostgreSQL 效果上等价一次。** 项目不宣称不可能实现的端到端
-  exactly-once 投递。
-- 在解析 JSON 前对原始请求体做 Stripe 签名验证。Stripe Event ID 防止重复投递；
-  `(stripe_invoice_id, grant_slot)` 独立防止另一事件或 worker 重复发放同一业务积分。
-- 资金归属使用精确的 Customer/Subscription、Checkout claim/session，以及从服务端
-  拉取并匹配 Price → Product 的套餐身份，不把可变 metadata 当作唯一授权证据。
-- 账户行锁串行化余额、发放、退款、取消与套餐变更投影。
-- `(event.created, event_rank)` 防止旧或更弱的订阅事件覆盖新状态。
-- 即使退款/争议先于 paid grant 到达，也会先持久化事实并最终收敛。
-- 积分包订单、资金 lot、扣费分配和 clawback debt 保留精确资金来源。
-- 差价分配在退款与争议间保留 source/target Invoice lineage。
-- 当前 epoch 的追回超过可用余额时，`billing_clawback_debts` 会保留缺口，并在未来
-  同 epoch 产品退款或差价发放变为可用余额之前优先抵扣。
-- Checkout 和套餐变更使用持久化、调用方可重放的请求身份与 Stripe 幂等键。
-- confirm 会原子地把 preview 移到 `applying`，并在 Stripe 变更前记录
-  `remote_started_at`。23 小时内的未知结果只能用相同派生 Stripe key 重试；更久的
-  歧义必须停止并等待人工证据。
-- paid/payment-failed 事件必须匹配 intent 的 compare-and-set settlement Invoice ID；
-  Subscription ID 本身不能把旧失败关联到新 intent。POST 成功响应永远不会直接开通权益。
-- 任何返回 2xx 的 fail-closed 决策都必须产生持久状态或 `billing_incidents` 记录。
+适合常见的“月付套餐中途升级”。Stripe 抵扣旧套餐未使用时间，再收取目标套餐相同
+剩余时间的费用，因此用户现在只支付净差价。
 
-PostgreSQL 是协调者和可写事实来源。多个 API/worker 进程可以安全共享同一 primary，
-但 PostgreSQL 本身仍是有状态依赖；若没有 HA、备份和恢复演练，它仍是单点。详见
-[分布式部署](docs/DISTRIBUTED.md)。
+| 当前套餐 ↓ / 目标套餐 → | Starter<br>月付 (SM) | Starter<br>年付 (SY) | Pro<br>月付 (PM) | Pro<br>年付 (PY) | Ultra<br>月付 (UM) | Ultra<br>年付 (UY) |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Starter 月付 (SM)** | — | **周期末** | **立即**<br>按比例差价 | **周期末** | **立即**<br>按比例差价 | **周期末** |
+| **Starter 年付 (SY)** | **周期末** | — | **周期末** | **周期末** | **周期末** | **周期末** |
+| **Pro 月付 (PM)** | **周期末** | **周期末** | — | **周期末** | **立即**<br>按比例差价 | **周期末** |
+| **Pro 年付 (PY)** | **周期末** | **周期末** | **周期末** | — | **周期末** | **周期末** |
+| **Ultra 月付 (UM)** | **周期末** | **周期末** | **周期末** | **周期末** | — | **周期末** |
+| **Ultra 年付 (UY)** | **周期末** | **周期末** | **周期末** | **周期末** | **周期末** | — |
 
-<a id="vercel-deployment"></a>
+只有“月付 → 更高档月付”立即结算。例如 Starter 月付升级 Pro 月付时，Stripe 收取
+剩余周期净差价，产品增加 `1,000 - 300 = 700` 积分，并保留当前周期与已有余额。
+降级、月/年切换和所有年付来源变更仍在周期末生效。
 
-## 使用任一后端部署到 Vercel
-
-仓库中的 [`vercel.json`](vercel.json)把 `web/` 与 Python 计费核心作为两个 Vercel
-Services 部署到同一个 URL：浏览器 `/api/*`、Stripe `/webhooks/*` 与 `/health` 由
-FastAPI 处理，其余路径由 Next.js 处理。前端使用明确的 `same-origin` sentinel，因此
-不需要 Railway URL、跨域 allowlist 或第二个公开部署。
-
-Vercel Cron 调用有界的每小时年付发放和每五分钟对账路由。它们要求 `CRON_SECRET`，
-只返回聚合计数，并依赖与多 worker 相同的 PostgreSQL 锁、唯一约束和 lease。部署前
-仍要显式执行 schema migration 与 Stripe 套餐 bootstrap。
-
-此方案仍需要托管 PostgreSQL、Stripe 账户/webhook endpoint 和产品真实身份系统。
-同源路由不会弱化认证：FastAPI 默认拒绝所有请求，只有完整显式配置后才能启用严格的
-个人 JWT/JWKS starter。Preview 部署必须使用隔离的 Stripe 测试资源与数据库，并保持
-`noindex`。完整环境矩阵和验证清单见 [Vercel 指南](docs/VERCEL.md)。
-
-纯 TypeScript 部署使用 [`vercel.typescript.json`](vercel.typescript.json)，一个
-Next.js service 即可。原生 Route Handlers 负责 `/api/*`、`/webhooks/stripe` 和
-`/health`，定时任务也调用 TypeScript services。它不需要 Python、Railway 或常驻的
-独立 Node 服务，但仍需要 PostgreSQL、Stripe、真实认证、migration、备份和调度器。
-
-<a id="ai-builders"></a>
-
-## 与 v0、Lovable 和 AI App Builder 配合
-
-只有 Stripe 测试账户也可以搭建真实、受权限控制的测试站：Checkout、Portal、测试卡、
-SCA、签名 webhook、退款和 Test Clock 都走 Stripe 真实测试网络，但不会产生真实资金。
-项目也提供明确 `noindex` 的公开 `simulation` 模式，用于不能连接 Stripe 或数据库的
-纯 UI 分享链接。
-
-v0 可以直接编辑本仓库的 Next.js 视觉层，同时保留原生 TypeScript Route Handlers。
-Lovable 可以负责 Vite UI，但真实计费必须通过经过认证集成的独立 Node/FastAPI 服务。
-仓库 UI 的 Supabase transport 不是可发布的浏览器包；指南提供一个无依赖、可复制的
-[`vite-billing-client.ts`](examples/browser_adapters/vite-billing-client.ts)。无论哪种方式，
-secret key、webhook 验签、PostgreSQL 与权益投影都必须留在服务端。详见
-[AI Builder 与测试站指南](docs/AI_BUILDERS.md)。
-
-<a id="api-auth"></a>
-
-## API 与认证边界
-
-需要认证的计费路由：
-
-| 方法 | 路由 | 用途 |
-| --- | --- | --- |
-| GET | `/api/catalog` | 有序价格与结构化权益 |
-| GET | `/api/account` | webhook 投影后的套餐、积分、执行与 pending 状态 |
-| POST | `/api/checkout` | 首次付费订阅；要求 `Idempotency-Key` |
-| POST | `/api/credit-packs/checkout` | 一次性积分包 Checkout；要求 `Idempotency-Key` |
-| POST | `/api/billing/portal` | 安全的 Portal Session；要求 `Idempotency-Key` |
-| POST | `/api/billing/change/preview` | 持久化 preview；要求 `Idempotency-Key` |
-| POST | `/api/billing/change/confirm` | 确认不透明的 `preview_id` |
-
-TypeScript 宿主可以用 `BillingFetchHandlerOptions.onError` 把原始服务端异常发送到结构化
-日志或错误追踪系统，同时向客户端返回净化后的响应。该 callback 必须只在服务端使用，
-不得把异常原文写入浏览器可见状态。
-
-两个实现都以 `AuthAccountAdapter` 作为身份集成边界。生产默认是
-`RejectAllAuthAdapter`，不会信任浏览器提交的 account ID。`DemoBearerAuthAdapter`
-只有在 `APP_ENV=development`、使用 Stripe 测试 key、并且显式配置 demo token 时才启用。
-部署前必须替换成经过验证的 session/OIDC/JWT；demo token 不是生产认证。
-
-可选 `auth` extra 提供严格的非对称 JWT/JWKS verifier 与个人/团队 adapter。团队
-adapter 会校验已签名 tenant selector 的实时成员关系；viewer 只能读 catalog，账户/
-恢复状态和所有 mutation 要求 `billing_admin`。服务端产品权益执行与浏览器计费分开，
-可选内部 router 默认拒绝所有 workload 认证和 owner 授权，operation scope 本身不能
-允许服务任意选择租户。详见[接入指南](docs/ADOPTION.md)与
-[可运行认证 starter](examples/auth_starters/README.md)。
-
-<a id="stripe-versions"></a>
-
-## Stripe API 版本是两份独立契约
-
-- `STRIPE_API_VERSION` 控制主动发出的 SDK 请求；当前代码目标为
-  `2026-06-24.dahlia`。
-- 每个 webhook Event 都有自己的快照 `api_version`，由 Stripe endpoint/账户契约决定。
-  `STRIPE_WEBHOOK_API_VERSION` 必须等于实际 Event 值，是必填启动配置；它不会回退到
-  `STRIPE_API_VERSION`。
-
-请求版本不会重写 webhook payload。在四个精确绑定 `f757fcc` 的浏览器关口中，固定到
-Dahlia 的隔离测试 endpoint 投递了签名的 `2026-06-24.dahlia` payload，而独立 Event
-API 查询显示 `2025-12-15.clover`。不匹配会记录 `webhook_contract_mismatch` 并 fail
-closed。项目不会从其中一份版本推断另一份。详见[测试](docs/TESTING.md)、
-[Stripe CLI](docs/STRIPE_CLI.md)和[webhook 验证](docs/WEBHOOK_VERIFICATION.md)。
+设置 `BILLING_TRANSITION_POLICY=full_period_reset` 或 `prorated_delta` 即可选择模板。
+自定义套餐、退款规则和无法安全结算时的处理见
+[完整套餐变更契约](docs/PLAN_TRANSITIONS.md)。
 
 <a id="quick-start"></a>
 
-## 快速开始
+## 五步接入
 
-完整源码仓库测试要求：Python 3.12+、`uv`、Docker、Node.js 22+、npm、Stripe CLI
-和一个 Stripe 测试模式账户。应用流量只需选择一个后端运行时；PostgreSQL、Stripe
-套餐、Portal、webhook、身份和调度要求相同。Vercel 只是可选部署适配器；任一后端也
-可以运行在 VM、容器平台、Kubernetes 或其他能访问 PostgreSQL 并接收签名 webhook
-的 PaaS。Docker 与 Stripe CLI 是默认本地/测试流程所需，不是线上容器依赖。
+### 1. 先回答五个产品问题
 
-源码方式应把 `main` 换成经过评审的完整 commit SHA：
+确定付费主体（个人或团队）、后端运行时、套餐与权益、升级模板，以及是否需要年付、
+积分包和 Portal。Agent 或开发者不应在这些问题未确定时替你猜业务规则。
+
+### 2. 引入源码并选择一种后端
+
+当前 npm 包尚未发布。请克隆完整仓库，再按宿主技术栈选择一种实现：
 
 ```bash
 git clone https://github.com/ToseaAI/stripe-entitlements.git
 cd stripe-entitlements
-git checkout main
 ```
 
-`stripe-entitlements migrate` 初始化本应用 schema，**不会**把 PostgreSQL 17 升级到
-PostgreSQL 18。全新的 Neon PostgreSQL 18 只需初始化应用 schema。现有 v0.3 数据库
-的 001 → 002 流程见[运维指南](docs/OPERATIONS.md)。
+- TypeScript/Next.js：按 [TypeScript 源码指南](typescript/README.md#requirements)构建，
+  或以 Git vendor、本地 `file:` 依赖、tarball 接入。
+- Python/FastAPI：按[接入指南](docs/ADOPTION.md#compose-the-fastapi-application)使用独立
+  应用或把 router 安装到现有服务。
 
-Python/FastAPI 源码流程：
+### 3. 配置套餐与 PostgreSQL
 
-```bash
-cp .env.example .env
-chmod 600 .env
-# 在 .env 中选择 full_period_reset 或 prorated_delta。
-docker compose up -d postgres
-uv sync --frozen
-uv run --env-file .env stripe-entitlements migrate
-```
+编辑 `plans.toml`，为测试和生产使用彼此隔离的数据库，然后执行项目 migration。
+支持 PostgreSQL 17 或 18；这里的 migration 是初始化/升级应用表，不是升级数据库
+服务器版本。
 
-### 各进程需要的环境配置
+### 4. 配置 Stripe 测试模式
 
-| 进程或功能 | 必需配置 |
-| --- | --- |
-| 只执行 schema migration | `DATABASE_URL`；pool 上下限可选 |
-| API/webhook/worker | `DATABASE_URL`、`STRIPE_SECRET_KEY`、`STRIPE_WEBHOOK_SECRET`、实际的 `STRIPE_WEBHOOK_API_VERSION` |
-| 受保护的浏览器计费 | 宿主提供的 `AuthAccountAdapter`，或完整兼容的 JWT/JWKS starter；否则受保护路由有意返回 401 |
-| Customer Portal | `STRIPE_PORTAL_CONFIGURATION_ID`；缺少它不影响其余服务启动 |
-| 参考 UI 套餐变更/SCA | 同一测试账户的 `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`；首次 Hosted Checkout 和 Portal 跳转不需要它 |
-| 年付发放与对账 | 调度器；只有内置 Vercel Cron 路由要求 `CRON_SECRET` |
-| 生产跳转/CORS | 部署专属的 Checkout、Portal、`FRONTEND_ORIGINS` HTTPS 值 |
-| SEO 公开收录 | 规范的 `NEXT_PUBLIC_SITE_URL` 加显式 `NEXT_PUBLIC_ALLOW_INDEXING=true`；preview 应禁用 |
+使用测试 secret key 创建 Product/Price 与安全的 Portal 配置。部署出稳定域名后，
+再创建指向该域名的 webhook endpoint，并把它自己的 signing secret 放入部署平台的
+服务端环境变量。
 
-`STRIPE_API_VERSION`、套餐/产品 ID、变更策略、pool 设置和本地 URL 有默认值。生产环境
-必须评审它们，但它们不是仅启动参考实现就额外要求的密钥。migration 只读取数据库
-连接与 pool 配置，生产上应为 schema-init Job 注入最小数据库密钥，而不是完整 Stripe
-凭据。
+`STRIPE_API_VERSION` 控制主动 API 请求；`STRIPE_WEBHOOK_API_VERSION` 必须匹配该
+endpoint 实际签名 Event 的版本，二者不能互相猜测。需要的事件、Stripe CLI 本地转发
+和两阶段部署步骤见 [Stripe CLI 指南](docs/STRIPE_CLI.md)与
+[首次部署指南](docs/DEPLOYMENT.md)。
 
-bootstrap 前，在忽略的 `.env` 中替换测试 secret key、本地 demo 值、product line、
-lookup prefix、套餐路径与变更策略。Portal ID 和 webhook secret 只有执行后续步骤才能
-获得真实测试值。Hosted Checkout 与 Portal 不需要 publishable key；参考 UI 的 Stripe.js
-套餐变更/SCA 需要。后端 secret、Stripe CLI 登录和浏览器 publishable key 必须属于同一
-Stripe 测试账户。
+### 5. 连接认证、执行权益并验证
 
-```bash
-uv run --env-file .env python scripts/bootstrap_stripe.py
-uv run --env-file .env python scripts/bootstrap_stripe.py --verify-only
-```
-
-把 bootstrap 输出的真实 Portal configuration ID 写入被忽略的 `.env`。然后在另一个
-终端启动签名转发：
-
-```bash
-stripe login
-stripe listen \
-  --events checkout.session.completed,checkout.session.expired,invoice.paid,invoice.payment_failed,customer.subscription.updated,customer.subscription.deleted,charge.refunded,charge.dispute.created,payment_intent.succeeded \
-  --forward-to http://127.0.0.1:8000/webhooks/stripe
-```
-
-把临时 signing secret 写入被忽略的 `.env` 后再启动 API。`STRIPE_WEBHOOK_API_VERSION`
-必须来自 listener 或 endpoint 实际签名 payload，不能从 `STRIPE_API_VERSION` 复制。
-未知时按[本地发现流程](docs/ADOPTION.md#discover-a-local-stripe-cli-payload-version)
-诊断一次，再更新 `.env` 并重启。
-
-运行只读 preflight：
-
-```bash
-uv run --env-file .env stripe-entitlements doctor
-uv run --env-file .env stripe-entitlements doctor --profile portal
-uv run --env-file .env stripe-entitlements doctor --profile portal --stripe-network
-```
-
-`doctor` 默认不访问 Stripe，只检查本地包、套餐、配置、PostgreSQL schema 与 migration
-checksum，也不会输出密钥或 DSN。`--stripe-network` 必须显式开启，并增加只读的 Stripe
-Account/套餐/Portal 校验；它仍不能证明生产认证、调度器、endpoint metadata 或签名投递。
-
-```bash
-uv run --env-file .env \
-  uvicorn stripe_entitlements.app:create_app --factory --port 8000
-```
-
-原生 TypeScript/Node 源码流程：
-
-```bash
-cd typescript
-npm ci
-npm run build
-cp .env.example .env
-chmod 600 .env
-# 设置 BILLING_TRANSITION_POLICY。
-set -a
-. ./.env
-set +a
-npx --no-install stripe-entitlements migrate
-npx --no-install stripe-entitlements doctor
-npx --no-install stripe-entitlements serve
-```
-
-源码 checkout 必须显式 build，因为生成的 `dist/` CLI 不提交到 Git；本地打包的 `.tgz`
-已经包含它们。Node server 在 8000 端口暴露相同路由。纯 Next.js 后端可以使用内置
-Route Handlers 与 `vercel.typescript.json`，完全不启动 FastAPI。完整说明见
-[TypeScript 指南](typescript/README.md)。外部 Next.js 应使用固定 submodule、本地
-`file:` 依赖或本地构建 `.tgz`，不要安装目前不存在的 npm registry 版本。
-
-参考前端：
-
-```bash
-cd web
-npm ci
-cp .env.example .env.local
-chmod 600 .env.local
-npm run dev
-```
-
-默认配置使用显式 mock 数据，不连接后端。HTTP 模式需要按
-[接入指南](docs/ADOPTION.md#connect-or-replace-the-nextjs-frontend)配置并提供匹配 auth
-adapter。UI 不会把 Checkout return、confirm 成功或 SCA 完成当作权益证据；它会轮询
-`/api/account`，直到 webhook 投影与目标一致。默认 allowlist 下请使用
-`http://localhost:3000`，不是不同 Origin 的 `http://127.0.0.1:3000`。
-
-`stripe trigger invoice.paid` 生成的事件没有匹配本仓库账户，因此预期会产生一个持久
-unknown-account incident；它只能验证传输/签名，不是权益生命周期测试。
+把你已验证的用户 ID 或团队 ID 映射为计费账户；产品 API 在服务端调用权益与额度
+service，而不是相信浏览器传来的套餐或余额。先运行 `doctor`，再按
+[测试指南](docs/TESTING.md)验证 Checkout、Portal、webhook、失败恢复和套餐变更。
 
 <a id="adoption"></a>
 
-## 接入现有应用
+## 连接你的用户和业务实体
 
-写认证 adapter 前先确定付费主体。个人计费通常把不可变宿主 user ID 映射到
-`external_ref`；团队计费映射经过验证的 organization/tenant ID。email 与浏览器提交的
-account ID 永远不是所有权依据。
+| 宿主应用继续负责 | 本项目可以直接承担 |
+| --- | --- |
+| 登录、session、OIDC/JWT issuer | 验证后身份到计费账户的 adapter |
+| 用户、organization、项目和任务表 | Stripe customer、订阅、权益和积分投影 |
+| 团队成员与角色真相 | 个人/团队 starter 和计费管理员边界 |
+| 产品 feature/limit 的实际执行 | `EntitlementService` 与原子 check/charge/refund |
+| 任务创建与队列投递 | 可运行的 Job + outbox + fencing 示例 |
 
-两个后端都提供 auth protocol、account resolver、计费 HTTP API 与原子积分操作，还提供
-个人/团队 JWT starters、`BillingKernel` / `BillingServices`、原生 `APIRouter` installer、
-`EntitlementService` 和可选内部 workload router。宿主仍负责 issuer/session、tenant
-成员数据、workload → owner 授权、产品 limit 执行，以及协调 Job 与积分扣除/退款的持久
-工作流。`CreditService` 与宿主 Job insert 不是同一事务，生产任务准入必须使用幂等
-outbox/saga；完整可运行实现见 [`examples/job_outbox/`](examples/job_outbox/README.md)。
+个人产品应映射不可变的宿主 user ID；团队产品应映射经过验证的 tenant/organization ID。
+不要用 email，也不要信任浏览器提交的 account ID 作为所有权依据。
 
-独立 FastAPI 使用 `create_app(..., auth_adapter=...)`。现有 FastAPI 根应用构建
-`BillingKernel`，再在 startup 前调用 `install_billing(app, kernel, prefix="/stripe")`。
-installer 会组合现有 lifespan、复用且不接管宿主 pool、把带 prefix 的路由加入 OpenAPI，
-并只对计费路由应用 CORS/Origin 与响应加固，不改变无关路由或全局日志。
+如果你的 SaaS 有“生成报告、转换文件、调用 AI”等任务，推荐流程是：验证身份 →
+检查权益与上限 → 以业务幂等键扣额度 → 持久化任务 → 失败时退款。跨服务任务使用
+[Job/outbox 示例](examples/job_outbox/README.md)，认证起点见
+[个人与团队 Auth Starter](examples/auth_starters/README.md)。
 
-Node/Next.js 使用带宿主 `AuthAccountAdapter` 的 `createBillingRuntime({ auth })`，或配置
-严格个人 JWT/JWKS 环境 starter 后把 Route Handlers 委托给
-`environmentNextBillingRouteHandler`。团队部署注入带实时 membership repository 的
-`TeamJwtAuthAdapter`。一个 `Database` 只能绑定一个 kernel，避免一个 lifecycle 错误
-关闭另一个 kernel 的 pool。
+<a id="correctness-model"></a>
 
-积分支持六位精度且不使用二进制浮点。Python 传给 `CreditService` 的整数仍表示完整积分；
-小数使用十进制字符串或 `Decimal`。HTTP 响应同时返回规范十进制字符串、atom 字符串与
-`scale=1000000`，JavaScript 不会用有损 `number` 作为账本事实。完整接入、认证、产品
-检查、调度器和宿主契约测试见[接入指南](docs/ADOPTION.md)。
+## 为什么能应对重复、乱序和并发
 
-<a id="demo-recording"></a>
+| 真实问题 | 项目采用的业务保护 |
+| --- | --- |
+| Stripe 重复投递同一事件 | 事件幂等与业务效果唯一约束 |
+| 两个事件都可能发放同一权益 | Invoice/批次级唯一身份，防止重复发放 |
+| webhook 乱序或退款先到 | 持久化事实并按因果顺序最终收敛 |
+| 多个 API/worker 同时改余额 | PostgreSQL 行锁、约束和 lease 协调 |
+| Checkout 成功页先于 webhook 到达 | 页面轮询账户投影，不直接开通权益 |
+| 升级支付失败或需要 SCA | 保留旧的已付权益，等待目标 Invoice 真正支付 |
+| 处理结果不确定 | 保存可重试请求身份；无法证明时 fail closed 并记录 incident |
 
-## 演示录制与宣传视频
+因此可以运行多个 API 和 worker 实例，但它们必须共享同一个 PostgreSQL primary 和一致
+配置。PostgreSQL 仍需要 HA、备份和恢复演练。实现细节见[不变量](docs/INVARIANTS.md)、
+[架构](docs/ARCHITECTURE.md)和[分布式部署](docs/DISTRIBUTED.md)。
 
-无需 Stripe 即可录制确定性的公开站点/价格/账户演示：
+<a id="vercel-deployment"></a>
 
-```bash
-PROMO_STEP_PAUSE_MS=1400 scripts/run_promo_ui.sh
-```
+## Vercel 与其他部署方式
 
-真实浏览器 runner 还能录制 Stripe **测试模式**中的拒付、Checkout 3DS、签名 webhook
-投影、套餐 preview、升级 SCA 和最终账户状态：
+纯 TypeScript 方案可以让 Next.js App Router 同时提供页面、API、webhook、健康检查和
+定时路由，不需要 FastAPI、Railway 或常驻的独立 Node 服务。
 
-```bash
-E2E_TRANSITION_POLICY=prorated_delta \
-E2E_RECORD_VIDEO=1 \
-E2E_DEMO_PAUSE_MS=1200 \
-scripts/run_browser_e2e.sh
-```
+Python 方案也可以让 Next.js 页面与 FastAPI 计费服务共享一个 Vercel 域名。两种方案
+都仍需要 PostgreSQL、Stripe endpoint、真实身份系统、migration、备份和年度发放/
+对账调度器。Vercel 只是可选适配器；VM、容器、Kubernetes 和其他能接收 HTTPS webhook
+的平台同样可用。详见 [Vercel 部署指南](docs/VERCEL.md)。
 
-默认 transport 创建临时、版本固定的 Webhook Endpoint，是 release evidence 模式。
-`E2E_WEBHOOK_TRANSPORT=stripe_cli` 适合 Quick Tunnel 不可用时的本地诊断和录制，但不能
-证明 endpoint metadata 或 endpoint 专属版本固定。
+<a id="ai-builders"></a>
 
-```bash
-scripts/build_promo_video.sh
-scripts/review_promo_video.sh
-```
+## v0、Lovable 与 AI Builder
 
-视频构建器会遮盖支付字段，产物写到被忽略的 `web/test-results/promo-final/`。原始浏览器
-产物保持忽略与私密；review 会逐帧解码并检查音画同步、黑屏、codec、响度、敏感 OCR
-词与场景字幕。详见[演示视频指南](docs/DEMO_VIDEO.md)。
+只有 Stripe 测试账户也能发布一个可实际走 Hosted Checkout、Portal、测试卡、SCA 和
+签名 webhook 的测试站，不会产生真实资金。
 
+- **v0 / Next.js**：可直接编辑参考 UI，并接入原生 TypeScript Route Handlers。
+- **Lovable / Vite**：可生成前端，但真实计费仍通过受认证的 Node 或 FastAPI 服务。
+- **只展示 UI**：使用明确 `noindex` 的 simulation 模式；它不连接 Stripe 或数据库，
+  也不能证明真实订阅已经生效。
+
+Secret key、webhook 验签、数据库和权益判断必须留在服务端。可复制提示词、前端适配器
+与测试/生产边界见 [AI Builder 指南](docs/AI_BUILDERS.md)。
+
+<a id="evidence"></a>
 <a id="verification"></a>
 
-## 验证与证据边界
+## 验证证据与诚实边界
 
-证据按执行层区分。曾经运行过测试或保留旧结果，不能证明当前工作树仍通过 Stripe 网络。
+仓库的 CI 持续检查 Python/FastAPI、TypeScript/Node、Next.js Web、容器、SQL migration
+和跨运行时策略一致性。数据库测试覆盖重复事件、不同事件产生同一业务效果、乱序、
+事务回滚、退款/争议和真实并发。
 
-计费核心与 Stripe 网络一致性关口绑定到干净提交
-`f757fcce4aeb1194b3db04f87579e8f5ef169058`；其 tree 与之后 squash 合并的 `89646e5`
-完全一致。GitHub Actions [run 33283480383](https://github.com/ToseaAI/stripe-entitlements/actions/runs/33283480383)
-通过 Backend、TypeScript core、Container 与 Web：
+可选的 Stripe **测试模式**与真实浏览器流程覆盖 Hosted Checkout、拒付、3DS/SCA、
+签名 webhook、两种升级策略、积分包、Portal、退款和 Test Clock 年度续费。采用者可按
+[测试指南](docs/TESTING.md)运行 `scripts/run_browser_e2e.sh`，并在自己的测试 endpoint
+上复验。
 
-- Python 通过 Ruff、Mypy、版本检查、依赖审计和 1,257 个无网络测试，另有 10 个
-  `real_stripe` 用例被默认排除；
-- TypeScript 通过格式、lint、类型、build、两种 npm audit 与 50 个文件中的 816 个测试；
-- 干净 Web archive/install 通过 lint、类型、生产 build、两种 npm audit 与 208 个测试；
-- Python 与 TypeScript 各自通过全部 10 个 Stripe **测试模式**真实对象用例；
-- 两个运行时分别对两种变更策略完成四条生产 build 浏览器链路，使用临时签名 endpoint，
-  最终均为 Pro/1,020，并完成数据库/endpoint/对象清理；
-- Wheel/sdist/npm artifact、全新与 v0.3 → v0.4 migration，以及 UID/GID 10001、
-  read-only root 容器关口通过。
-
-这些临时 endpoint 投递的是签名 `2026-06-24.dahlia` payload，独立 Event API 视图则是
-`2025-12-15.clover`。它们是测试模式证据，**不宣称验证了生产 webhook payload**。
-后续代码变化必须重跑受影响关口，不能继承旧提交结果。
-
-默认 CI：
-
-```bash
-uv sync --frozen
-uv run python scripts/check_release_versions.py
-uv run ruff format --check .
-uv run ruff check .
-uv run mypy src
-uv run pytest -m "not real_stripe"
-uv audit
-
-cd typescript
-npm ci
-npm audit --omit=dev
-npm audit
-npm run check
-
-cd ../web
-npm ci
-npm audit --omit=dev
-npm audit
-npm run lint
-npm run typecheck
-npm test
-npx playwright install --with-deps chromium
-npm run test:e2e:simulation
-npm run build
-```
-
-默认 backend suite 使用一次性 PostgreSQL 17 容器，覆盖事务、锁、约束、重复/乱序事件、
-退款、年度 worker 并发、Checkout、套餐 intent lease、API 响应与 fail-closed。PostgreSQL
-18 另做新 schema、幂等重放、readiness 与重点事务兼容测试。两者都受支持，但证据层级
-分开报告，不假装完整矩阵运行了两遍。
-
-可选 `real_stripe` suite 会拒绝 live key。当前十个测试覆盖隔离的真实测试模式
-Product/Price/Customer/Subscription、月付 Invoice 发 300 积分、$9.50 半额退款收敛到
-150、一次性积分包与退款 lineage、两种月付升级策略、年付来源延后变更、失败支付与 SCA、
-Test Clock 跨年续费、幂等对象创建/清理和 Event + PostgreSQL 投影。两个运行时在
-`f757fcc` 上全部通过；直接 Event polling 不等于签名 endpoint 投递。
-
-浏览器 runner 会创建临时测试 endpoint，执行拒付 → 3DS → 签名 webhook → 浏览器升级
-→ 第二次 paid 投影，并应分别对两种策略运行。年度时间跳跃使用
-`scripts/run_test_clock_e2e.sh`；浏览器/transport 使用 `scripts/run_browser_e2e.sh`。
-跳过或只跑一半都不能作为证据。完整边界见[测试指南](docs/TESTING.md)。
+这些证据说明参考实现的已声明路径被系统性验证过，但不代表任意套餐、Dashboard 配置、
+认证系统或部署平台都天然正确；也**不宣称验证了生产 webhook payload**。上线前仍需
+使用自己的生产 endpoint、真实签名事件、身份边界、备份恢复和告警完成验收。测试层级
+和可复现命令集中在[测试文档](docs/TESTING.md)与
+[webhook 验证指南](docs/WEBHOOK_VERIFICATION.md)。
 
 <a id="migrations"></a>
 
-## SQL migration 与生产切换
+## 数据库初始化与升级
 
-`stripe-entitlements migrate` 按顺序应用完整 migration bundle。全新 0.4.0 数据库应用
-`001_v3_baseline.sql` 与 `002_stripe_request_snapshots.sql`；现有 v0.3 只应用原子追加的
-002。baseline 创建十四张正确性表、最终约束、部分唯一保护、协调索引、不可变 Invoice
-归属和带因果时间的 incident；002 为订阅 Checkout claim、积分包订单与套餐 intent
-增加有版本的 JSON 请求快照，不为旧行编造事实。
+`stripe-entitlements migrate` 初始化并按顺序升级本项目 schema。全新数据库从基线开始；
+已有旧版 schema 只应用后续 migration。它不会把 PostgreSQL 17 升级为 PostgreSQL 18，
+两种服务器版本都可以承载新数据库。
 
-这里的 **migration 是应用 schema 初始化/演进**，与 PostgreSQL 17 → 18 服务器升级无关。
-新的 PostgreSQL 17 和 18 都从 001、002 开始；只有已经存在旧版本应用 schema 的数据库
-才需要版本间切换。
-
-migration 只加载 `DATABASE_URL` 和可选 `DATABASE_POOL_*`。这允许最小权限 schema-init
-Job 不持有 Stripe key 或 webhook secret；API/worker 仍需要各自完整运行配置。
-
-这是刻意的 pre-1.0 lineage reset：v0.3 不能升级由公开 v0.2.x tag 初始化的数据库；
-应重建旧开发、demo 和 staging 数据库。不要编辑 `schema_migrations` 绕过双向 fail-closed
-保护。发布 baseline 后其 checksum 不可变，未来 schema 必须追加 002 及后续文件。
-
-002 DDL 是追加式的，但 v0.3 remote mutation writer 不理解 frozen snapshot，因此不能
-混合运行。先停止订阅 Checkout、积分包 Checkout 和套餐变更创建，应用 002，再把所有
-writer 替换为 v0.4 后恢复流量。v0.4 已接收请求后，不要在存在 in-flight claim/order/
-intent 时把 writer 回滚到 v0.3；应停写并完成对账，或继续向前修复。
-
-生产切换应单独、明确执行：
-
-1. 准备 HA PostgreSQL 并应用 migration；
-2. 接入真实认证；默认 fail closed 是有意设计；
-3. 用 `--allow-live` bootstrap 并验证 live Product、Price 与 Portal；
-4. 创建只订阅支持事件集合的 live webhook endpoint；
-5. 从该 endpoint 的真实 Event 快照设置 `STRIPE_WEBHOOK_API_VERSION`，不要与
-   `STRIPE_API_VERSION` 混淆；
-6. 配置允许的 Checkout/Portal URL 与前端 Origin；
-7. 运行后端/前端 CI、测试模式对象形状测试、备份恢复演练、webhook smoke 与支付恢复；
-8. 部署年度发放/对账调度器，并对未解决 incident 与 webhook 5xx 告警。
-
-使用[发布检查单](.github/RELEASE_CHECKLIST.md)与[运维指南](docs/OPERATIONS.md)。
+生产迁移应独立于 Web 启动执行，并使用最小数据库权限。不要手改 migration 历史或让
+不兼容的新旧 writer 混跑。升级顺序、回滚边界和生产检查单见
+[运维指南](docs/OPERATIONS.md)与[发布检查单](.github/RELEASE_CHECKLIST.md)。
 
 <a id="repository-map"></a>
 
-## 仓库结构
+## 进一步阅读
 
-- `src/stripe_entitlements/`：独立/可组合 FastAPI、计费与权益 service、processor、gateway、
-  worker、认证和套餐变更 coordinator；
-- `typescript/`：独立 Node/Next 实现和尚未发布的 npm 源码、Fetch/Route Handler adapter、
-  CLI、unit/PostgreSQL/跨运行时/真实 Stripe 测试与接入指南；
-- `examples/auth_starters/`：可运行的个人/团队 JWT 入口和团队 membership schema；
-- `examples/job_outbox/`：可运行的 Job、billing outbox、queue outbox、retry 和 fencing；
-- `migrations/`：按序 PostgreSQL schema；
-- `plans.toml`：稳定套餐身份、价格与权益；
-- `scripts/bootstrap_stripe.py`：套餐与安全 Portal bootstrap/验证；
-- `scripts/run_test_clock_e2e.sh`：真实年度续费/时间跳跃关口；
-- `scripts/run_browser_e2e.sh`：真实浏览器与签名 webhook 关口；
-- `tests/`：纯逻辑、PostgreSQL 竞态/API 和可选 Stripe 测试模式用例；
-- `web/`：Next.js 参考 UI 与 API adapter；
-- `docs/`：接入、不变量、架构、测试、运维、SEO 与发布资料；
-- `.github/`：CI、贡献模板与发布 metadata。
+| 主题 | 文档 |
+| --- | --- |
+| 第一次部署与 Agent 应询问的问题 | [部署指南](docs/DEPLOYMENT.md) |
+| 接入现有应用、认证、业务实体与源码 vendor | [接入指南](docs/ADOPTION.md) |
+| TypeScript、Node 与 Next.js | [TypeScript 指南](typescript/README.md) |
+| 两种 6 × 6 策略与退款语义 | [套餐变更策略](docs/PLAN_TRANSITIONS.md) |
+| 积分包和多来源余额 | [积分包](docs/CREDIT_PACKS.md) |
+| 测试、浏览器 E2E 与 Stripe CLI | [测试](docs/TESTING.md) · [Stripe CLI](docs/STRIPE_CLI.md) |
+| 部署、运维和分布式边界 | [Vercel](docs/VERCEL.md) · [运维](docs/OPERATIONS.md) · [分布式](docs/DISTRIBUTED.md) |
+| SEO 与公开收录 | [SEO 指南](docs/SEO.md) |
 
 <a id="faq"></a>
 
 ## 常见问题
 
-### 这是 Stripe 官方产品吗？
+### 这是一个 Stripe 前端模板吗？
 
-不是。这是边界明确的独立社区参考实现。Stripe 是支付处理方，PostgreSQL 保存本地权益
-与积分投影。
+不只是。参考 Web 提供页面，但真正可复用的是服务端计费、权益与积分流程。Hosted
+Checkout 和 Portal 页面由 Stripe 托管；你的应用负责发起安全 session 并消费 webhook
+投影后的结果。
 
-### 支持月付和年付吗？
+### 全栈 Next.js 还需要数据库吗？
 
-支持。内置 Starter、Pro、Ultra 都有月付与年付。年付 Invoice 最多为 12 个按月积分
-slot 提供资金，可选真实 Stripe suite 包含 Test Clock 跨年续费关口。宿主也可以使用
-任意非空、key 稳定的套餐集合。
+真实计费需要。Next.js Route Handlers 可以充当后端，所以不必再部署 FastAPI；但
+PostgreSQL 仍保存事件幂等、订阅/权益投影、积分来源、套餐变更和对账状态。只有 UI
+simulation 不需要数据库。
 
-### 覆盖升级、降级和支付失败吗？
+### 用户取消或升级失败会立刻失去权益吗？
 
-在两套有文档的六状态策略范围内覆盖。可以选择全价开启新周期，或保持月周期、只支付
-按比例差价。两者都以已支付 Invoice line 为权威；年付来源变更和降级等待周期结束。
-需要认证或银行卡失败时，旧的已付权益会保留，直到目标 Invoice 真正支付。
+不会。周期末取消在已付周期结束前保留权益；升级付款失败或等待 SCA 时，也保留旧的
+已付套餐，直到新的 Invoice 真正支付。
 
-### 按比例升级如何计算积分？
+### 可以接入自己的用户、团队和产品表吗？
 
-现金与产品权益分开计算。Stripe 计算剩余周期的来源抵扣和目标收费；匹配的 paid Invoice
-验证后，应用固定增加 `target.monthly_credits - source.monthly_credits`。剩余时间变短
-只改变应付金额，不改变档位权益差额。
+可以。通过身份 adapter 把不可变 user/tenant ID 映射到计费账户；业务实体无需搬进本
+项目。产品服务只在服务端调用权益检查与额度操作。
 
-### 支持优惠券、试用、税费或多币种吗？
+### 支持小数积分吗？
 
-不支持。这些功能会引入额外 Invoice 形状与策略决策，因此被明确列为非目标，而不是在
-没有实现和竞态测试时对外宣传。带折扣 Invoice 会 fail closed，Checkout 始终不启用
-`allow_promotion_codes`。未来要求见[优惠码与优惠券](docs/PROMOTION_CODES.md)。
+支持，最小 `0.000001` 积分。数据库使用整数 atom，API 使用十进制字符串，避免
+JavaScript 浮点误差。详见[积分精度](docs/CREDIT_PRECISION.md)。
 
-### 可以扣除小数积分吗？
+### 支持优惠券、试用、税费和多币种吗？
 
-可以。一个积分严格等于一百万个整数 atom，最小支持 `0.000001`。套餐小数使用带引号
-十进制字符串，HTTP 使用十进制与 atom 字符串，PostgreSQL 只存整数 atom；权威边界会
-拒绝 Python、PostgreSQL、TOML 和 JavaScript 浮点值。
-
-### 支持一次性积分包吗？
-
-支持固定价格、银行卡支付的 USD 积分包，包括 Hosted Checkout、精确资金 lot、FEFO
-消费、独立过期、部分/全额现金退款、争议、产品操作退款、跨 epoch debt 与 webhook
-丢失对账。积分包不增加订阅 feature 或 limit。增加其他支付方式前必须明确实现并测试
-对应结算/退款策略，不能只在 Dashboard 打开开关。
-
-### 多个 API 和 worker 实例可以共享吗？
-
-可以，前提是共享同一个 PostgreSQL primary 和完全一致的配置。正确性依赖数据库锁、
-约束、lease 与幂等，而不是进程内存。PostgreSQL 仍需 HA、备份与恢复演练。
-
-### 全栈 SSR Next.js 还需要数据库吗？
-
-真实 Stripe 计费需要。Next.js App Router 不需要单独 FastAPI、Railway 或常驻 Node
-服务，因为服务端 Route Handlers 就是后端；但仍需要可写 PostgreSQL 17 或 18 primary。
-Stripe 处理资金，PostgreSQL 保存 webhook 幂等、订阅/权益投影、积分 lot、套餐 intent、
-年度发放、对账和 incident。只有明确的浏览器本地 `simulation` demo 不需要数据库，
-它不是真实 Stripe 集成。
-
-### 可以接入现有 FastAPI 吗？
-
-可以。`BillingKernel` 管理已验证依赖图，`install_billing` 添加可带 prefix 的原生 router
-并组合宿主 lifespan。公共计费 middleware 只作用于其路由，宿主已连接的数据库 pool
-仍由宿主管理；只有计费作为独立根服务时才使用 `create_app`。
-
-公开站点 metadata、canonical、社交预览、结构化数据与收录检查见
-[SEO runbook](docs/SEO.md)。
-
-<a id="non-goals"></a>
-
-## 非目标
-
-- 在 Stripe Checkout、托管 Invoice 或 Stripe.js 以外处理银行卡数据；
-- 替代 Stripe Billing、身份提供方、会计软件或通用用量计量平台；
-- 保证任意 Dashboard 配置、webhook 投递延迟，或文档中单 item 契约以外的 Invoice 形状；
-- 根据浏览器跳转或可变 Subscription read 直接开通权限。
+当前不支持。这些会改变 Invoice 形状和结算策略，所以项目选择明确拒绝，而不是在没有
+竞态测试时默认放行。
 
 ## 许可证
 

@@ -11,57 +11,153 @@ def _text(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_root_readmes_offer_a_symmetric_language_switch_and_core_guidance() -> None:
+def _has_anchor(document: str, anchor: str) -> bool:
+    return re.search(rf'<a\s+(?:id|name)="{re.escape(anchor)}"\s*></a>', document) is not None
+
+
+def _anchor_opens_section(document: str, anchor: str) -> bool:
+    marker = re.search(rf'<a\s+(?:id|name)="{re.escape(anchor)}"\s*></a>', document)
+    if marker is None:
+        return False
+    after_marker = document[marker.end() :]
+    return (
+        re.match(
+            r'(?:\s*<a\s+(?:id|name)="[^"]+"\s*></a>)*\s*#{2,3}\s+\S',
+            after_marker,
+        )
+        is not None
+    )
+
+
+def test_root_readmes_are_symmetric_product_entrypoints() -> None:
     english = _text("README.md")
     chinese = _text("README.zh-CN.md")
 
     assert "**English** | [简体中文](README.zh-CN.md)" in english.splitlines()[:8]
     assert "[English](README.md) | **简体中文**" in chinese.splitlines()[:8]
 
-    for anchor in (
-        "choose-runtime",
-        "choose-subscription-flow",
-        "implemented-scope",
-        "plan-catalog",
-        "credit-packs",
-        "plan-transitions",
-        "correctness-model",
-        "vercel-deployment",
-        "ai-builders",
-        "quick-start",
-        "adoption",
-        "verification",
-        "migrations",
-        "repository-map",
-        "faq",
-    ):
-        assert f'<a id="{anchor}"></a>' in chinese
-        assert f"](#{anchor})" in chinese
+    for path, readme in (("README.md", english), ("README.zh-CN.md", chinese)):
+        for anchor in (
+            "quick-adoption",
+            "business-flow",
+            "evidence",
+            "limitations",
+        ):
+            assert _has_anchor(readme, anchor), f"{path} is missing #{anchor}"
+            assert _anchor_opens_section(readme, anchor), (
+                f"{path} #{anchor} does not open a visible section"
+            )
 
-    assert '<a id="start-here"></a>' in chinese
+        # The root document helps adopters choose a backend; implementation internals
+        # and operational commands live in the linked guides below.
+        assert "TypeScript" in readme
+        assert "Next.js" in readme
+        assert "Python" in readme
+        assert "FastAPI" in readme
+        assert "](typescript/README.md" in readme
+
+        for technical_guide in (
+            "docs/TESTING.md",
+            "docs/ADOPTION.md",
+            "docs/DEPLOYMENT.md",
+            "docs/PLAN_TRANSITIONS.md",
+        ):
+            assert f"]({technical_guide}" in readme, f"{path} must keep {technical_guide} reachable"
+
     assert '"/README.zh-CN.md"' in _text("pyproject.toml")
 
-    for contract in (
-        "src/stripe_entitlements/",
-        "typescript/src/",
-        "typescript/src/next/",
-        "web/app/",
-        "full_period_reset",
-        "prorated_delta",
-        "STRIPE_WEBHOOK_API_VERSION",
-        "PostgreSQL 17 或 18",
-        "docs/DEPLOYMENT.md",
-        "docs/ADOPTION.md",
-        "docs/AI_BUILDERS.md",
-        "scripts/run_browser_e2e.sh",
-        "不宣称验证了生产 webhook payload",
-    ):
-        assert contract in chinese
+
+def test_root_readmes_do_not_publish_development_artifacts() -> None:
+    forbidden_patterns = {
+        "commit hash": re.compile(r"(?<![0-9A-Za-z])[0-9a-fA-F]{7,40}(?![0-9A-Za-z])"),
+        "GitHub Actions run URL": re.compile(r"actions/runs/\d+", re.IGNORECASE),
+        "GitHub Actions run ID": re.compile(
+            r"(?:github\s+actions?|actions)\s+(?:workflow\s+)?run"
+            r"(?:\s+id)?\s*[:#]?\s*\d+",
+            re.IGNORECASE,
+        ),
+        "exact test timing": re.compile(
+            r"^(?=[^\n]*(?:\b(?:tests?|suite|pytest|playwright|typecheck|lint|ci)\b|"
+            r"测试|关口))(?=[^\n]*\b\d+(?:\.\d+)?\s*(?:ms|milliseconds?|"
+            r"seconds?|secs?|minutes?|mins?|毫秒|秒|分钟)\b)[^\n]+$",
+            re.IGNORECASE | re.MULTILINE,
+        ),
+        "decimal execution timing": re.compile(
+            r"\b\d+\.\d+\s*(?:ms|milliseconds?|seconds?|secs?|minutes?|mins?|hours?|"
+            r"毫秒|秒|分钟|小时)\b",
+            re.IGNORECASE,
+        ),
+        "promo command": re.compile(
+            r"(?:PROMO_STEP_PAUSE_MS|E2E_RECORD_VIDEO|scripts/(?:run_promo_ui|"
+            r"build_promo_video|review_promo_video)\.sh)",
+            re.IGNORECASE,
+        ),
+        "ignored test-result path": re.compile(r"(?:^|[/`])test-results/", re.IGNORECASE),
+        "public video claim": re.compile(
+            r"(?:public\s+(?:demo|promotional?|promo)?\s*video|"
+            r"(?:watch|view).{0,40}(?:demo|promotional?|promo)?\s*video|"
+            r"(?:公开|已发布)(?:的)?(?:演示|宣传)?视频|"
+            r"(?:观看|播放).{0,40}视频|youtu\.be|youtube\.com|vimeo\.com)",
+            re.IGNORECASE,
+        ),
+    }
+
+    for path in ("README.md", "README.zh-CN.md"):
+        readme = _text(path)
+        for label, pattern in forbidden_patterns.items():
+            assert pattern.search(readme) is None, f"{path} exposes {label}"
+
+
+def test_root_readmes_show_both_complete_plan_transition_matrices() -> None:
+    state_codes = ("SM", "SY", "PM", "PY", "UM", "UY")
+    reference_rows = [
+        (
+            re.match(r"^\| \*\*(SM|SY|PM|PY|UM|UY)\*\* \|", line).group(1),
+            [cell.strip() for cell in line.strip().strip("|").split("|")[1:]],
+        )
+        for line in _text("docs/PLAN_TRANSITIONS.md").splitlines()
+        if re.match(r"^\| \*\*(SM|SY|PM|PY|UM|UY)\*\* \|", line)
+    ]
+    assert len(reference_rows) == 12
+    assert [code for code, _ in reference_rows] == list(state_codes) * 2
+
+    localized_actions = {
+        "README.md": {
+            "—": "noop",
+            "**Now**<br>full price": "immediate",
+            "**Now**<br>prorated difference": "immediate delta",
+            "**At period end**": "period end",
+        },
+        "README.zh-CN.md": {
+            "—": "noop",
+            "**立即**<br>目标全价": "immediate",
+            "**立即**<br>按比例差价": "immediate delta",
+            "**周期末**": "period end",
+        },
+    }
+
+    for path, action_map in localized_actions.items():
+        readme = _text(path)
+        rows = [
+            (
+                re.match(r"^\| \*\*[^|]*\((SM|SY|PM|PY|UM|UY)\)\*\* \|", line).group(1),
+                [cell.strip() for cell in line.strip().strip("|").split("|")[1:]],
+            )
+            for line in readme.splitlines()
+            if re.match(
+                r"^\| \*\*[^|]*\((SM|SY|PM|PY|UM|UY)\)\*\* \|",
+                line,
+            )
+        ]
+        assert len(rows) == 12, path
+        assert [code for code, _ in rows] == list(state_codes) * 2, path
+        assert [
+            (code, [action_map[cell] for cell in cells]) for code, cells in rows
+        ] == reference_rows
 
 
 def test_agent_guide_requires_dual_runtime_discovery_before_architecture_claims() -> None:
     guide = _text("AGENTS.md")
-    readme_entry = _text("README.md").split("## Contents", maxsplit=1)[0]
 
     for path in (
         "src/stripe_entitlements/",
@@ -70,7 +166,6 @@ def test_agent_guide_requires_dual_runtime_discovery_before_architecture_claims(
         "web/app/",
     ):
         assert path in guide
-        assert path in readme_entry
 
     assert "independent native TypeScript/Node billing backend" in guide
     assert "must not be\nused to classify the whole project as Python-only" in guide
@@ -80,7 +175,6 @@ def test_agent_guide_requires_dual_runtime_discovery_before_architecture_claims(
 
 def test_source_checkout_guides_build_typescript_before_the_first_cli_call() -> None:
     source_sections = {
-        "README.md": "For contributors running this source checkout instead:",
         "typescript/README.md": "For contributors working from this source checkout instead:",
         "docs/ADOPTION.md": "## Compose a TypeScript application",
         "docs/STRIPE_CLI.md": "# Native TypeScript / Node operator",
@@ -136,7 +230,6 @@ def test_pinned_git_and_minimum_vendor_paths_are_first_class() -> None:
     )
     normalized_adoption = " ".join(adoption.split())
     package_guide = _text("typescript/README.md")
-    readme = _text("README.md")
 
     assert (
         "stripe-entitlements-fastapi[auth] @ "
@@ -166,7 +259,6 @@ def test_pinned_git_and_minimum_vendor_paths_are_first_class() -> None:
         "git add .gitmodules vendor/stripe-entitlements package.json package-lock.json"
         in package_guide
     )
-    assert "pinned Git and minimum vendoring guide" in readme
     for guide in (adoption, package_guide):
         assert '"billing:build"' in guide
         assert '"prebuild": "npm run billing:build"' in guide
@@ -188,11 +280,15 @@ def test_pinned_git_and_minimum_vendor_paths_are_first_class() -> None:
 
 
 def test_postgresql_major_version_is_not_confused_with_schema_initialization() -> None:
-    for path in ("README.md", "typescript/README.md", "docs/ADOPTION.md", "docs/OPERATIONS.md"):
+    for path in (
+        "typescript/README.md",
+        "docs/ADOPTION.md",
+        "docs/DEPLOYMENT.md",
+        "docs/OPERATIONS.md",
+    ):
         guide = _text(path)
         assert "PostgreSQL 17 or 18" in guide
 
-    assert "does **not** upgrade PostgreSQL 17 to PostgreSQL 18" in _text("README.md")
     assert "upgrade the PostgreSQL server from major version 17 to 18" in _text(
         "typescript/README.md"
     )
@@ -229,21 +325,15 @@ def test_auth_guides_do_not_require_provider_user_or_tenant_uuids() -> None:
 
 
 def test_reference_tier_counts_are_not_documented_as_parser_invariants() -> None:
-    readme = _text("README.md")
     architecture = _text("docs/ARCHITECTURE.md")
 
-    assert "any non-empty set of stable plan keys" in readme
-    assert "zero or more card-funded one-time USD credit packs" in readme
-    assert "bundled reference catalog ships three" in readme
+    assert "configured non-empty set\nof stable plan keys" in architecture
+    assert "optional credit packs" in architecture
+    assert "bundled reference\ncatalog has three plans and three packs" in architecture
     assert "those counts are examples, not parser\ninvariants" in architecture
 
 
 def test_catalog_sync_commands_match_the_selected_source_runtime() -> None:
-    readme_catalog = (
-        _text("README.md")
-        .split("## Plan catalog", maxsplit=1)[1]
-        .split("## One-time credit packs", maxsplit=1)[0]
-    )
     ai_typescript = (
         _text("docs/AI_BUILDERS.md")
         .split("## v0 + Next.js", maxsplit=1)[1]
@@ -260,8 +350,6 @@ def test_catalog_sync_commands_match_the_selected_source_runtime() -> None:
         .split("### Install a local tarball", maxsplit=1)[0]
     )
 
-    assert "uv run python scripts/sync_reference_catalog.py --check" in readme_catalog
-    assert "npm run sync:catalog -- --check" in readme_catalog
     for section in (ai_typescript, vercel_typescript, package_source):
         assert "npm run sync:catalog" in section
         assert "npm run sync:catalog -- --check" in section
@@ -275,11 +363,11 @@ def test_catalog_sync_commands_match_the_selected_source_runtime() -> None:
 
 
 def test_typescript_error_hook_is_server_only_and_responses_stay_sanitized() -> None:
-    for guide in (_text("README.md"), _text("typescript/README.md")):
-        assert "BillingFetchHandlerOptions.onError" in guide
-        assert "original\nserver exception" in guide or "original exception" in guide
-        assert "server-only" in guide
-        assert "browser-visible state" in guide
+    guide = _text("typescript/README.md")
+    assert "BillingFetchHandlerOptions.onError" in guide
+    assert "original exception" in guide
+    assert "server-only" in guide
+    assert "browser-visible state" in guide
 
 
 def test_changelog_marks_the_candidate_as_unreleased() -> None:
@@ -287,18 +375,30 @@ def test_changelog_marks_the_candidate_as_unreleased() -> None:
     assert changelog.startswith("# Changelog\n\n## [Unreleased 0.4.0]\n")
 
 
-def test_readme_has_a_short_four_path_entrypoint_before_contents() -> None:
-    readme = _text("README.md")
-    entrypoint = readme.split("## Start here", maxsplit=1)[1].split("## Contents", maxsplit=1)[0]
-
-    assert "Python/FastAPI" in entrypoint
-    assert "native Next.js/TypeScript" in entrypoint
-    assert "real Stripe test-mode staging" in entrypoint
-    assert "UI-only link without Stripe/DB" in entrypoint
-    assert "#quick-start" in entrypoint
-    assert "typescript/README.md#requirements" in entrypoint
-    assert "docs/DEPLOYMENT.md" in entrypoint
-    assert "docs/AI_BUILDERS.md#publish-a-ui-only-simulation" in entrypoint
+def test_maintainer_detail_remains_in_the_linked_technical_guides() -> None:
+    required_headings = {
+        "docs/TESTING.md": (
+            "# Testing strategy and evidence boundary",
+            "## Real-browser Checkout gate",
+        ),
+        "docs/ADOPTION.md": (
+            "# Adopting the reference in an existing application",
+            "## Choose an adoption shape",
+        ),
+        "docs/DEPLOYMENT.md": (
+            "# First real deployment: Stripe test-mode staging",
+            "## Deploy in two phases when the domain is new",
+        ),
+        "docs/PLAN_TRANSITIONS.md": (
+            "# Plan transition policies",
+            "## Template 1: full-period reset",
+            "## Template 2: prorated entitlement delta",
+        ),
+    }
+    for path, headings in required_headings.items():
+        guide = _text(path)
+        for heading in headings:
+            assert heading in guide, f"{path} is missing {heading}"
 
 
 def test_first_deployment_guide_keeps_ai_and_webhook_boundaries_explicit() -> None:
