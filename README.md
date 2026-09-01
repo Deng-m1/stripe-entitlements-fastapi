@@ -1,5 +1,7 @@
 # Stripe Billing, Entitlements & Credit Packs for TypeScript and FastAPI
 
+**English** | [简体中文](README.zh-CN.md)
+
 [![CI](https://github.com/ToseaAI/stripe-entitlements/actions/workflows/ci.yml/badge.svg)](https://github.com/ToseaAI/stripe-entitlements/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12%2B-3776AB.svg)](pyproject.toml)

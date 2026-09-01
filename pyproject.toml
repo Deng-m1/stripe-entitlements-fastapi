@@ -95,6 +95,7 @@ include = [
   "/pyproject.toml",
   "/uv.lock",
   "/README.md",
+  "/README.zh-CN.md",
   "/CHANGELOG.md",
   "/CITATION.cff",
   "/CONTRIBUTING.md",
