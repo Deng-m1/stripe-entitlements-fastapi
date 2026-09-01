@@ -11,6 +11,54 @@ def _text(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
+def test_root_readmes_offer_a_symmetric_language_switch_and_core_guidance() -> None:
+    english = _text("README.md")
+    chinese = _text("README.zh-CN.md")
+
+    assert "**English** | [简体中文](README.zh-CN.md)" in english.splitlines()[:8]
+    assert "[English](README.md) | **简体中文**" in chinese.splitlines()[:8]
+
+    for anchor in (
+        "choose-runtime",
+        "choose-subscription-flow",
+        "implemented-scope",
+        "plan-catalog",
+        "credit-packs",
+        "plan-transitions",
+        "correctness-model",
+        "vercel-deployment",
+        "ai-builders",
+        "quick-start",
+        "adoption",
+        "verification",
+        "migrations",
+        "repository-map",
+        "faq",
+    ):
+        assert f'<a id="{anchor}"></a>' in chinese
+        assert f"](#{anchor})" in chinese
+
+    assert '<a id="start-here"></a>' in chinese
+    assert '"/README.zh-CN.md"' in _text("pyproject.toml")
+
+    for contract in (
+        "src/stripe_entitlements/",
+        "typescript/src/",
+        "typescript/src/next/",
+        "web/app/",
+        "full_period_reset",
+        "prorated_delta",
+        "STRIPE_WEBHOOK_API_VERSION",
+        "PostgreSQL 17 或 18",
+        "docs/DEPLOYMENT.md",
+        "docs/ADOPTION.md",
+        "docs/AI_BUILDERS.md",
+        "scripts/run_browser_e2e.sh",
+        "不宣称验证了生产 webhook payload",
+    ):
+        assert contract in chinese
+
+
 def test_agent_guide_requires_dual_runtime_discovery_before_architecture_claims() -> None:
     guide = _text("AGENTS.md")
     readme_entry = _text("README.md").split("## Contents", maxsplit=1)[0]
