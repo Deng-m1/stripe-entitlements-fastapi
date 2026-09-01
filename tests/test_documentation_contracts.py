@@ -59,6 +59,44 @@ def test_root_readmes_offer_a_symmetric_language_switch_and_core_guidance() -> N
         assert contract in chinese
 
 
+def test_root_readmes_show_both_complete_plan_transition_matrices() -> None:
+    reference_rows = [
+        [cell.strip() for cell in line.strip().strip("|").split("|")[1:]]
+        for line in _text("docs/PLAN_TRANSITIONS.md").splitlines()
+        if re.match(r"^\| \*\*(SM|SY|PM|PY|UM|UY)\*\* \|", line)
+    ]
+    assert len(reference_rows) == 12
+
+    localized_actions = {
+        "README.md": {
+            "—": "noop",
+            "**Now**<br>full price": "immediate",
+            "**Now**<br>prorated difference": "immediate delta",
+            "**At period end**": "period end",
+        },
+        "README.zh-CN.md": {
+            "—": "noop",
+            "**立即**<br>目标全价": "immediate",
+            "**立即**<br>按比例差价": "immediate delta",
+            "**周期末**": "period end",
+        },
+    }
+
+    for path, action_map in localized_actions.items():
+        readme = _text(path)
+        rows = [
+            [cell.strip() for cell in line.strip().strip("|").split("|")[1:]]
+            for line in readme.splitlines()
+            if re.match(
+                r"^\| \*\*(Starter|Pro|Ultra) (monthly|yearly|月付|年付) "
+                r"\((SM|SY|PM|PY|UM|UY)\)\*\* \|",
+                line,
+            )
+        ]
+        assert len(rows) == 12, path
+        assert [[action_map[cell] for cell in row] for row in rows] == reference_rows
+
+
 def test_agent_guide_requires_dual_runtime_discovery_before_architecture_claims() -> None:
     guide = _text("AGENTS.md")
     readme_entry = _text("README.md").split("## Contents", maxsplit=1)[0]

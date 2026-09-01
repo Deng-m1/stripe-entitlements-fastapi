@@ -288,15 +288,50 @@ Set `BILLING_TRANSITION_POLICY=full_period_reset` or `prorated_delta` before sta
 the API. Health, catalog, account, preview, and confirm responses expose the selected
 mode; every intent stores it durably.
 
-`full_period_reset` keeps the original matrix: monthly-origin higher tiers and
-month-to-year targets are preview-eligible immediately; downgrades and all
-annual-origin changes are period-end. Immediate apply uses
+Read each matrix from the current plan on the left to the target plan at the top.
+`—` means no change. **Now** means payment is attempted now and the entitlement switches
+only after the matching Invoice is paid. **At period end** means the current plan stays
+active now and the change is scheduled; entitlement still follows the paid Invoice.
+
+### Template A: start a new full-price period (`full_period_reset`)
+
+Choose this when an immediate upgrade should start a fresh target period. The customer
+pays the target plan's full price now and receives no credit for unused time on the old
+plan.
+
+| Current plan ↓ / Target plan → | Starter<br>monthly (SM) | Starter<br>yearly (SY) | Pro<br>monthly (PM) | Pro<br>yearly (PY) | Ultra<br>monthly (UM) | Ultra<br>yearly (UY) |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Starter monthly (SM)** | — | **Now**<br>full price | **Now**<br>full price | **Now**<br>full price | **Now**<br>full price | **Now**<br>full price |
+| **Starter yearly (SY)** | **At period end** | — | **At period end** | **At period end** | **At period end** | **At period end** |
+| **Pro monthly (PM)** | **At period end** | **At period end** | — | **Now**<br>full price | **Now**<br>full price | **Now**<br>full price |
+| **Pro yearly (PY)** | **At period end** | **At period end** | **At period end** | — | **At period end** | **At period end** |
+| **Ultra monthly (UM)** | **At period end** | **At period end** | **At period end** | **At period end** | — | **Now**<br>full price |
+| **Ultra yearly (UY)** | **At period end** | **At period end** | **At period end** | **At period end** | **At period end** | — |
+
+A monthly plan can immediately move to a higher tier in either interval, or from monthly
+to yearly within the same tier. Downgrades and all annual-origin changes wait until
+period end. Immediate apply uses
 `billing_cycle_anchor=now` and `proration_behavior=none`, and the paid target Invoice
 resets the monthly credit pool.
 
-`prorated_delta` permits immediate settlement only for a higher monthly tier with a
-positive credit difference while remaining monthly. For example, Starter Monthly → Pro
-Monthly pays Stripe's net remaining-period difference and adds exactly
+### Template B: pay only the prorated difference (`prorated_delta`)
+
+Choose this for the common same-period monthly upgrade. Stripe credits the unused part
+of the old monthly tier and charges the target tier for the same remaining time, so the
+customer pays only the net difference.
+
+| Current plan ↓ / Target plan → | Starter<br>monthly (SM) | Starter<br>yearly (SY) | Pro<br>monthly (PM) | Pro<br>yearly (PY) | Ultra<br>monthly (UM) | Ultra<br>yearly (UY) |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Starter monthly (SM)** | — | **At period end** | **Now**<br>prorated difference | **At period end** | **Now**<br>prorated difference | **At period end** |
+| **Starter yearly (SY)** | **At period end** | — | **At period end** | **At period end** | **At period end** | **At period end** |
+| **Pro monthly (PM)** | **At period end** | **At period end** | — | **At period end** | **Now**<br>prorated difference | **At period end** |
+| **Pro yearly (PY)** | **At period end** | **At period end** | **At period end** | — | **At period end** | **At period end** |
+| **Ultra monthly (UM)** | **At period end** | **At period end** | **At period end** | **At period end** | — | **At period end** |
+| **Ultra yearly (UY)** | **At period end** | **At period end** | **At period end** | **At period end** | **At period end** | — |
+
+Immediate settlement is limited to a higher monthly tier with a positive credit
+difference while staying monthly. For example, Starter Monthly → Pro Monthly pays
+Stripe's net remaining-period difference and adds exactly
 `1,000 - 300 = 700` credits while keeping the same period and unused balance. Month/year
 conversions, downgrades, and every annual-origin change are period-end.
 
@@ -307,8 +342,9 @@ unknown/missing lines, and inconsistent periods fail closed. Partial refunds cla
 the proportional delta; closing a leaf upgrade reverts to the still-funded source,
 while closing a source/intermediate lineage revokes enforcement for repair.
 
-Both full bundled-catalog 6 × 6 matrices, Invoice acceptance rules, refund semantics,
-and failure behavior are in [Plan transition policies](docs/PLAN_TRANSITIONS.md).
+The matrices above are the user-facing decision guide for the bundled catalog. Exact
+Invoice acceptance rules, custom-catalog caveats, refund semantics, and failure behavior
+are in [Plan transition policies](docs/PLAN_TRANSITIONS.md).
 
 ## Correctness model
 
